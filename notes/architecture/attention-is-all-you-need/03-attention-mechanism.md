@@ -235,6 +235,164 @@ Since "The" attended most to "sat" (45%), its output is pulled toward V["sat"].
 
 ---
 
+### CRITICAL: How Does Attention Produce a NEW Word? (Not in Query/Keys)
+
+This is a common confusion! Let me clarify the full pipeline.
+
+#### The Confusion
+
+You might think:
+```
+Input: "The cat"
+Attention looks at: "The", "cat" (Q, K, V all from these 2 words)
+Output: ??? How can it produce "sat" if "sat" was never in the input?
+```
+
+#### The Answer: Attention Output ≠ The Next Word
+
+Attention outputs are **dense vectors**, NOT words!
+
+```
+Input words:     ["The", "cat"]
+                     ↓
+Embeddings:      [[0.1, 0.2, ...], [0.3, 0.4, ...]]   # Shape: (2, 512)
+                     ↓
+After Attention: [[0.15, 0.25, ...], [0.35, 0.45, ...]]  # Shape: (2, 512)
+                                              ↑
+                          Still 512-dimensional vectors!
+                          NOT words!
+```
+
+#### The Missing Step: Output Projection to Vocabulary
+
+After all the Transformer layers, there's a **final linear layer**:
+
+```
+Attention output for last position: [0.35, 0.45, ..., 0.82]  # 512 numbers
+
+Final Linear Layer: W_vocab of shape (512, vocab_size)
+                   vocab_size = 30,000 (all possible words!)
+
+Logits = attention_output @ W_vocab
+       = [512 numbers] @ [512 × 30,000]
+       = [30,000 numbers]  # One score for EVERY word in vocabulary!
+
+Probabilities = softmax(logits)
+              = [0.001, 0.0005, ..., 0.15, ..., 0.002]
+                  ↑        ↑           ↑
+                "a"     "aardvark"   "sat"
+```
+
+**The 30,000-dimensional output gives a probability for EVERY possible next word**, including words that were never in the input!
+
+#### Complete Example
+
+```
+Step 1: Input
+        Words: ["The", "cat"]
+
+Step 2: Embed
+        Embeddings: [[0.1, 0.2, ...512 dims...],
+                     [0.3, 0.4, ...512 dims...]]
+
+Step 3: Add Positional Encoding
+        With positions: [[0.1+PE₀], [0.3+PE₁]]
+
+Step 4: Pass through N Transformer layers (attention + FFN)
+        Output: [[new 512 dims for "The"],
+                 [new 512 dims for "cat"]]  ← we use THIS one
+
+Step 5: Take LAST position's output
+        Last output: [0.35, 0.45, ...512 dims...]
+
+Step 6: Project to vocabulary
+        W_vocab: learned matrix of shape (512, 30000)
+        Logits = last_output @ W_vocab = [30,000 scores]
+
+Step 7: Softmax
+        Probs = softmax(logits)
+
+        Word        Probability
+        ----        -----------
+        "the"       0.001
+        "sat"       0.15      ← highest!
+        "ran"       0.08
+        "dog"       0.02
+        "meowed"    0.05
+        ...         ...
+
+Step 8: Sample or Argmax
+        Next word = "sat" (highest probability)
+
+Step 9: Append and repeat
+        New input: ["The", "cat", "sat"]
+        Go back to Step 2...
+```
+
+#### Key Insight: The Vocabulary Projection
+
+The magic is in `W_vocab`:
+
+```python
+# This is learned during training!
+W_vocab = nn.Linear(d_model, vocab_size)  # (512 → 30,000)
+```
+
+This matrix learns to map the 512-dimensional "meaning" space to probabilities over all 30,000 words.
+
+- If the 512-dim vector is "close to" the concept of a verb → high probability for verbs
+- If it captures "animal doing something" → "sat", "ran", "jumped" get boosted
+
+**The model doesn't just copy from input! It maps to the ENTIRE vocabulary.**
+
+#### Analogy
+
+Think of it like a translator's brain:
+
+```
+Input (French): "Le chat"
+
+Translator's brain:
+1. Understands "Le chat" → forms internal representation
+2. Internal representation activates concepts: [small, furry, animal, pet, ...]
+3. Maps concepts to ALL English words
+4. "cat" has highest activation
+5. Output: "cat"
+```
+
+The translator doesn't search through the French input for English words. They map their understanding to the entire English vocabulary.
+
+Similarly:
+```
+Input: "The cat"
+
+Transformer:
+1. Processes "The cat" → rich 512-dim representation
+2. This representation encodes: [subject established, animal, expecting action, ...]
+3. Maps to ALL 30,000 vocabulary words
+4. "sat", "ran", "slept" have high probability (verbs for animals)
+5. Samples → "sat"
+```
+
+#### Where Q, K, V Fit In
+
+Q, K, V are for **mixing information between positions**, not for outputting words.
+
+```
+"The cat" → Attention → "The cat" (but now each word knows about the other)
+                              ↓
+                       "cat" representation now includes:
+                       - Its own meaning
+                       - That "The" came before it (article + noun pattern)
+                       - That it's the subject (likely to be followed by verb)
+                              ↓
+                       Project to 30,000 words
+                              ↓
+                       "sat" has high probability
+```
+
+---
+
 ## Abstraction Ladder for Attention
 
 ### L1: Universal Principle
