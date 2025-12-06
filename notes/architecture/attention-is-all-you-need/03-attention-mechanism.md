@@ -923,6 +923,494 @@ Query 4:   [ ✓  ✓  ✓  ✓ ]  ← Can see all positions
 
 ---
 
+## Why Use the LAST Embedding During Inference?
+
+### The Question
+
+During autoregressive generation, we have:
+```
+Input: ["The", "cat", "sat"]
+       Position 0, Position 1, Position 2
+
+After Transformer: Three output embeddings
+       [emb_0', emb_1', emb_2']
+
+We project emb_2' (the LAST one) to vocabulary → predict next word
+
+But wait - why not use emb_0' and emb_1' too?
+```
+
+### The Answer: The Last Position Already Contains All Information
+
+**The last embedding ISN'T ignoring the previous embeddings. It HAS SEEN them all through attention!**
+
+```
+What each output embedding knows:
+
+emb_0' (output for "The"):
+  - Attended to: itself only (or itself + "cat" + "sat" in encoder)
+  - Knows: "The" in context of sentence
+  - Useful for: Nothing about what comes after position 2
+
+emb_1' (output for "cat"):
+  - Attended to: "The", "cat" (in causal/decoder setup)
+  - Knows: "cat" follows "The"
+  - Useful for: Would predict what comes after position 1
+
+emb_2' (output for "sat"):  ← THIS IS WHAT WE WANT
+  - Attended to: "The", "cat", "sat" (ALL previous positions!)
+  - Knows: Full context up to position 2
+  - Useful for: Predicting what comes at position 3
+```
+
+### Visual Explanation
+
+```
+Layer 1 Attention:
+                 Attends to
+    "The"    →   ["The"]
+    "cat"    →   ["The", "cat"]
+    "sat"    →   ["The", "cat", "sat"]  ← sees everything!
+
+Layer 2 Attention:
+                 Attends to (now with Layer 1's enriched representations)
+    "The"    →   [enriched "The"]
+    "cat"    →   [enriched "The", enriched "cat"]
+    "sat"    →   [enriched "The", enriched "cat", enriched "sat"]
+
+...after N layers...
+
+Final "sat" embedding contains:
+  ├── Information from "The" (flowed through attention)
+  ├── Information from "cat" (flowed through attention)
+  ├── Its own "sat" information
+  └── All relationships between them!
+```
+
+### The Last Position is a SUMMARY
+
+Think of it like a meeting:
+```
+Person 1 speaks → takes notes on what they said
+Person 2 speaks → takes notes on Person 1 + 2
+Person 3 speaks → takes notes on ALL speakers
+
+At the end, Person 3's notes are the most complete!
+```
+
+The last position's embedding is a **compressed summary** of the entire sequence, enriched by attention across all layers.
+
+### Why Not Concatenate All Embeddings?
+
+You COULD average or concatenate all output embeddings:
+```
+final_repr = Average(emb_0', emb_1', emb_2')
+           or
+final_repr = Concat(emb_0', emb_1', emb_2')
+```
+
+But this has problems:
+1. **Variable length**: Different sequences have different lengths → different output sizes
+2. **Redundant**: emb_2' already contains information from positions 0 and 1
+3. **Less focused**: emb_0' is optimized for "what follows The" not "what follows sat"
+
+### For Classification vs Generation
+
+**Generation (next token prediction)**:
+- Use LAST position → it summarizes everything, predicts what's NEXT
+```
+["The", "cat", "sat"] → use emb_2' → predict "on"
+```
+
+**Classification (e.g., sentiment)**:
+- Often use a SPECIAL token like [CLS] at position 0
+- OR average all embeddings
+- OR use the last token's embedding
+```
+["[CLS]", "I", "love", "this", "movie"] → use emb_0' (CLS) → predict "positive"
+```
+
+### Cricket Implication
+
+For ball-by-ball prediction:
+```
+Balls: [ball_1, ball_2, ..., ball_n]
+
+After Transformer: [emb_1', emb_2', ..., emb_n']
+
+To predict ball n+1:
+  → Use emb_n' (it has seen balls 1 through n through attention!)
+  → Project to outcome probabilities
+```
+
+The last ball's embedding knows about:
+- The first ball of the innings
+- Every wicket that fell
+- The current batsman's form (all their balls)
+- The bowler's pattern (all their balls)
+- Everything! (weighted by learned relevance)
+
+---
+
+## Sinusoidal Embeddings: A Complete Worked Example
+
+### The Goal
+
+We need to give each position a unique "fingerprint" that:
+1. Is bounded (values between -1 and 1)
+2. Allows nearby positions to be similar
+3. Allows the model to learn "position 5 is 3 steps after position 2"
+4. Works for any sequence length
+
+### Setup: Tiny Example
+
+Let's use:
+- d_model = 4 (just 4 dimensions, for clarity)
+- Positions 0, 1, 2, 3, 4
+
+The formula:
+```
+PE(pos, 2i)   = sin(pos / 10000^(2i/d_model))
+PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+```
+
+### Computing the Wavelengths
+
+First, let's understand the denominators:
+
+```
+d_model = 4
+
+Dimension 0 (i=0): 10000^(2*0/4) = 10000^0 = 1
+Dimension 1 (i=0): 10000^(2*0/4) = 10000^0 = 1
+  → wavelength = 2π ≈ 6.28 positions
+
+Dimension 2 (i=1): 10000^(2*1/4) = 10000^0.5 = 100
+Dimension 3 (i=1): 10000^(2*1/4) = 10000^0.5 = 100
+  → wavelength = 2π * 100 ≈ 628 positions
+```
+
+So dimensions 0-1 cycle every ~6 positions (FAST)
+And dimensions 2-3 cycle every ~628 positions (SLOW)
+
+### Computing Each Position's Encoding
+
+```
+Position 0:
+  dim 0: sin(0 / 1)   = sin(0)    = 0.000
+  dim 1: cos(0 / 1)   = cos(0)    = 1.000
+  dim 2: sin(0 / 100) = sin(0)    = 0.000
+  dim 3: cos(0 / 100) = cos(0)    = 1.000
+
+  PE(0) = [0.000, 1.000, 0.000, 1.000]
+
+Position 1:
+  dim 0: sin(1 / 1)   = sin(1)    = 0.841
+  dim 1: cos(1 / 1)   = cos(1)    = 0.540
+  dim 2: sin(1 / 100) = sin(0.01) = 0.010
+  dim 3: cos(1 / 100) = cos(0.01) = 1.000
+
+  PE(1) = [0.841, 0.540, 0.010, 1.000]
+
+Position 2:
+  dim 0: sin(2)       = 0.909
+  dim 1: cos(2)       = -0.416
+  dim 2: sin(0.02)    = 0.020
+  dim 3: cos(0.02)    = 1.000
+
+  PE(2) = [0.909, -0.416, 0.020, 1.000]
+
+Position 3:
+  dim 0: sin(3)       = 0.141
+  dim 1: cos(3)       = -0.990
+  dim 2: sin(0.03)    = 0.030
+  dim 3: cos(0.03)    = 1.000
+
+  PE(3) = [0.141, -0.990, 0.030, 1.000]
+
+Position 4:
+  dim 0: sin(4)       = -0.757
+  dim 1: cos(4)       = -0.654
+  dim 2: sin(0.04)    = 0.040
+  dim 3: cos(0.04)    = 0.999
+
+  PE(4) = [-0.757, -0.654, 0.040, 0.999]
+```
+
+### Visualizing the Pattern
+
+```
+Position | Dim 0   Dim 1  | Dim 2   Dim 3
+         | (fast)  (fast) | (slow)  (slow)
+---------|----------------|----------------
+    0    |  0.00   1.00   |  0.00   1.00
+    1    |  0.84   0.54   |  0.01   1.00
+    2    |  0.91  -0.42   |  0.02   1.00
+    3    |  0.14  -0.99   |  0.03   1.00
+    4    | -0.76  -0.65   |  0.04   1.00
+    5    | -0.96   0.28   |  0.05   1.00
+    6    | -0.28   0.96   |  0.06   1.00  ← dims 0-1 nearly back to start!
+```
+
+**Key observation**:
+- Dims 0-1 cycle rapidly (sin/cos complete a cycle around position 6)
+- Dims 2-3 barely change (they'd take ~628 positions to cycle)
+
+### Property 1: All Values Bounded
+
+Every value is between -1 and 1 (sin and cos always are).
+
+This means positional encodings don't dominate the learned embeddings:
+```
+Word embedding for "cat": [0.5, -0.3, 0.8, 0.1, ...]  (values typically small)
+Positional encoding:      [0.84, 0.54, 0.01, 1.0]    (also small!)
+
+Combined: [0.5+0.84, -0.3+0.54, ...]  ← both contribute roughly equally
+```
+
+### Property 2: Nearby Positions Are Similar
+
+Let's compute distances:
+```
+Distance(PE(0), PE(1)) = √[(0-0.84)² + (1-0.54)² + (0-0.01)² + (1-1)²]
+                       = √[0.71 + 0.21 + 0.0001 + 0]
+                       = √0.92 ≈ 0.96
+
+Distance(PE(0), PE(3)) = √[(0-0.14)² + (1-(-0.99))² + (0-0.03)² + (1-1)²]
+                       = √[0.02 + 3.96 + 0.001 + 0]
+                       = √3.98 ≈ 2.0
+
+Distance(PE(0), PE(100)) = √[... + (0-0.86)² + (1-0.51)²]  (slow dims differ too!)
+                         ≈ much larger
+```
+
+**Nearby positions have similar encodings; distant positions have different encodings.**
+
+### Property 3: Relative Positions via Linear Transform
+
+Here's the magical property. For any fixed offset k, there exists a matrix M_k such that:
+
+```
+PE(pos + k) = M_k × PE(pos)
+```
+
+This is because of the trigonometric identities:
+```
+sin(a + b) = sin(a)cos(b) + cos(a)sin(b)
+cos(a + b) = cos(a)cos(b) - sin(a)sin(b)
+```
+
+**For k=1 (shifting by one position)**:
+
+```
+PE(pos + 1) for dims 0-1:
+
+sin(pos + 1) = sin(pos)cos(1) + cos(pos)sin(1)
+cos(pos + 1) = cos(pos)cos(1) - sin(pos)sin(1)
+
+In matrix form:
+[sin(pos+1)]   [cos(1)   sin(1) ] [sin(pos)]
+[cos(pos+1)] = [-sin(1)  cos(1) ] [cos(pos)]
+
+             = [0.54   0.84] [sin(pos)]
+               [-0.84  0.54] [cos(pos)]
+```
+
+**This is a ROTATION MATRIX!** Shifting by 1 position = rotating in the (sin, cos) plane.
+
+The model can learn this matrix to reason about relative positions:
+- "What's 3 positions back?" → multiply by M_{-3}
+- "Is position j close to position i?" → compare rotated vectors
+
+### Implications for Learning
+
+**The model doesn't need to memorize all position relationships!**
+
+Instead of learning:
+```
+"position 5 relates to position 2 in this way"
+"position 100 relates to position 97 in this way"
+"position 1000 relates to position 997 in this way"
+```
+
+The model can learn ONE transformation ("shift by 3") that works for ALL positions:
+```
+"k positions back" = apply M_{-k}
+```
+
+This is why sinusoidal encodings **generalize to longer sequences** than seen during training.
+
+---
+
+## Application to Cricket Ball-by-Ball Prediction
+
+### The Standard NLP Positional Encoding
+
+In language:
+```
+Position 0 → "The"
+Position 1 → "cat"
+Position 2 → "sat"
+```
+
+Position just means "index in sequence."
+
+### Cricket Has Richer Structure
+
+In cricket, a ball has multiple "positions":
+
+```
+Ball example:
+- Absolute position: Ball 47 of the innings
+- Ball in over: 5th ball of the over (ball 47 = over 7, ball 5)
+- Over number: Over 7 of 20
+- Phase: Death overs (overs 16-20)
+- Batsman's ball: This is the 23rd ball the batsman has faced
+- Bowler's ball: This is the 18th ball the bowler has bowled
+```
+
+Each of these "positions" provides different information!
+
+### Multi-Dimensional Positional Encoding for Cricket
+
+Instead of single sinusoidal encoding, we could use:
+
+```python
+def cricket_positional_encoding(ball):
+    PE = []
+
+    # 1. Absolute ball position (standard sinusoidal)
+    PE_absolute = sinusoidal(ball.absolute_position, d=128)
+    PE.append(PE_absolute)
+
+    # 2. Ball-in-over position (1-6, learned embedding might be better)
+    PE_ball_in_over = sinusoidal(ball.ball_in_over, d=32)
+    # or: PE_ball_in_over = learned_embedding(ball.ball_in_over)
+    PE.append(PE_ball_in_over)
+
+    # 3. Over number (0-19 for T20)
+    PE_over = sinusoidal(ball.over_number, d=64)
+    PE.append(PE_over)
+
+    # 4. Phase encoding (powerplay=0, middle=1, death=2)
+    PE_phase = learned_embedding(ball.phase)  # Just 3 values, learn them
+    PE.append(PE_phase)
+
+    # Concatenate all
+    return concat(PE)  # Total: 128 + 32 + 64 + 32 = 256 dims
+```
+
+### Why This Helps
+
+**Standard sinusoidal for absolute position**:
+- Ball 47 can attend to ball 41 and know "that was 6 balls ago" (same bowler's last over)
+- The linear transform property helps!
+
+**Ball-in-over position (1-6)**:
+- Ball 1 of an over is different from ball 6
+- First ball: batsman facing new bowler, adjusting
+- Last ball: bowler's final chance for the over
+
+```
+Attention might learn:
+"If I'm ball 6, attend strongly to ball 1 of same over"
+  → understand the bowler's plan for the over
+  → detect dot-ball pressure building
+```
+
+**Over number (0-19)**:
+- Over 1 (powerplay) is very different from over 18 (death)
+- Even if same batsman/bowler combo, strategy differs
+
+```
+Same batsman + bowler:
+  Over 2: Batsman defensive, survival mode
+  Over 18: Same batsman attacking, looking for boundaries
+
+The over positional encoding helps distinguish these!
+```
+
+**Phase encoding**:
+- Explicit signal: "we're in death overs"
+- Model doesn't need to LEARN that overs 16-20 are special
+
+### What Attention Patterns Might Emerge
+
+With these rich positional encodings, attention heads might specialize:
+
+```
+Head 1: "Same over" attention
+  - Ball 6 attends strongly to balls 1-5 of same over
+  - Uses: Ball-in-over encoding to identify same over
+
+Head 2: "Same bowler" attention
+  - Current ball attends to all balls by same bowler
+  - Uses: Absolute position to know "6 balls ago = same bowler"
+
+Head 3: "Same batsman" attention
+  - Current ball attends to all balls faced by current batsman
+  - Uses: Batsman embedding (not positional, but relevant)
+
+Head 4: "Phase context" attention
+  - Powerplay balls attend to other powerplay balls
+  - Death overs attend to other death-over patterns
+  - Uses: Phase encoding
+```
+
+### Learned vs Fixed Encodings for Cricket
+
+**Sinusoidal (fixed) works well for**:
+- Absolute ball position (hundreds of positions)
+- Over number (20 distinct values, but linear relationship matters)
+
+**Learned embeddings might work better for**:
+- Ball-in-over (only 6 values, each qualitatively different)
+- Phase (only 3 values, might have complex meaning)
+
+```python
+class CricketPositionalEncoding(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+
+        # Fixed sinusoidal for absolute position
+        self.register_buffer('PE_absolute',
+                             create_sinusoidal(max_balls=300, d=256))
+
+        # Learned for ball-in-over (6 positions)
+        self.ball_in_over_embed = nn.Embedding(6, 64)
+
+        # Learned for over (20 overs in T20)
+        self.over_embed = nn.Embedding(20, 64)
+
+        # Learned for phase (3 phases)
+        self.phase_embed = nn.Embedding(3, 32)
+
+        # Project to d_model
+        self.proj = nn.Linear(256 + 64 + 64 + 32, d_model)
+
+    def forward(self, ball_positions, balls_in_over, overs, phases):
+        pe_abs = self.PE_absolute[ball_positions]  # (batch, seq, 256)
+        pe_bio = self.ball_in_over_embed(balls_in_over)  # (batch, seq, 64)
+        pe_over = self.over_embed(overs)  # (batch, seq, 64)
+        pe_phase = self.phase_embed(phases)  # (batch, seq, 32)
+
+        combined = torch.cat([pe_abs, pe_bio, pe_over, pe_phase], dim=-1)
+        return self.proj(combined)  # (batch, seq, d_model)
+```
+
+### Key Insight for Cricket
+
+**Cricket has multiple natural notions of "position"** — unlike text where position is just index.
+
+By giving the model rich positional information:
+1. It can learn attention patterns specific to overs (balls 1-6)
+2. It can recognize phase-specific strategies
+3. It can connect balls by the same bowler (6 positions apart in same over)
+
+This is **domain knowledge encoded as inductive bias** — we're telling the model "these positional relationships matter" rather than making it discover them from scratch.
+
+---
+
 ## Summary: Attention's Role
 
 | Aspect | What Attention Does |
