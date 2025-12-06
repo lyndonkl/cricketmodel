@@ -1030,6 +1030,126 @@ But this has problems:
 ["[CLS]", "I", "love", "this", "movie"] → use emb_0' (CLS) → predict "positive"
 ```
 
+### Critical Clarification: Attention IS How Information Flows
+
+**The last position doesn't start with all the information. It GAINS information through attention!**
+
+```
+BEFORE attention (just embeddings):
+  emb_0 = embedding("The") + PE(0)   → knows only about "The"
+  emb_1 = embedding("cat") + PE(1)   → knows only about "cat"
+  emb_2 = embedding("sat") + PE(2)   → knows only about "sat"
+
+  At this point, emb_2 knows NOTHING about "The" or "cat"!
+
+AFTER attention:
+  emb_0' = attention(emb_0, [emb_0])              → still just "The"
+  emb_1' = attention(emb_1, [emb_0, emb_1])       → "cat" + info from "The"
+  emb_2' = attention(emb_2, [emb_0, emb_1, emb_2]) → "sat" + info from ALL
+
+  NOW emb_2' contains information from the whole sequence!
+```
+
+**Attention is not optional during inference — it IS the mechanism that gathers information.**
+
+### Why We Must Run Attention During Inference
+
+You might think: "If we just want emb_2', and it needs info from emb_0 and emb_1, can't we cache that?"
+
+**Answer**: We DO cache, but we still need to compute attention.
+
+```
+Inference step-by-step (generating "The cat sat on"):
+
+Step 1: Input ["The"]
+  - Compute attention for position 0
+  - Get emb_0'
+  - Project to vocab → predict "cat"
+  - Cache: K_0, V_0 for position 0
+
+Step 2: Input ["The", "cat"]
+  - Position 0: Use cached K_0, V_0 (don't recompute!)
+  - Position 1: Compute new K_1, V_1
+  - Compute attention for position 1: attends to positions 0,1
+  - Get emb_1'
+  - Project to vocab → predict "sat"
+  - Cache: K_0, V_0, K_1, V_1
+
+Step 3: Input ["The", "cat", "sat"]
+  - Positions 0,1: Use cached keys/values
+  - Position 2: Compute new K_2, V_2
+  - Compute attention for position 2: attends to positions 0,1,2
+  - Get emb_2'
+  - Project to vocab → predict "on"
+```
+
+**Key insight**: We cache the Keys and Values, but we MUST compute attention for the new position. The new position needs to "look at" all previous positions to gather their information.
+
+### Training vs Inference: What's Different?
+
+| Aspect | Training | Inference |
+|--------|----------|-----------|
+| Input | Full sequence known | Build sequence token-by-token |
+| Attention computed for | All positions (in parallel) | New position only (using cached K,V) |
+| Outputs used | ALL positions (each predicts next) | Only LAST position |
+| Gradients | Yes (backprop through attention) | No |
+| KV Cache | Not needed (see full sequence) | Essential (avoid recomputation) |
+
+**Training example**:
+```
+Input:  ["The", "cat", "sat", "on"]
+Target: ["cat", "sat", "on", "the"]  (shifted by 1)
+
+Compute attention for ALL positions simultaneously:
+  Position 0 → predicts "cat" (loss computed)
+  Position 1 → predicts "sat" (loss computed)
+  Position 2 → predicts "on"  (loss computed)
+  Position 3 → predicts "the" (loss computed)
+
+Total loss = sum of all position losses
+Backpropagate through everything
+```
+
+**Inference example**:
+```
+Start: ["The"]
+  Attention for pos 0 → predict "cat"
+
+Now: ["The", "cat"]
+  Attention for pos 1 (using cached pos 0) → predict "sat"
+
+Now: ["The", "cat", "sat"]
+  Attention for pos 2 (using cached pos 0,1) → predict "on"
+
+...continue until done
+```
+
+### The KV Cache Explained
+
+Why cache Keys and Values specifically?
+
+```
+Attention(Q, K, V) = softmax(Q @ K^T / √d) @ V
+
+For position n attending to positions 0...n:
+  Q_n = new (depends on current token)
+  K_{0:n} = [K_0, K_1, ..., K_n]  ← K_0 to K_{n-1} are UNCHANGED
+  V_{0:n} = [V_0, V_1, ..., V_n]  ← V_0 to V_{n-1} are UNCHANGED
+
+Only K_n and V_n are new. So cache K_{0:n-1} and V_{0:n-1}!
+```
+
+This is why large language models need significant memory during inference — they're storing K and V for every layer, every head, for the entire context.
+
+```
+Memory for KV cache:
+  = 2 (K and V) × num_layers × num_heads × seq_length × head_dim × bytes_per_float
+
+For a 32-layer model with 32 heads, d_head=128, seq_len=4096, float16:
+  = 2 × 32 × 32 × 4096 × 128 × 2 bytes
+  = 2.1 GB just for KV cache!
+```
+
 ### Cricket Implication
 
 For ball-by-ball prediction:
