@@ -26,6 +26,46 @@ Total possible combinations = infinite (continuous space)
 But roughly: 20^512 ≈ 10^667 distinct points if we discretized
 ```
 
+#### Where Do These Numbers Come From?
+
+**The 20^512 calculation**:
+```
+If each dimension can take values from -10 to +10 (a range of 20):
+  - Dimension 1: 20 choices
+  - Dimension 2: 20 choices
+  - ...
+  - Dimension 512: 20 choices
+
+Total combinations = 20 × 20 × 20 × ... (512 times) = 20^512
+
+This is like a combination lock with 512 dials, each with 20 positions.
+```
+
+**Converting 20^512 to 10^667**:
+```
+20^512 = (2 × 10)^512
+       = 2^512 × 10^512
+
+Now, 2^512 ≈ 10^154  (because 2^10 ≈ 10^3, so 2^512 ≈ 10^(512×3/10) = 10^154)
+
+More precisely: log₁₀(2^512) = 512 × log₁₀(2) = 512 × 0.301 ≈ 154
+
+So: 20^512 = 10^154 × 10^512 = 10^(154+512) = 10^666 ≈ 10^667
+```
+
+**The atoms comparison**:
+```
+Observable universe: ~10^80 atoms (this is a physics estimate)
+
+If each atom were a unique 512-dim vector:
+  Fraction of space filled = (number of atoms) / (total possible vectors)
+                           = 10^80 / 10^667
+                           = 10^(80-667)
+                           = 10^(-587)
+
+10^(-587) is essentially zero — it has 586 zeros after the decimal point!
+```
+
 This is an incomprehensibly vast space. If every atom in the observable universe (~10^80) were a 512-dimensional vector, we'd still only fill 10^80 / 10^667 = 10^(-587) of the space — essentially zero.
 
 ### Why Real Data Doesn't Fill This Space
@@ -44,6 +84,73 @@ Total possible images: 256^784 ≈ 10^1888
 Actual handwritten digits: Maybe ~10^7 variations
 ```
 
+#### Why Rows × Columns = Dimensions?
+
+**An image is just a list of numbers!**
+
+```
+A 28×28 grayscale image:
+
+  ┌─────────────────────────────┐
+  │ pixel(0,0)  pixel(0,1) ...  │  row 0: 28 pixels
+  │ pixel(1,0)  pixel(1,1) ...  │  row 1: 28 pixels
+  │    ...         ...          │    ...
+  │ pixel(27,0) pixel(27,1)...  │  row 27: 28 pixels
+  └─────────────────────────────┘
+
+Total pixels = 28 rows × 28 columns = 784 pixels
+
+Each pixel is a number (0-255 for grayscale).
+So the image IS a vector of 784 numbers:
+
+  image = [pixel(0,0), pixel(0,1), ..., pixel(27,27)]
+        = [127, 0, 0, 0, 45, 200, ...]  (784 numbers)
+```
+
+**The key insight**: We "flatten" the 2D grid into a 1D list.
+```
+2D image (28×28 grid)  →  1D vector (784 numbers)
+
+This is why "dimension" = total number of pixels = rows × columns
+```
+
+#### Where Does 256^784 ≈ 10^1888 Come From?
+
+```
+Each pixel can be: 0, 1, 2, 3, ..., 254, 255  (256 possible values)
+
+With 784 independent pixels:
+  Pixel 1: 256 choices
+  Pixel 2: 256 choices
+  ...
+  Pixel 784: 256 choices
+
+Total images = 256 × 256 × ... (784 times) = 256^784
+
+Converting to powers of 10:
+  256^784 = (2^8)^784 = 2^(8×784) = 2^6272
+
+  log₁₀(2^6272) = 6272 × log₁₀(2) = 6272 × 0.301 ≈ 1888
+
+So 256^784 ≈ 10^1888
+```
+
+#### Where Does "~10^7 Variations" Come From?
+
+This is an **estimate** based on:
+```
+MNIST dataset: 60,000 training + 10,000 test = 70,000 images total
+But there are more possible handwritten digits than what's in the dataset.
+
+Rough estimate:
+  - 10 digit classes (0-9)
+  - Maybe ~1 million (10^6) recognizably different ways to write each digit
+  - Total: 10 × 10^6 = 10^7 variations
+
+This is hand-wavy! The exact number doesn't matter.
+What matters: 10^7 << 10^1888 (vastly smaller)
+```
+
 Why? Because:
 1. **Physical constraints**: Ink flows continuously, not randomly
 2. **Semantic constraints**: A "7" must have certain stroke patterns
@@ -59,6 +166,32 @@ Imagine:
   - That's a 20-dimensional manifold embedded in 784-dimensional space
 ```
 
+#### Where Does "~20-Dimensional" Come From?
+
+This is also an **estimate** from research. The reasoning:
+
+```
+What can you vary to produce different "7"s?
+
+1. Horizontal position (shift left/right)     → 1 dimension
+2. Vertical position (shift up/down)          → 1 dimension
+3. Scale (bigger/smaller)                     → 1 dimension
+4. Rotation (tilted left/right)               → 1 dimension
+5. Slant (italic vs upright)                  → 1 dimension
+6. Stroke thickness                           → 1 dimension
+7. Top bar length                             → 1 dimension
+8. Serif presence/size                        → 1 dimension
+9. Hook at bottom (some 7s have it)           → 1 dimension
+10. Curvature of stroke                       → 1 dimension
+... maybe 10-20 more subtle variations
+
+Total: roughly 10-30 "degrees of freedom"
+```
+
+**Empirical evidence**: Techniques like PCA (Principal Component Analysis) on MNIST show that ~20-30 principal components capture most of the variance in digit images.
+
+**The point**: The "true" dimensionality (~20) is MUCH smaller than the pixel dimensionality (784).
+
 #### Example 2: Why English Sentences Cluster
 
 Now let's understand why English sentences form structured pathways.
@@ -72,6 +205,59 @@ Random combinations: 50,000^10 = 10^47 possible sequences
 How many are valid English? Maybe 10^15 (generous estimate)
 
 Fraction of valid sentences: 10^15 / 10^47 = 10^(-32)
+```
+
+#### Where Do These Numbers Come From?
+
+**50,000^10 = 10^47**:
+```
+If you have 50,000 words and make a 10-word sentence:
+  Position 1: 50,000 choices (any word)
+  Position 2: 50,000 choices (any word)
+  ...
+  Position 10: 50,000 choices (any word)
+
+Total sequences = 50,000 × 50,000 × ... (10 times) = 50,000^10
+
+Converting to powers of 10:
+  50,000 = 5 × 10^4
+
+  50,000^10 = (5 × 10^4)^10
+            = 5^10 × 10^40
+            = 9,765,625 × 10^40
+            ≈ 10^7 × 10^40
+            = 10^47
+```
+
+**The 10^15 estimate for valid sentences**:
+```
+This is a rough guess! The reasoning:
+
+English speakers produce maybe:
+  - ~10,000 sentences per person per day
+  - ~8 billion people (but not all English speakers)
+  - ~1 billion English speakers × 10,000 sentences/day × 365 days × 100 years
+  ≈ 10^18 total sentences ever spoken
+
+But many are repeats ("Hello", "How are you?"), so unique sentences << 10^18.
+
+Also, most "valid" sentences have never been spoken.
+
+10^15 is a generous upper bound on "grammatically valid 10-word sentences."
+
+The exact number doesn't matter — what matters is:
+  10^15 << 10^47 (valid sentences are a tiny fraction of all sequences)
+```
+
+**The 10^(-32) calculation**:
+```
+Fraction = (valid sentences) / (all sequences)
+         = 10^15 / 10^47
+         = 10^(15-47)
+         = 10^(-32)
+
+10^(-32) means: for every 100,000,000,000,000,000,000,000,000,000,000 random
+sequences, only ONE is valid English. That's a 1 followed by 32 zeros!
 ```
 
 Virtually NO random sequence is valid English!
@@ -185,6 +371,78 @@ These 6 points form a "configuration" in the manifold.
 The sequence (p₀, p₁, p₂, p₃, p₄, p₅) can be thought of as a path
 or as a point in a 6×512 = 3072-dimensional space.
 ```
+
+#### Clarification: Is "Path" Literal or Metaphorical?
+
+**Both interpretations are valid, but they mean different things!**
+
+**Interpretation 1: Metaphorical Path (the sentence "traverses" through concepts)**
+
+This is a loose analogy:
+```
+Reading "The cat sat on the mat" feels like moving through ideas:
+  "The" → (article, something coming)
+  "cat" → (animal, subject established)
+  "sat" → (action, past tense)
+  ...
+
+This is NOT a literal connected path on the manifold.
+The 6 points are NOT necessarily adjacent in embedding space!
+```
+
+**Interpretation 2: A Sequence of 6 Points (NOT necessarily connected)**
+
+More precisely:
+```
+Each word embedding is an INDEPENDENT point in 512-dim space:
+
+  p₀ = embedding("The") + PE(0)   ← somewhere in 512-dim space
+  p₁ = embedding("cat") + PE(1)   ← somewhere ELSE in 512-dim space
+  p₂ = embedding("sat") + PE(2)   ← somewhere ELSE
+
+These 6 points are generally NOT connected by a line!
+They're just 6 separate locations in the 512-dimensional space.
+
+     p₀ •
+
+                  • p₂
+         • p₁
+                       • p₄
+              • p₃
+                            • p₅
+
+They're scattered, not along a road.
+```
+
+**Interpretation 3: The Sentence as ONE Point in Higher-Dimensional Space**
+
+This is the most precise view:
+```
+Concatenate all 6 embeddings:
+  sentence_vector = [p₀, p₁, p₂, p₃, p₄, p₅]
+                  = 6 × 512 = 3072 numbers
+
+NOW the entire sentence is ONE POINT in 3072-dimensional space!
+
+In THIS space:
+  "The cat sat on the mat"     → point A in 3072-dim
+  "The dog sat on the rug"     → point B in 3072-dim (close to A!)
+  "Quantum physics is complex" → point C in 3072-dim (far from A)
+```
+
+**The Manifold of Sentences**:
+
+Valid 6-word English sentences form a **manifold** in this 3072-dim space:
+```
+Nearby sentences (small edits) → nearby points:
+  "The cat sat on the mat" → "The cat sat on the rug"
+  (change one word → small move in 3072-dim space)
+
+This IS like a path: you can smoothly morph one valid sentence
+into another valid sentence by changing words one at a time.
+```
+
+So "path" is **metaphorical for word positions** but **more literal for the manifold of sentences**.
 
 After attention, each point moves based on its relationships with other points:
 ```
@@ -348,6 +606,39 @@ Position 1 "ships" α₂₁ fraction of its value to position 2
 The attention matrix defines HOW MUCH value to transport WHERE.
 ```
 
+### Clarification: Keys, Values, and Queries in Transport
+
+You correctly noticed something subtle! Let me clarify:
+
+**The Attention Computation**:
+```
+Step 1: Compute weights using Queries and Keys
+  weights = softmax(Q @ K^T)
+  α_ij = how much Query i matches Key j
+
+Step 2: Use weights to combine Values
+  output_i = Σⱼ αᵢⱼ · Vⱼ
+```
+
+**So what's being "transported"?**
+
+```
+Keys: Determine WHICH values are relevant (used for matching)
+Values: Contain the actual INFORMATION being transported
+Queries: Determine WHERE the information goes (the "destination")
+
+The transport is:
+  FROM: Value vectors (the "cargo")
+  TO: Query positions (the "destinations")
+  WEIGHTED BY: Query-Key similarity (the "shipping instructions")
+```
+
+**More Precise Statement**:
+```
+"Attention transports VALUE information to QUERY positions,
+ with transport amounts determined by QUERY-KEY similarity."
+```
+
 ### Why "On the Manifold"?
 
 The points (value vectors) live on a manifold. The transport map moves information along the manifold:
@@ -363,7 +654,21 @@ Before Transport:           After Transport:
   V₁ •      (low α₂₁)         V₁ •
 
 Position 2's output "moved toward" position 0 because α₂₀ was high.
-The information flowed from V₀'s location on the manifold to output₂'s location.
+The VALUE information from V₀ flowed to the output at QUERY position 2.
+```
+
+**Why mention Keys at all?**
+
+Because Keys and Values come from the same positions:
+```
+Position 0 provides: K₀ (for matching) and V₀ (information content)
+Position 1 provides: K₁ (for matching) and V₁ (information content)
+...
+
+So when we say "transport from Keys/Values to Queries", we mean:
+  - The SOURCE positions provide both Keys and Values
+  - The DESTINATION positions are where the Queries are
+  - Keys determine relevance; Values are what actually gets transported
 ```
 
 ---
