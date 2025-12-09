@@ -141,17 +141,121 @@ PR = (Σᵢ λᵢ)² / Σᵢ λᵢ²
 Where λᵢ are eigenvalues of the covariance matrix
 ```
 
-#### Intuition:
+But what does this actually mean? Let's build it from first principles.
+
+#### Step 1: What Are We Measuring?
+
+We want to know: **How many dimensions does the neural network actually USE?**
+
+A network might have 512-dimensional hidden states, but if 500 of those dimensions are always near zero, it's really only using ~12 dimensions.
+
+#### Step 2: Covariance Matrix of WHAT?
+
+The covariance matrix is computed over **the collection of hidden states the network produces**.
+
+**Concretely for HRM:**
+
+```
+Run the model on many different inputs (e.g., 1000 Sudoku puzzles)
+At each timestep, record the hidden state z (a 512-dim vector, say)
+
+For L-module, collect: z_L after step 1, step 2, ..., for all puzzles
+For H-module, collect: z_H after cycle 1, cycle 2, ..., for all puzzles
+
+This gives you a matrix of hidden states:
+
+Z = [ z₁ ]      ← hidden state from puzzle 1, step 1
+    [ z₂ ]      ← hidden state from puzzle 1, step 2
+    [ z₃ ]      ← hidden state from puzzle 2, step 1
+    [ ... ]
+    [ zₙ ]      ← hidden state from puzzle 1000, final step
+
+Z has shape: (n_samples × hidden_dim), e.g., (50000 × 512)
+```
+
+**The covariance matrix Σ** measures how the dimensions vary together:
+
+```
+Σ = (1/n) Σᵢ (zᵢ - μ)(zᵢ - μ)ᵀ
+
+Where μ = mean of all hidden states
+
+Σ has shape: (hidden_dim × hidden_dim), e.g., (512 × 512)
+
+Σ[j,k] = "How much do dimensions j and k vary together?"
+```
+
+#### Step 3: Eigenvalues Tell You About Spread
+
+The eigenvalues λ₁, λ₂, ..., λ_d of the covariance matrix tell you **how much variance exists along each principal direction**:
+
+```
+Principal Component Analysis (PCA) view:
+
+λ₁ = variance along the "most important" direction
+λ₂ = variance along the "second most important" direction
+...
+λ_d = variance along the "least important" direction
+
+If all λᵢ are equal: data spreads equally in all directions (sphere)
+If λ₁ >> λ₂ >> ... : data is concentrated along first few directions (ellipse/tube)
+```
+
+#### Step 4: Participation Ratio Formula
+
+```
+PR = (Σᵢ λᵢ)² / Σᵢ λᵢ²
+```
+
+**Why this formula?**
+
+Case 1: All variance in ONE dimension
+```
+λ = [1, 0, 0, ..., 0]
+
+PR = (1)² / (1²) = 1
+
+"Only 1 dimension participates"
+```
+
+Case 2: Variance EQUALLY spread across d dimensions
+```
+λ = [1/d, 1/d, 1/d, ..., 1/d]   (d equal values)
+
+PR = (d × 1/d)² / (d × (1/d)²)
+   = 1² / (d × 1/d²)
+   = 1 / (1/d)
+   = d
+
+"All d dimensions participate equally"
+```
+
+Case 3: Variance in k dimensions, zero in others
+```
+λ = [1/k, 1/k, ..., 1/k, 0, 0, ..., 0]   (k nonzero, d-k zero)
+
+PR = (k × 1/k)² / (k × (1/k)²)
+   = 1 / (1/k)
+   = k
+
+"k dimensions participate"
+```
+
+**PR is the "effective number of dimensions" the representation uses.**
+
+#### Intuition Summary
 
 **Low PR** (e.g., 1-10):
 - Variance concentrated in few dimensions
 - Representation is "compressed"
 - Like a thin tube in high-dimensional space
+- The network has learned a specialized, efficient encoding
 
 **High PR** (e.g., 50-100):
 - Variance spread across many dimensions
 - Representation is "expansive"
 - Like a fat blob in high-dimensional space
+- The network uses many dimensions flexibly
 
 ### Why Dimensionality Matters for Reasoning
 
@@ -503,3 +607,341 @@ Evolution continues until equilibrium or halting criterion
 - Adaptive duration to reach the solution manifold
 
 This matches how the brain organizes computation - and explains why HRM succeeds where fixed-depth models fail.
+
+---
+
+## Concrete Example: Text Completion on the Manifold
+
+Let's visualize what the L-module and H-module are doing on the data manifold using a text completion task. This makes the abstract geometry concrete.
+
+### The Task
+
+Complete the sentence: "The chef carefully _____ the ingredients before _____"
+
+### The Embedding Space View
+
+Each partial completion lives as a point in high-dimensional embedding space. Let's project down to 2D for visualization:
+
+```
+                          EMBEDDING SPACE (simplified to 2D)
+
+    "cooked"●                                    ●"assembled"
+              ↖                                ↗
+                ↖                            ↗
+    "prepared"●───↖──────────────────────↗───●"mixed"
+                    ↖                  ↗
+                      ↖    ●START    ↗
+                        ↖   ↓      ↗
+                          ↘↓    ↗
+                           ●●●●
+                          "chopped"
+                          "sliced"
+                          "diced"
+                          "minced"
+                          (cluster of similar meanings)
+```
+
+### What L-Module Does: Local Manifold Movement
+
+The L-module moves the representation **locally** toward coherent completions:
+
+```
+CYCLE 1, L-module steps (H says: "food preparation context"):
+
+Step 1: START → moves toward cooking verbs region
+        z_L: [0.5, 0.3] → [0.4, 0.5]
+
+Step 2: Refines toward "cutting" subregion (based on "carefully")
+        z_L: [0.4, 0.5] → [0.3, 0.6]
+
+Step 3: Converges to "chopped" vicinity
+        z_L: [0.3, 0.6] → [0.25, 0.65]
+
+Step 4: Equilibrium reached
+        z_L: [0.25, 0.65] → [0.25, 0.65]  (no more movement)
+
+L-module converged! It found a local attractor: the "precise cutting" region
+```
+
+**Geometrically**: L-module followed the gradient on the manifold toward the nearest coherent completion, given H's context.
+
+### What H-Module Does: Global Manifold Steering
+
+The H-module **changes which region** of the manifold L-module targets:
+
+```
+CYCLE 1 RESULT:
+L converged to "chopped" region
+H observes: "Good, but what comes after chopping?"
+
+H-module update:
+z_H: "food prep" → "food prep + sequence awareness"
+
+CYCLE 2, L-module steps (H now says: "need temporal sequence"):
+
+Step 1: L restarts from "chopped" but now seeks what comes AFTER
+        z_L: [0.25, 0.65] → [0.3, 0.7]  (moving toward "cooking" region)
+
+Step 2: Refines toward cooking actions
+        z_L: [0.3, 0.7] → [0.4, 0.75]
+
+Step 3: Converges to "cooking" vicinity
+        z_L: [0.4, 0.75] → [0.45, 0.78]
+
+Step 4: Equilibrium reached
+        z_L: [0.45, 0.78] → [0.45, 0.78]
+
+L-module converged to a DIFFERENT equilibrium because H changed!
+```
+
+**Geometrically**: H-module shifted the "target basin" on the manifold. L-module descended into a different valley.
+
+### The Full Picture
+
+```
+                     MANIFOLD TRAJECTORY
+
+    "cooked"●
+              ↖
+                ↖  ←←←←←←←←←←←←←←←←←←←←●z_H² (sequence context)
+    "prepared"●───↖──────────────↗↗↗↗↗↗↗↗
+                    ↖          ↗
+                      ↖●START↗
+                        ↘↓  ↗
+                         ↘↓↗
+                          ●z_L* (Cycle 1: "chopped")
+                          ↓
+                          ↓ (H updates!)
+                          ↓
+                          ●───→→→●z_L** (Cycle 2: "cooking")
+
+Cycle 1: L descends to "chopped" equilibrium
+H updates: "Now think about what comes next"
+Cycle 2: L descends to "cooking" equilibrium (DIFFERENT basin!)
+
+Final output: "The chef carefully chopped the ingredients before cooking"
+```
+
+### Why This Requires Hierarchy
+
+**Without H-module** (simple iteration):
+```
+L keeps refining "chopped" → "sliced" → "diced" → "minced"
+Gets stuck in the "cutting verbs" basin
+Never realizes it needs to think about "what comes after"
+
+Output: "The chef carefully chopped the ingredients before chopping"
+        (Incoherent! Just repeated the same concept)
+```
+
+**With H-module**:
+```
+L converges to "chopped"
+H sees this and updates context: "OK, first blank filled, now second blank"
+L reconverges to "cooking" (different basin!)
+
+Output: "The chef carefully chopped the ingredients before cooking"
+        (Coherent! Different concepts for different blanks)
+```
+
+---
+
+## Concrete Example: Cricket Ball Sequence on the Manifold
+
+Now let's see the same dynamics with cricket ball-by-ball prediction.
+
+### The Task
+
+Predict outcome of ball 47.5 in a T20 chase:
+- Score: 142/4, Target: 165, Need 23 from 15 balls
+- Batsman A: 45(32), set and aggressive
+- Batsman B: 8(5), newer but capable
+- Bowler: Death specialist, bowling yorkers
+
+### The Cricket State Space
+
+Each match state is a point in embedding space. Different regions represent different "types" of situations:
+
+```
+                    CRICKET STATE MANIFOLD (2D projection)
+
+        "Desperate slog"●                    ●"Cruise control"
+                          ↖                ↗
+                            ↖            ↗
+        "Calculated risk"●────↖────────↗────●"Consolidation"
+                                ↖    ↗
+                        Need:   ●●●●
+                        23 from 15
+                        (we are HERE)
+                                ↓
+                "Tight finish"●●●●●●●●●●●●●●●●
+                (cluster of similar pressure situations)
+```
+
+### What L-Module Does: Tactical Analysis
+
+L-module analyzes the SPECIFIC delivery:
+
+```
+CYCLE 1, L-module steps (H says: "tight chase, maintain balance"):
+
+Step 1: Process match state
+        z_L encodes: "Need 1.53 RPB, 4 wickets in hand"
+        Moves toward "achievable but not easy" region
+
+Step 2: Process batsman matchup
+        z_L refines: "Set batsman vs death bowler"
+        Moves toward "contest is even" region
+
+Step 3: Process delivery expectations
+        z_L refines: "Yorker likely, boundary difficult"
+        Moves toward "rotate strike or defend" region
+
+Step 4: Converge to tactical assessment
+        z_L*: "Single most likely, boundary possible, wicket risk moderate"
+
+L-module equilibrium: P(0)=25%, P(1)=40%, P(2)=10%, P(4)=15%, P(W)=10%
+```
+
+**Geometrically**: L-module descended through the "tactical execution" manifold to find the most likely outcomes given current context.
+
+### What H-Module Does: Strategic Adjustment
+
+H-module considers the BIGGER picture:
+
+```
+After CYCLE 1:
+L found: "Singles are safe, boundaries risky but possible"
+
+H-module observes this AND considers strategic implications:
+
+H update computation:
+- "23 from 15 at 1 run per ball = 8 runs short"
+- "Need at least 2 boundaries in remaining balls"
+- "But losing wicket now would be catastrophic"
+- "Batsman A is set - he should take risks, not B"
+
+z_H update: "balanced" → "selective aggression from set batsman"
+
+CYCLE 2, L-module steps (H now says: "set batsman can attack"):
+
+Step 1: Reprocess with aggression bias
+        z_L shifts toward "attacking outcomes more likely"
+
+Step 2: BUT also incorporate yorker difficulty
+        z_L refines: "attack if overpitched, defend if perfect"
+
+Step 3: Integrate experience (set batsman handles pressure)
+        z_L refines: "experience reduces wicket probability"
+
+Step 4: New equilibrium
+        z_L**: "Attack with controlled risk"
+
+L-module NEW equilibrium: P(0)=20%, P(1)=35%, P(2)=12%, P(4)=25%, P(W)=8%
+```
+
+**Key change**: Boundary probability UP (15%→25%), wicket probability DOWN (10%→8%)
+
+H-module didn't change the FACTS - same match state. It changed the INTERPRETATION: "this batsman can afford to attack."
+
+### Visualizing the Cricket Manifold Trajectory
+
+```
+                    CRICKET MANIFOLD TRAJECTORY
+
+    "All-out attack"●
+                      ↖
+                        ↖
+    "Selective attack"●───●z_H² (strategic shift)
+                          ↑
+                          ↑ (H updates strategy!)
+                          ↑
+    "Conservative"●───────●z_H¹ (initial assessment)
+                          ↓
+                          ↓
+                START●    ↓
+                     ↘    ↓
+                       ↘  ↓
+                         ●z_L* (Cycle 1: balanced tactics)
+                         ↓
+                         ↓ (H says: "set batsman, attack")
+                         ↓
+                         ●→→→→●z_L** (Cycle 2: aggressive tactics)
+
+z_L* prediction:  P(4)=15%, P(W)=10%   (conservative)
+z_L** prediction: P(4)=25%, P(W)=8%    (aggressive for set batsman)
+```
+
+### The Dimensionality Story in Cricket
+
+**L-module (Low PR ≈ 30)** represents:
+- Specific tactical situations
+- Ball-by-ball probabilities
+- Immediate delivery analysis
+- Narrow, specialized processing
+
+```
+L-module dimensions might encode:
+- Dimension 1-5: Run probabilities (0,1,2,4,6)
+- Dimension 6-10: Wicket probabilities by type
+- Dimension 11-15: Shot type likelihoods
+- Dimension 16-20: Field position relevance
+- Dimension 21-30: Bowler-batsman matchup features
+
+Specialized! Each dimension has clear tactical meaning.
+```
+
+**H-module (High PR ≈ 90)** represents:
+- Strategic phase (powerplay, middle, death)
+- Risk tolerance (ahead/behind, wickets in hand)
+- Momentum and pressure
+- Long-range planning
+- FLEXIBLE, abstract concepts
+
+```
+H-module dimensions might encode:
+- Some dimensions: "Desperation level" (many dimensions, continuous)
+- Some dimensions: "Batsman confidence" (many dimensions, contextual)
+- Some dimensions: "Match turning point proximity"
+- Some dimensions: "Historical similar situations"
+- Some dimensions: "Team tendencies under pressure"
+- Many more dimensions: Abstract strategic concepts we can't name!
+
+Flexible! Uses many dimensions because strategy is complex and varied.
+```
+
+### Why Cricket NEEDS the Hierarchy
+
+**Ball 47.5 vs Ball 1.1:**
+
+```
+Ball 1.1 (opening ball of innings):
+- Context is generic
+- No pressure yet
+- Historical averages dominate
+- L-module: standard "first ball" equilibrium
+- H-module: generic "opening phase" strategy
+- ACT: halt after 1-2 segments (routine)
+
+Ball 47.5 (tight finish):
+- Context is highly specific
+- Extreme pressure
+- Every factor matters
+- L-module: needs multiple cycles to integrate all factors
+- H-module: continuously adjusting strategy as L provides tactical info
+- ACT: continue for 6+ segments (crucial decision)
+```
+
+**The hierarchy enables different AMOUNTS of reasoning for different situations** - exactly what cricket requires.
+
+### Summary: What Each Module Does to the Manifold
+
+| Module | Manifold Action | Cricket Analog |
+|--------|-----------------|----------------|
+| L-module | Descends toward local equilibrium | Analyzes THIS ball's tactics |
+| H-module | Shifts which equilibrium L targets | Adjusts overall strategy |
+| L convergence | Finds coherent tactical assessment | "Given strategy X, outcomes are Y" |
+| H update | Changes strategic context | "Actually, we should be more aggressive" |
+| Multiple cycles | Explores different strategy-tactic combos | "Try defensive... no, try attacking" |
+
+**The manifold view**: L-module does local gradient descent on the "coherent prediction" manifold. H-module moves the manifold itself (changes the landscape L descends on). Together, they navigate toward the "correct prediction" region through hierarchical search.
