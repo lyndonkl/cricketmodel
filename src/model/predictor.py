@@ -1,4 +1,4 @@
-"""Full cricket prediction model combining GAT and Transformer."""
+"""Full cricket prediction model combining hierarchical GAT and Transformer."""
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from ..embeddings import EmbeddingManager
 from .hierarchical import HierarchicalGAT
 from .temporal import TemporalTransformer
-from .graph import NUM_NODES, build_edge_index
 
 
 class CricketPredictor(nn.Module):
@@ -16,8 +15,8 @@ class CricketPredictor(nn.Module):
 
     Combines:
     1. Entity embeddings (players, venues, teams)
-    2. Hierarchical GAT for within-ball graph attention
-    3. Temporal Transformer for cross-ball attention
+    2. Hierarchical GAT for within-ball graph attention (17 nodes, 4 layers)
+    3. Temporal Transformer for cross-ball attention (specialized heads)
     4. Fusion layer for final prediction
     """
 
@@ -29,7 +28,6 @@ class CricketPredictor(nn.Module):
         num_outcomes: int = 7,
         hidden_dim: int = 128,
         gat_heads: int = 4,
-        gat_layers: int = 3,
         transformer_heads: int = 4,
         transformer_layers: int = 2,
         dropout: float = 0.1,
@@ -53,38 +51,37 @@ class CricketPredictor(nn.Module):
 
         # Node feature projections to hidden_dim
         self.node_projections = nn.ModuleDict({
-            # Global context
+            # Global context (Layer 1)
             "venue": nn.Linear(32, hidden_dim),
             "batting_team": nn.Linear(32, hidden_dim),
             "bowling_team": nn.Linear(32, hidden_dim),
-            # Match state
-            "score_state": nn.Linear(4, hidden_dim),  # state from dataset
+            # Match state (Layer 2)
+            "score_state": nn.Linear(4, hidden_dim),
             "chase_state": nn.Linear(3, hidden_dim),
             "phase_state": nn.Linear(4, hidden_dim),
             "time_pressure": nn.Linear(3, hidden_dim),
             "wicket_buffer": nn.Linear(2, hidden_dim),
-            # Actor - identities are embeddings, states are features
+            # Actor (Layer 3)
             "striker_identity": nn.Linear(64, hidden_dim),
             "striker_state": nn.Linear(6, hidden_dim),
             "bowler_identity": nn.Linear(64, hidden_dim),
             "bowler_state": nn.Linear(6, hidden_dim),
             "partnership": nn.Linear(4, hidden_dim),
-            # Dynamics
+            # Dynamics (Layer 4)
             "batting_momentum": nn.Linear(1, hidden_dim),
             "bowling_momentum": nn.Linear(1, hidden_dim),
             "pressure_index": nn.Linear(1, hidden_dim),
             "dot_pressure": nn.Linear(2, hidden_dim),
         })
 
-        # Hierarchical GAT
+        # Hierarchical GAT (layer-wise attention with conditioning)
         self.gat = HierarchicalGAT(
             hidden_dim=hidden_dim,
             num_heads=gat_heads,
-            num_layers=gat_layers,
             dropout=dropout,
         )
 
-        # Temporal Transformer
+        # Temporal Transformer (specialized attention heads)
         self.temporal = TemporalTransformer(
             num_players=num_players,
             hidden_dim=hidden_dim,
@@ -106,16 +103,11 @@ class CricketPredictor(nn.Module):
         # Output head
         self.output_head = nn.Linear(hidden_dim // 2, num_outcomes)
 
-        # Register edge index buffer
-        self.register_buffer("edge_index", build_edge_index())
-
-    def _build_graph_features(
+    def _build_node_features(
         self,
         batch: dict[str, torch.Tensor],
-    ) -> torch.Tensor:
-        """Build node features for graph from batch."""
-        batch_size = batch["state"].shape[0]
-
+    ) -> dict[str, torch.Tensor]:
+        """Build all 17 node features from batch."""
         # Get embeddings
         emb = self.embeddings(
             batter_idx=batch["batter_idx"],
@@ -126,211 +118,149 @@ class CricketPredictor(nn.Module):
             bowling_team_idx=batch["bowling_team_idx"],
         )
 
-        # Build node features for each node type
-        # We need to project each to hidden_dim and stack
+        nodes = {}
 
-        nodes = []
+        # Layer 1: Global Context
+        nodes["venue"] = self.node_projections["venue"](emb["venue"])
+        nodes["batting_team"] = self.node_projections["batting_team"](emb["batting_team"])
+        nodes["bowling_team"] = self.node_projections["bowling_team"](emb["bowling_team"])
 
-        # Global context (Layer 1)
-        nodes.append(self.node_projections["venue"](emb["venue"]))
-        nodes.append(self.node_projections["batting_team"](emb["batting_team"]))
-        nodes.append(self.node_projections["bowling_team"](emb["bowling_team"]))
+        # Layer 2: Match State
+        nodes["score_state"] = self.node_projections["score_state"](batch["state"])
+        nodes["chase_state"] = self.node_projections["chase_state"](batch["chase"])
 
-        # Match state (Layer 2)
-        nodes.append(self.node_projections["score_state"](batch["state"]))
-        nodes.append(self.node_projections["chase_state"](batch["chase"]))
-
-        # Phase state - derive from state
-        over_progress = batch["state"][:, 2:3]  # balls/120
+        # Phase state
+        over_progress = batch["state"][:, 2:3]
         phase_onehot = self._get_phase_onehot(over_progress)
         phase_features = torch.cat([phase_onehot, over_progress], dim=-1)
-        nodes.append(self.node_projections["phase_state"](phase_features))
+        nodes["phase_state"] = self.node_projections["phase_state"](phase_features)
 
         # Time pressure
         balls_remaining = 1.0 - batch["state"][:, 2:3]
         time_pressure = torch.cat([
             balls_remaining,
-            1.0 - balls_remaining,  # Urgency
-            (balls_remaining < 0.25).float(),  # Death overs indicator
+            1.0 - balls_remaining,
+            (balls_remaining < 0.25).float(),
         ], dim=-1)
-        nodes.append(self.node_projections["time_pressure"](time_pressure))
+        nodes["time_pressure"] = self.node_projections["time_pressure"](time_pressure)
 
         # Wicket buffer
-        wickets = batch["state"][:, 1:2] * 10  # Denormalize
+        wickets = batch["state"][:, 1:2] * 10
         wicket_buffer = torch.cat([
             1.0 - wickets / 10,
-            (wickets > 0.7).float(),  # Tail exposed
+            (wickets > 0.7).float(),
         ], dim=-1)
-        nodes.append(self.node_projections["wicket_buffer"](wicket_buffer))
+        nodes["wicket_buffer"] = self.node_projections["wicket_buffer"](wicket_buffer)
 
-        # Actor layer (Layer 3)
-        nodes.append(self.node_projections["striker_identity"](emb["batter"]))
-        # Striker state - simplified from history
-        striker_state = self._compute_batsman_state(batch)
-        nodes.append(self.node_projections["striker_state"](striker_state))
+        # Layer 3: Actor
+        nodes["striker_identity"] = self.node_projections["striker_identity"](emb["batter"])
+        nodes["striker_state"] = self.node_projections["striker_state"](
+            self._compute_batsman_state(batch)
+        )
+        nodes["bowler_identity"] = self.node_projections["bowler_identity"](emb["bowler"])
+        nodes["bowler_state"] = self.node_projections["bowler_state"](
+            self._compute_bowler_state(batch)
+        )
+        nodes["partnership"] = self.node_projections["partnership"](
+            self._compute_partnership(batch)
+        )
 
-        nodes.append(self.node_projections["bowler_identity"](emb["bowler"]))
-        bowler_state = self._compute_bowler_state(batch)
-        nodes.append(self.node_projections["bowler_state"](bowler_state))
-
-        # Partnership - simplified
-        partnership = self._compute_partnership(batch)
-        nodes.append(self.node_projections["partnership"](partnership))
-
-        # Dynamics layer (Layer 4)
+        # Layer 4: Dynamics
         momentum = self._compute_momentum(batch)
-        nodes.append(self.node_projections["batting_momentum"](momentum))
-        nodes.append(self.node_projections["bowling_momentum"](-momentum))
+        nodes["batting_momentum"] = self.node_projections["batting_momentum"](momentum)
+        nodes["bowling_momentum"] = self.node_projections["bowling_momentum"](-momentum)
+        nodes["pressure_index"] = self.node_projections["pressure_index"](
+            self._compute_pressure(batch)
+        )
+        nodes["dot_pressure"] = self.node_projections["dot_pressure"](
+            self._compute_dot_pressure(batch)
+        )
 
-        pressure = self._compute_pressure(batch)
-        nodes.append(self.node_projections["pressure_index"](pressure))
-
-        dot_pressure = self._compute_dot_pressure(batch)
-        nodes.append(self.node_projections["dot_pressure"](dot_pressure))
-
-        # Stack nodes: [batch, num_nodes, hidden_dim]
-        x = torch.stack(nodes, dim=1)
-
-        return x
+        return nodes
 
     def _get_phase_onehot(self, over_progress: torch.Tensor) -> torch.Tensor:
         """Get phase one-hot from over progress."""
+        over = over_progress * 20
         batch_size = over_progress.shape[0]
-        over = over_progress * 20  # Convert back to over number
-
         phase = torch.zeros(batch_size, 3, device=over_progress.device)
-        phase[:, 0] = (over < 6).float().squeeze(-1)  # Powerplay
-        phase[:, 1] = ((over >= 6) & (over < 15)).float().squeeze(-1)  # Middle
-        phase[:, 2] = (over >= 15).float().squeeze(-1)  # Death
-
+        phase[:, 0] = (over < 6).float().squeeze(-1)
+        phase[:, 1] = ((over >= 6) & (over < 15)).float().squeeze(-1)
+        phase[:, 2] = (over >= 15).float().squeeze(-1)
         return phase
 
     def _compute_batsman_state(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute batsman state features from history."""
-        # Simplified: aggregate from ball history
-        history_runs = batch["history_runs"]  # [batch, seq]
-        history_wickets = batch["history_wickets"]
-
-        # Compute stats for current batsman
-        runs = history_runs.sum(dim=-1, keepdim=True) * 6  # Denormalize
-        balls = (history_runs > -1).float().sum(dim=-1, keepdim=True)  # Non-padding
+        history_runs = batch["history_runs"]
+        runs = history_runs.sum(dim=-1, keepdim=True) * 6
+        balls = (history_runs > -1).float().sum(dim=-1, keepdim=True)
         sr = runs / balls.clamp(min=1) * 100
         dots = (history_runs == 0).float().sum(dim=-1, keepdim=True)
         boundaries = (history_runs >= 4/6).float().sum(dim=-1, keepdim=True)
-
-        # Setness approximation
         setness = (balls / 30).clamp(max=1)
-
         return torch.cat([
-            runs / 100,
-            balls / 60,
-            sr / 200,
-            dots / balls.clamp(min=1),
-            setness,
-            boundaries / 10,
+            runs / 100, balls / 60, sr / 200,
+            dots / balls.clamp(min=1), setness, boundaries / 10,
         ], dim=-1)
 
     def _compute_bowler_state(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute bowler state features from history."""
         history_runs = batch["history_runs"]
         history_wickets = batch["history_wickets"]
-
-        # Aggregate bowler stats
         runs = history_runs.sum(dim=-1, keepdim=True) * 6
         balls = (history_runs > -1).float().sum(dim=-1, keepdim=True)
         wickets = history_wickets.sum(dim=-1, keepdim=True)
         dots = (history_runs == 0).float().sum(dim=-1, keepdim=True)
-
         overs = balls / 6
         economy = runs / overs.clamp(min=0.1)
-
         threat = 0.5 * (1 - economy / 12) + 0.3 * (wickets / 4) + 0.2 * (dots / balls.clamp(min=1))
-
         return torch.cat([
-            balls / 24,
-            runs / 50,
-            wickets / 4,
-            economy / 12,
-            dots / balls.clamp(min=1),
-            threat,
+            balls / 24, runs / 50, wickets / 4,
+            economy / 12, dots / balls.clamp(min=1), threat,
         ], dim=-1)
 
     def _compute_partnership(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute partnership features."""
-        # Simplified partnership computation
         history_runs = batch["history_runs"]
-
-        # Recent runs as partnership proxy
         recent = history_runs[:, -12:]
         partnership_runs = recent.sum(dim=-1, keepdim=True) * 6
         partnership_balls = (recent > -1).float().sum(dim=-1, keepdim=True)
         partnership_rr = partnership_runs / partnership_balls.clamp(min=0.1) * 6
-
         stability = (partnership_balls / 30).clamp(max=1)
-
         return torch.cat([
-            partnership_runs / 100,
-            partnership_balls / 60,
-            partnership_rr / 12,
-            stability,
+            partnership_runs / 100, partnership_balls / 60,
+            partnership_rr / 12, stability,
         ], dim=-1)
 
     def _compute_momentum(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute batting momentum."""
-        history_runs = batch["history_runs"]
-        recent = history_runs[:, -12:]
-
+        recent = batch["history_runs"][:, -12:]
         total_runs = recent.sum(dim=-1, keepdim=True) * 6
-        max_runs = 12 * 4  # 4 per ball aggressive
-
-        momentum = (total_runs / max_runs) * 2 - 1
+        momentum = (total_runs / 48) * 2 - 1
         return momentum.clamp(-1, 1)
 
     def _compute_pressure(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute pressure index."""
         state = batch["state"]
         chase = batch["chase"]
-
         wickets = state[:, 1:2]
         balls_progress = state[:, 2:3]
-
-        # Wicket pressure
         wicket_pressure = wickets * 0.3
-
-        # Chase pressure (if applicable)
         is_chase = chase[:, 2:3]
-        rrr_gap = chase[:, 1:2]  # Already normalized RRR
+        rrr_gap = chase[:, 1:2]
         chase_pressure = is_chase * rrr_gap.clamp(min=0) * 0.4
-
-        # Stage pressure
         stage_pressure = (balls_progress > 0.75).float() * 0.1
-
         return (wicket_pressure + chase_pressure + stage_pressure).clamp(max=1)
 
     def _compute_dot_pressure(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute dot ball pressure."""
         history_runs = batch["history_runs"]
-
         # Count consecutive dots at end
-        consecutive = torch.zeros(history_runs.shape[0], 1, device=history_runs.device)
-        for i in range(history_runs.shape[1] - 1, -1, -1):
-            is_dot = (history_runs[:, i] == 0).float()
-            consecutive = consecutive + is_dot
-            # Break on non-dot (simplified: just count recent)
-            if i < history_runs.shape[1] - 6:
-                break
-
-        # Last boundary
+        recent = history_runs[:, -6:]
+        consecutive = (recent == 0).float().sum(dim=-1, keepdim=True)
+        # Last boundary approximation
         boundaries = (history_runs >= 4/6)
-        last_boundary = torch.zeros(history_runs.shape[0], 1, device=history_runs.device)
-        for i in range(history_runs.shape[1] - 1, -1, -1):
-            mask = boundaries[:, i] & (last_boundary == 0).squeeze(-1)
-            last_boundary[mask] = history_runs.shape[1] - i
-
-        return torch.cat([
-            consecutive / 6,
-            last_boundary / 30,
-        ], dim=-1)
+        last_boundary = (boundaries.flip(dims=[1]).cumsum(dim=1) == 0).float().sum(dim=-1, keepdim=True)
+        return torch.cat([consecutive / 6, last_boundary / 30], dim=-1)
 
     def forward(
         self,
@@ -345,34 +275,13 @@ class CricketPredictor(nn.Module):
             return_attention: Whether to return attention weights
 
         Returns:
-            Dict with:
-                - logits: [batch, num_outcomes]
-                - probs: [batch, num_outcomes]
-                - gat_attention: Optional attention from GAT
-                - temporal_attention: Optional attention from Transformer
+            Dict with logits, probs, and optional attention weights
         """
-        batch_size = batch["state"].shape[0]
+        # Build hierarchical node features
+        nodes = self._build_node_features(batch)
 
-        # Build graph features
-        graph_x = self._build_graph_features(batch)  # [batch, 17, hidden]
-
-        # Reshape for GAT: [batch * 17, hidden]
-        graph_x_flat = graph_x.view(-1, self.hidden_dim)
-
-        # Build batched edge index
-        edge_index_batch = self._batch_edge_index(batch_size)
-
-        # Batch tensor for pooling
-        batch_idx = torch.arange(batch_size, device=graph_x.device)
-        batch_idx = batch_idx.repeat_interleave(NUM_NODES)
-
-        # GAT forward
-        gat_out, gat_attn = self.gat(
-            graph_x_flat,
-            edge_index_batch,
-            batch_idx,
-            return_attention,
-        )  # [batch, hidden]
+        # Hierarchical GAT forward
+        gat_out, gat_attn = self.gat(nodes, return_attention)
 
         # Temporal Transformer forward
         temporal_out, temporal_attn = self.temporal(
@@ -382,7 +291,7 @@ class CricketPredictor(nn.Module):
             batch["history_batters"],
             batch["history_bowlers"],
             return_attention,
-        )  # [batch, hidden]
+        )
 
         # Fusion
         combined = torch.cat([gat_out, temporal_out], dim=-1)
@@ -392,27 +301,13 @@ class CricketPredictor(nn.Module):
         logits = self.output_head(fused)
         probs = F.softmax(logits, dim=-1)
 
-        output = {
-            "logits": logits,
-            "probs": probs,
-        }
+        output = {"logits": logits, "probs": probs}
 
         if return_attention:
             output["gat_attention"] = gat_attn
             output["temporal_attention"] = temporal_attn
 
         return output
-
-    def _batch_edge_index(self, batch_size: int) -> torch.Tensor:
-        """Create batched edge index."""
-        edge_index = self.edge_index
-        edge_list = []
-
-        for i in range(batch_size):
-            offset = i * NUM_NODES
-            edge_list.append(edge_index + offset)
-
-        return torch.cat(edge_list, dim=1)
 
     def predict(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Get prediction with probabilities."""

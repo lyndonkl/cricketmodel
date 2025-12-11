@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-"""Train cricket prediction model."""
+"""Train cricket prediction model.
+
+Single GPU/MPS:
+    python train.py --device mps --epochs 50
+
+Multi-GPU with DDP (requires CUDA):
+    torchrun --nproc_per_node=2 train.py --distributed --epochs 50
+"""
 
 import argparse
+import os
 
 from src.config import Config, ModelConfig, TrainingConfig, DataConfig
 from src.training import Trainer
+from src.training.trainer import train_ddp
 
 
 def main():
@@ -15,6 +24,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--device", type=str, default="mps", help="Device (mps/cuda/cpu)")
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Checkpoint dir")
+    parser.add_argument("--distributed", action="store_true", help="Use DDP for multi-GPU")
+    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
     args = parser.parse_args()
 
     # Create config
@@ -32,15 +43,23 @@ def main():
             epochs=args.epochs,
             device=args.device,
             checkpoint_dir=args.checkpoint_dir,
+            num_workers=args.num_workers,
         ),
         data=DataConfig(
             data_dir=args.data_dir,
         ),
     )
 
-    # Create trainer and train
-    trainer = Trainer(config)
-    trainer.train()
+    if args.distributed:
+        # DDP training via torchrun
+        # torchrun sets LOCAL_RANK, RANK, WORLD_SIZE
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        train_ddp(local_rank, world_size, config)
+    else:
+        # Single device training
+        trainer = Trainer(config)
+        trainer.train()
 
 
 if __name__ == "__main__":
