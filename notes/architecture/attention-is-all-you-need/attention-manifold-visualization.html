@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Attention & The Data Manifold: Why Prompts Matter</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #ffffff;
+            overflow: hidden;
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .ui-overlay {
+            position: fixed;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        .ui-overlay > * {
+            pointer-events: auto;
+        }
+
+        /* Header */
+        .header {
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+            background: linear-gradient(90deg, #00CED1, #FFD700);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 5px;
+        }
+
+        .header .subtitle {
+            font-size: 0.95rem;
+            color: #888;
+        }
+
+        /* Prompt Display */
+        .prompt-display {
+            top: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            max-width: 800px;
+        }
+
+        .prompt-label {
+            font-size: 0.85rem;
+            color: #666;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .prompt-text {
+            font-size: 1.1rem;
+            padding: 15px 30px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            min-height: 60px;
+            max-height: 150px;
+            overflow-y: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        .prompt-text.plain {
+            border-color: rgba(255, 100, 100, 0.3);
+        }
+
+        .prompt-text.structured {
+            border-color: rgba(0, 206, 209, 0.3);
+        }
+
+        .prompt-text .highlight {
+            color: #00CED1;
+            font-weight: 600;
+        }
+
+        /* Narration Box */
+        .narration-box {
+            bottom: 120px;
+            left: 50%;
+            transform: translateX(-50%);
+            max-width: 700px;
+            text-align: center;
+        }
+
+        .narration-text {
+            font-size: 1.1rem;
+            line-height: 1.6;
+            padding: 20px 30px;
+            background: rgba(0, 0, 0, 0.8);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .narration-text strong {
+            color: #FFD700;
+        }
+
+        /* Controls */
+        .controls {
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #00CED1, #008B8B);
+            border: none;
+        }
+
+        /* Scene Indicators */
+        .scene-indicators {
+            bottom: 85px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 8px;
+        }
+
+        .scene-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .scene-dot.active {
+            background: #FFD700;
+            transform: scale(1.4);
+        }
+
+        /* Stats Panel */
+        .stats-panel {
+            top: 100px;
+            right: 30px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            min-width: 200px;
+        }
+
+        .stats-panel h3 {
+            font-size: 0.85rem;
+            color: #888;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
+
+        .stat-label {
+            color: #888;
+        }
+
+        .stat-value {
+            font-weight: 600;
+        }
+
+        .stat-value.high { color: #00FF00; }
+        .stat-value.medium { color: #FFD700; }
+        .stat-value.low { color: #FF6B6B; }
+
+        /* Legend */
+        .legend {
+            bottom: 30px;
+            right: 30px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px 20px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+            color: #aaa;
+        }
+
+        .legend-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        /* Instructions */
+        .instructions {
+            bottom: 30px;
+            left: 30px;
+            font-size: 0.8rem;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .instructions kbd {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+
+        /* Context Sphere Label */
+        .sphere-label {
+            position: absolute;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.8rem;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <div class="ui-overlay header">
+        <h1>The Data Manifold: Why Prompts Matter</h1>
+        <p class="subtitle">Visualizing how attention transforms knowledge space during inference</p>
+    </div>
+
+    <div class="ui-overlay prompt-display">
+        <div class="prompt-label" id="prompt-label">Current Prompt</div>
+        <div class="prompt-text" id="prompt-text">
+            Press <strong>Play</strong> to begin
+        </div>
+    </div>
+
+    <div class="ui-overlay narration-box">
+        <p class="narration-text" id="narration">
+            This visualization shows how your prompt shapes the AI's "context sphere" - the focused region of knowledge it uses to generate responses.
+        </p>
+    </div>
+
+    <div class="ui-overlay scene-indicators" id="scene-indicators"></div>
+
+    <div class="ui-overlay controls">
+        <button class="btn" id="prev-btn">&#9664; Prev</button>
+        <button class="btn btn-primary" id="play-btn">&#9658; Play</button>
+        <button class="btn" id="next-btn">Next &#9654;</button>
+        <button class="btn" id="reset-btn">Reset</button>
+    </div>
+
+    <div class="ui-overlay stats-panel" id="stats-panel">
+        <h3>Context Quality</h3>
+        <div class="stat-row">
+            <span class="stat-label">Relevant Points:</span>
+            <span class="stat-value" id="stat-relevant">--</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Focus Density:</span>
+            <span class="stat-value" id="stat-density">--</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Topic Coverage:</span>
+            <span class="stat-value" id="stat-coverage">--</span>
+        </div>
+    </div>
+
+    <div class="ui-overlay legend">
+        <div class="legend-item">
+            <div class="legend-dot" style="background: #666;"></div>
+            <span>Inactive Knowledge</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot" style="background: #FFD700;"></div>
+            <span>Attended (Relevant)</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot" style="background: linear-gradient(90deg, #00CED1, #FFD700);"></div>
+            <span>Flow Lines (Pull)</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot" style="background: rgba(255,255,255,0.2); border: 2px dashed #fff;"></div>
+            <span>Context Sphere</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot" style="background: #334455; width: 20px; border-radius: 2px;"></div>
+            <span>Space Grid (Warps)</span>
+        </div>
+    </div>
+
+    <div class="ui-overlay instructions">
+        <kbd>Drag</kbd> to rotate &nbsp; <kbd>Scroll</kbd> to zoom<br>
+        <kbd>Space</kbd> play/pause &nbsp; <kbd>&#8592;</kbd><kbd>&#8594;</kbd> navigate
+    </div>
+
+    <script>
+        // ============================================
+        // CONFIGURATION
+        // ============================================
+        const CONFIG = {
+            numPoints: 3000,  // Many more points for vastness
+            categories: [
+                { name: 'Science', color: 0xFF6B6B, weight: 0.12 },
+                { name: 'Mathematics', color: 0xDDA0DD, weight: 0.10 },
+                { name: 'Technology', color: 0x4ECDC4, weight: 0.14 },
+                { name: 'Philosophy', color: 0x98D8C8, weight: 0.08 },
+                { name: 'Education', color: 0xF7DC6F, weight: 0.10 },
+                { name: 'Cooking', color: 0xE59866, weight: 0.06 },
+                { name: 'Business', color: 0x85C1E9, weight: 0.10 },
+                { name: 'Arts', color: 0xF1948A, weight: 0.08 },
+                { name: 'History', color: 0xBB8FCE, weight: 0.07 },
+                { name: 'Medicine', color: 0x82E0AA, weight: 0.08 },
+                { name: 'Psychology', color: 0xF8B500, weight: 0.07 }
+            ],
+            prompts: {
+                plain: {
+                    text: "What is machine learning?",
+                    relevantCategories: ['Technology'],
+                    pullStrength: 0.3,  // Weak pull
+                    sphereRadius: 1.8,
+                    focusDensity: 'Very Low',
+                    coverage: '1 topic'
+                },
+                structured: {
+                    text: "You are a patient teacher explaining to a curious 5-year-old. Using cooking analogies (like recipes and ingredients), explain how machine learning works. Include: what data is (ingredients), what training means (following a recipe), and how the model improves (getting better at cooking). Make it fun and memorable with examples a child would understand.",
+                    relevantCategories: ['Technology', 'Mathematics', 'Education', 'Cooking', 'Philosophy', 'Psychology', 'Science'],
+                    pullStrength: 0.85,  // Strong pull
+                    sphereRadius: 4.0,
+                    focusDensity: 'Very High',
+                    coverage: '7 topics'
+                }
+            },
+            scenes: [
+                {
+                    id: 0,
+                    name: 'Introduction',
+                    narration: 'Imagine all human knowledge as <strong>thousands of points</strong> floating in 3D space. Similar concepts cluster together. The subtle grid represents the "fabric" of this knowledge space. This is what the AI "knows" - vast and overwhelming.',
+                    promptType: null
+                },
+                {
+                    id: 1,
+                    name: 'Plain Prompt',
+                    narration: 'A <strong>simple question</strong> creates weak attention. Watch the space: only a few points light up. The grid barely warps - minimal "gravitational pull" on the knowledge space.',
+                    promptType: 'plain'
+                },
+                {
+                    id: 2,
+                    name: 'Plain Context',
+                    narration: 'The resulting context sphere is <strong>small and sparse</strong>. Few flow lines, weak transformation. The AI can answer, but draws from limited connections.',
+                    promptType: 'plain',
+                    showSphere: true
+                },
+                {
+                    id: 3,
+                    name: 'Structured Prompt',
+                    narration: 'Now watch a <strong>rich, structured prompt</strong>. Multiple keywords activate different knowledge clusters. Watch the space <strong>warp and bend</strong> as attention pulls relevant information together!',
+                    promptType: 'structured'
+                },
+                {
+                    id: 4,
+                    name: 'Structured Context',
+                    narration: 'See the difference! The grid <strong>warps dramatically</strong> toward center. Many flow lines show knowledge being pulled in. The context sphere is <strong>larger and denser</strong> - richer connections for the response.',
+                    promptType: 'structured',
+                    showSphere: true
+                },
+                {
+                    id: 5,
+                    name: 'Comparison',
+                    narration: '<strong>This is why prompt engineering matters.</strong> Your prompt literally <strong>bends the knowledge space</strong>. Same AI, same knowledge - but structured prompts create stronger "gravity" that pulls in more relevant context.',
+                    promptType: 'comparison'
+                }
+            ]
+        };
+
+        // ============================================
+        // THREE.JS SETUP
+        // ============================================
+        let scene, camera, renderer, controls;
+        let points = [];
+        let pointCloud;
+        let contextSphere;
+        let warpGrid;
+        let flowLines = [];
+        let currentScene = 0;
+        let isPlaying = false;
+        let animationFrame;
+
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+
+            // Scene - lighter background for contrast
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x12121a);
+            scene.fog = new THREE.Fog(0x12121a, 25, 60);
+
+            // Camera - pulled back to see vastness
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+            camera.position.set(0, 5, 25);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.rotateSpeed = 0.5;
+            controls.zoomSpeed = 0.8;
+            controls.minDistance = 5;
+            controls.maxDistance = 30;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.3;
+
+            // Generate points
+            generatePoints();
+
+            // Create point cloud
+            createPointCloud();
+
+            // Create context sphere (initially invisible)
+            createContextSphere();
+
+            // Create warp grid to show space transformation
+            createWarpGrid();
+
+            // Handle resize
+            window.addEventListener('resize', onWindowResize);
+
+            // Start animation loop
+            animate();
+        }
+
+        function generatePoints() {
+            points = [];
+            const spreadRadius = 20;  // Much larger spread
+
+            CONFIG.categories.forEach((cat, catIndex) => {
+                const count = Math.floor(CONFIG.numPoints * (cat.weight || 1/CONFIG.categories.length));
+
+                // Cluster center for this category - spread in 3D space
+                const goldenRatio = (1 + Math.sqrt(5)) / 2;
+                const phi = catIndex * Math.PI * 2 / goldenRatio;
+                const theta = Math.acos(1 - 2 * (catIndex + 0.5) / CONFIG.categories.length);
+
+                const clusterX = Math.sin(theta) * Math.cos(phi) * spreadRadius * 0.6;
+                const clusterY = Math.sin(theta) * Math.sin(phi) * spreadRadius * 0.6;
+                const clusterZ = Math.cos(theta) * spreadRadius * 0.4;
+
+                for (let i = 0; i < count; i++) {
+                    // Gaussian-like distribution around cluster center
+                    const u1 = Math.random();
+                    const u2 = Math.random();
+                    const u3 = Math.random();
+                    const gaussMult = Math.sqrt(-2 * Math.log(u1 + 0.001));
+
+                    const offsetX = gaussMult * Math.cos(2 * Math.PI * u2) * 4;
+                    const offsetY = gaussMult * Math.sin(2 * Math.PI * u2) * 4;
+                    const offsetZ = gaussMult * Math.cos(2 * Math.PI * u3) * 4;
+
+                    const pos = new THREE.Vector3(
+                        clusterX + offsetX,
+                        clusterY + offsetY,
+                        clusterZ + offsetZ
+                    );
+
+                    points.push({
+                        id: points.length,
+                        category: cat.name,
+                        color: cat.color,
+                        originalPosition: pos.clone(),
+                        position: pos.clone(),
+                        targetPosition: pos.clone(),
+                        isRelevant: false,
+                        size: 0.15 + Math.random() * 0.1  // Larger base size
+                    });
+                }
+            });
+        }
+
+        function createPointCloud() {
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(points.length * 3);
+            const colors = new Float32Array(points.length * 3);
+            const sizes = new Float32Array(points.length);
+
+            points.forEach((p, i) => {
+                positions[i * 3] = p.position.x;
+                positions[i * 3 + 1] = p.position.y;
+                positions[i * 3 + 2] = p.position.z;
+
+                const color = new THREE.Color(p.color);
+                colors[i * 3] = color.r * 0.6;
+                colors[i * 3 + 1] = color.g * 0.6;
+                colors[i * 3 + 2] = color.b * 0.6;
+
+                sizes[i] = p.size;
+            });
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+            const material = new THREE.ShaderMaterial({
+                uniforms: {
+                    pointTexture: { value: createPointTexture() }
+                },
+                vertexShader: `
+                    attribute float size;
+                    varying vec3 vColor;
+                    void main() {
+                        vColor = color;
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        gl_PointSize = size * (450.0 / -mvPosition.z);
+                        gl_PointSize = max(gl_PointSize, 2.0);
+                        gl_Position = projectionMatrix * mvPosition;
+                    }
+                `,
+                fragmentShader: `
+                    uniform sampler2D pointTexture;
+                    varying vec3 vColor;
+                    void main() {
+                        vec4 texColor = texture2D(pointTexture, gl_PointCoord);
+                        if (texColor.a < 0.05) discard;
+                        gl_FragColor = vec4(vColor, texColor.a * 0.9);
+                    }
+                `,
+                vertexColors: true,
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            pointCloud = new THREE.Points(geometry, material);
+            scene.add(pointCloud);
+        }
+
+        function createPointTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+
+            const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.3, 'rgba(255,255,255,0.8)');
+            gradient.addColorStop(0.7, 'rgba(255,255,255,0.3)');
+            gradient.addColorStop(1, 'rgba(255,255,255,0)');
+
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 64, 64);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            return texture;
+        }
+
+        function createContextSphere() {
+            const geometry = new THREE.SphereGeometry(1, 32, 32);
+            const material = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.05,
+                wireframe: true
+            });
+            contextSphere = new THREE.Mesh(geometry, material);
+            contextSphere.visible = false;
+            scene.add(contextSphere);
+        }
+
+        function createWarpGrid() {
+            // Create a 3D grid of lines that will deform to show space warping
+            const gridGroup = new THREE.Group();
+            const gridSize = 30;
+            const gridDivisions = 12;
+            const step = gridSize / gridDivisions;
+
+            const material = new THREE.LineBasicMaterial({
+                color: 0x334455,
+                transparent: true,
+                opacity: 0.3
+            });
+
+            // Store original positions for warping
+            gridGroup.userData.lines = [];
+
+            // Create grid lines in all three planes
+            for (let i = -gridDivisions/2; i <= gridDivisions/2; i++) {
+                const offset = i * step;
+
+                // XZ plane lines (horizontal grid)
+                for (let j = -gridDivisions/2; j <= gridDivisions/2; j++) {
+                    const jOffset = j * step;
+
+                    // Lines along X
+                    const pointsX = [];
+                    for (let k = -gridDivisions/2; k <= gridDivisions/2; k++) {
+                        pointsX.push(new THREE.Vector3(k * step, offset * 0.3, jOffset));
+                    }
+                    const geometryX = new THREE.BufferGeometry().setFromPoints(pointsX);
+                    const lineX = new THREE.Line(geometryX, material.clone());
+                    lineX.userData.originalPoints = pointsX.map(p => p.clone());
+                    gridGroup.add(lineX);
+                    gridGroup.userData.lines.push(lineX);
+
+                    // Lines along Z
+                    const pointsZ = [];
+                    for (let k = -gridDivisions/2; k <= gridDivisions/2; k++) {
+                        pointsZ.push(new THREE.Vector3(jOffset, offset * 0.3, k * step));
+                    }
+                    const geometryZ = new THREE.BufferGeometry().setFromPoints(pointsZ);
+                    const lineZ = new THREE.Line(geometryZ, material.clone());
+                    lineZ.userData.originalPoints = pointsZ.map(p => p.clone());
+                    gridGroup.add(lineZ);
+                    gridGroup.userData.lines.push(lineZ);
+                }
+            }
+
+            gridGroup.visible = true;
+            scene.add(gridGroup);
+            warpGrid = gridGroup;
+        }
+
+        function warpGridTowardCenter(pullStrength, duration = 2000) {
+            if (!warpGrid) return;
+
+            const startTime = Date.now();
+
+            function animateWarp() {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                const eased = 1 - Math.pow(1 - progress, 3);
+
+                warpGrid.userData.lines.forEach(line => {
+                    const positions = line.geometry.attributes.position.array;
+                    const original = line.userData.originalPoints;
+
+                    for (let i = 0; i < original.length; i++) {
+                        const orig = original[i];
+                        const dist = orig.length();
+
+                        // Calculate warp: points closer to center are pulled more
+                        const warpFactor = pullStrength * (1 - dist / 25) * eased;
+                        const warpedDist = dist * (1 - Math.max(0, warpFactor));
+
+                        if (dist > 0.01) {
+                            const normalized = orig.clone().normalize();
+                            positions[i * 3] = normalized.x * warpedDist;
+                            positions[i * 3 + 1] = normalized.y * warpedDist;
+                            positions[i * 3 + 2] = normalized.z * warpedDist;
+                        }
+                    }
+
+                    line.geometry.attributes.position.needsUpdate = true;
+
+                    // Update color based on warp
+                    const hue = 0.55 + pullStrength * 0.1 * eased;
+                    line.material.color.setHSL(hue, 0.5, 0.3 + pullStrength * 0.2 * eased);
+                    line.material.opacity = 0.2 + pullStrength * 0.3 * eased;
+                });
+
+                if (progress < 1) {
+                    requestAnimationFrame(animateWarp);
+                }
+            }
+
+            animateWarp();
+        }
+
+        function resetWarpGrid() {
+            if (!warpGrid) return;
+
+            warpGrid.userData.lines.forEach(line => {
+                const positions = line.geometry.attributes.position.array;
+                const original = line.userData.originalPoints;
+
+                for (let i = 0; i < original.length; i++) {
+                    positions[i * 3] = original[i].x;
+                    positions[i * 3 + 1] = original[i].y;
+                    positions[i * 3 + 2] = original[i].z;
+                }
+
+                line.geometry.attributes.position.needsUpdate = true;
+                line.material.color.setHex(0x334455);
+                line.material.opacity = 0.3;
+            });
+        }
+
+        function createFlowLines(promptType) {
+            // Remove existing flow lines
+            flowLines.forEach(line => scene.remove(line));
+            flowLines = [];
+
+            if (!promptType) return;
+
+            const promptData = CONFIG.prompts[promptType];
+            const numFlowLines = Math.floor(promptData.pullStrength * 40);
+
+            // Get relevant point positions
+            const relevantPoints = points.filter(p =>
+                promptData.relevantCategories.includes(p.category)
+            ).slice(0, numFlowLines);
+
+            relevantPoints.forEach(p => {
+                // Create a curved line from original position to center
+                const curve = new THREE.QuadraticBezierCurve3(
+                    p.originalPosition.clone(),
+                    new THREE.Vector3(
+                        p.originalPosition.x * 0.5,
+                        p.originalPosition.y * 0.5 + Math.random() * 2 - 1,
+                        p.originalPosition.z * 0.5
+                    ),
+                    p.targetPosition || new THREE.Vector3(0, 0, 0)
+                );
+
+                const curvePoints = curve.getPoints(20);
+                const geometry = new THREE.BufferGeometry().setFromPoints(curvePoints);
+
+                // Gradient color for flow lines
+                const colors = [];
+                for (let i = 0; i < curvePoints.length; i++) {
+                    const t = i / curvePoints.length;
+                    colors.push(0, 0.8 * t + 0.2, 0.8 * (1-t) + 0.2); // Cyan to gold gradient
+                }
+                geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+                const material = new THREE.LineBasicMaterial({
+                    vertexColors: true,
+                    transparent: true,
+                    opacity: 0,
+                    linewidth: 2
+                });
+
+                const flowLine = new THREE.Line(geometry, material);
+                scene.add(flowLine);
+                flowLines.push(flowLine);
+
+                // Animate flow line appearing
+                gsap.to(material, {
+                    opacity: 0.6,
+                    duration: 1,
+                    delay: Math.random() * 0.5
+                });
+            });
+        }
+
+        function hideFlowLines() {
+            flowLines.forEach(line => {
+                gsap.to(line.material, {
+                    opacity: 0,
+                    duration: 0.5,
+                    onComplete: () => {
+                        scene.remove(line);
+                    }
+                });
+            });
+            flowLines = [];
+        }
+
+        function animate() {
+            animationFrame = requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // ============================================
+        // SCENE TRANSITIONS
+        // ============================================
+        function renderScene(sceneIndex) {
+            currentScene = sceneIndex;
+            updateSceneIndicators();
+
+            const sceneData = CONFIG.scenes[sceneIndex];
+            updateNarration(sceneData.narration);
+
+            // Reset all points first
+            resetPointColors();
+
+            if (sceneData.promptType === null) {
+                // Introduction - show all points dimly
+                showAllPointsDim();
+                hideContextSphere();
+                updatePromptDisplay(null);
+                updateStats(null);
+            } else if (sceneData.promptType === 'plain') {
+                updatePromptDisplay('plain');
+                highlightRelevantPoints('plain');
+                if (sceneData.showSphere) {
+                    showContextSphere('plain');
+                } else {
+                    hideContextSphere();
+                }
+                updateStats('plain');
+            } else if (sceneData.promptType === 'structured') {
+                updatePromptDisplay('structured');
+                highlightRelevantPoints('structured');
+                if (sceneData.showSphere) {
+                    showContextSphere('structured');
+                } else {
+                    hideContextSphere();
+                }
+                updateStats('structured');
+            } else if (sceneData.promptType === 'comparison') {
+                updatePromptDisplay('comparison');
+                highlightRelevantPoints('structured');
+                showContextSphere('structured');
+                updateStats('structured');
+            }
+        }
+
+        function resetPointColors() {
+            const colors = pointCloud.geometry.attributes.color.array;
+
+            points.forEach((p, i) => {
+                const color = new THREE.Color(p.color);
+                colors[i * 3] = color.r * 0.3;
+                colors[i * 3 + 1] = color.g * 0.3;
+                colors[i * 3 + 2] = color.b * 0.3;
+                p.isRelevant = false;
+            });
+
+            pointCloud.geometry.attributes.color.needsUpdate = true;
+        }
+
+        function showAllPointsDim() {
+            const colors = pointCloud.geometry.attributes.color.array;
+            const sizes = pointCloud.geometry.attributes.size.array;
+            const positions = pointCloud.geometry.attributes.position.array;
+
+            // Reset all points to original positions and colors
+            points.forEach((p, i) => {
+                // Reset position
+                positions[i * 3] = p.originalPosition.x;
+                positions[i * 3 + 1] = p.originalPosition.y;
+                positions[i * 3 + 2] = p.originalPosition.z;
+
+                // Reset color
+                const color = new THREE.Color(p.color);
+                colors[i * 3] = color.r * 0.6;
+                colors[i * 3 + 1] = color.g * 0.6;
+                colors[i * 3 + 2] = color.b * 0.6;
+
+                // Reset size
+                sizes[i] = p.size;
+
+                p.isRelevant = false;
+            });
+
+            pointCloud.geometry.attributes.position.needsUpdate = true;
+            pointCloud.geometry.attributes.color.needsUpdate = true;
+            pointCloud.geometry.attributes.size.needsUpdate = true;
+
+            // Reset warp grid
+            resetWarpGrid();
+
+            // Hide flow lines
+            hideFlowLines();
+        }
+
+        let transformationAnimation = null;
+
+        function highlightRelevantPoints(promptType) {
+            const promptData = CONFIG.prompts[promptType];
+            const colors = pointCloud.geometry.attributes.color.array;
+            const sizes = pointCloud.geometry.attributes.size.array;
+            const positions = pointCloud.geometry.attributes.position.array;
+            const pullStrength = promptData.pullStrength || 0.5;
+
+            // Cancel any existing animation
+            if (transformationAnimation) {
+                cancelAnimationFrame(transformationAnimation);
+            }
+
+            // Set target positions and colors
+            points.forEach((p, i) => {
+                const isRelevant = promptData.relevantCategories.includes(p.category);
+                p.isRelevant = isRelevant;
+
+                if (isRelevant) {
+                    // Calculate pull toward center with some randomness
+                    const pullAmount = pullStrength * (0.7 + Math.random() * 0.3);
+                    const dirToCenter = new THREE.Vector3().subVectors(
+                        new THREE.Vector3(0, 0, 0),
+                        p.originalPosition
+                    );
+
+                    p.targetPosition = new THREE.Vector3().addVectors(
+                        p.originalPosition,
+                        dirToCenter.multiplyScalar(pullAmount)
+                    );
+
+                    // Bright gold/white for relevant points
+                    p.targetColor = { r: 1.0, g: 0.9, b: 0.3 };
+                    p.targetSize = p.size * 2.0;
+                } else {
+                    // Push irrelevant points slightly outward
+                    const pushAmount = 0.1;
+                    const dirFromCenter = p.originalPosition.clone().normalize();
+
+                    p.targetPosition = new THREE.Vector3().addVectors(
+                        p.originalPosition,
+                        dirFromCenter.multiplyScalar(pushAmount * p.originalPosition.length())
+                    );
+
+                    // Very dim for irrelevant
+                    const color = new THREE.Color(p.color);
+                    p.targetColor = { r: color.r * 0.08, g: color.g * 0.08, b: color.b * 0.08 };
+                    p.targetSize = p.size * 0.3;
+                }
+            });
+
+            // Animate the transformation
+            let progress = 0;
+            const duration = 2000; // 2 seconds
+            const startTime = Date.now();
+
+            function animateTransformation() {
+                const elapsed = Date.now() - startTime;
+                progress = Math.min(elapsed / duration, 1);
+
+                // Easing function (ease out cubic)
+                const eased = 1 - Math.pow(1 - progress, 3);
+
+                points.forEach((p, i) => {
+                    // Interpolate position
+                    const currentPos = new THREE.Vector3().lerpVectors(
+                        p.position,
+                        p.targetPosition,
+                        eased * 0.1 + (1 - eased) * 0  // Gradual pull
+                    );
+
+                    positions[i * 3] = p.originalPosition.x + (p.targetPosition.x - p.originalPosition.x) * eased;
+                    positions[i * 3 + 1] = p.originalPosition.y + (p.targetPosition.y - p.originalPosition.y) * eased;
+                    positions[i * 3 + 2] = p.originalPosition.z + (p.targetPosition.z - p.originalPosition.z) * eased;
+
+                    // Interpolate color
+                    const origColor = new THREE.Color(p.color);
+                    const startColor = { r: origColor.r * 0.6, g: origColor.g * 0.6, b: origColor.b * 0.6 };
+
+                    colors[i * 3] = startColor.r + (p.targetColor.r - startColor.r) * eased;
+                    colors[i * 3 + 1] = startColor.g + (p.targetColor.g - startColor.g) * eased;
+                    colors[i * 3 + 2] = startColor.b + (p.targetColor.b - startColor.b) * eased;
+
+                    // Interpolate size
+                    sizes[i] = p.size + (p.targetSize - p.size) * eased;
+                });
+
+                pointCloud.geometry.attributes.position.needsUpdate = true;
+                pointCloud.geometry.attributes.color.needsUpdate = true;
+                pointCloud.geometry.attributes.size.needsUpdate = true;
+
+                if (progress < 1) {
+                    transformationAnimation = requestAnimationFrame(animateTransformation);
+                }
+            }
+
+            transformationAnimation = requestAnimationFrame(animateTransformation);
+
+            // Trigger warp grid deformation
+            warpGridTowardCenter(pullStrength, 2000);
+
+            // Create flow lines after a short delay
+            setTimeout(() => {
+                createFlowLines(promptType);
+            }, 500);
+        }
+
+        function showContextSphere(promptType) {
+            const radius = CONFIG.prompts[promptType].sphereRadius;
+
+            contextSphere.scale.set(radius, radius, radius);
+            contextSphere.visible = true;
+
+            gsap.fromTo(contextSphere.material,
+                { opacity: 0 },
+                { opacity: 0.1, duration: 1 }
+            );
+
+            gsap.fromTo(contextSphere.scale,
+                { x: 0, y: 0, z: 0 },
+                { x: radius, y: radius, z: radius, duration: 1.5, ease: 'elastic.out(1, 0.5)' }
+            );
+        }
+
+        function hideContextSphere() {
+            if (contextSphere.visible) {
+                gsap.to(contextSphere.material, {
+                    opacity: 0,
+                    duration: 0.5,
+                    onComplete: () => { contextSphere.visible = false; }
+                });
+            }
+        }
+
+        // ============================================
+        // UI UPDATES
+        // ============================================
+        function updatePromptDisplay(promptType) {
+            const label = document.getElementById('prompt-label');
+            const text = document.getElementById('prompt-text');
+
+            text.classList.remove('plain', 'structured');
+
+            if (promptType === null) {
+                label.textContent = 'The Knowledge Space';
+                text.innerHTML = 'All human knowledge represented as points in 3D space';
+            } else if (promptType === 'plain') {
+                label.textContent = 'Plain Question';
+                text.classList.add('plain');
+                text.innerHTML = `"${CONFIG.prompts.plain.text}"`;
+            } else if (promptType === 'structured') {
+                label.textContent = 'Structured Prompt';
+                text.classList.add('structured');
+                text.innerHTML = `"${CONFIG.prompts.structured.text}"`;
+            } else if (promptType === 'comparison') {
+                label.textContent = 'The Difference';
+                text.classList.add('structured');
+                text.innerHTML = '<span class="highlight">Structured prompts</span> activate more knowledge domains, creating richer context';
+            }
+        }
+
+        function updateNarration(text) {
+            const narration = document.getElementById('narration');
+            gsap.to(narration, {
+                opacity: 0,
+                duration: 0.2,
+                onComplete: () => {
+                    narration.innerHTML = text;
+                    gsap.to(narration, { opacity: 1, duration: 0.3 });
+                }
+            });
+        }
+
+        function updateStats(promptType) {
+            const relevantEl = document.getElementById('stat-relevant');
+            const densityEl = document.getElementById('stat-density');
+            const coverageEl = document.getElementById('stat-coverage');
+
+            if (promptType === null) {
+                relevantEl.textContent = '--';
+                relevantEl.className = 'stat-value';
+                densityEl.textContent = '--';
+                densityEl.className = 'stat-value';
+                coverageEl.textContent = '--';
+                coverageEl.className = 'stat-value';
+            } else {
+                const promptData = CONFIG.prompts[promptType];
+                const relevantCount = points.filter(p => promptData.relevantCategories.includes(p.category)).length;
+
+                relevantEl.textContent = relevantCount;
+                relevantEl.className = 'stat-value ' + (relevantCount > 200 ? 'high' : relevantCount > 100 ? 'medium' : 'low');
+
+                densityEl.textContent = promptData.focusDensity;
+                densityEl.className = 'stat-value ' + (promptData.focusDensity === 'High' ? 'high' : 'low');
+
+                coverageEl.textContent = promptData.coverage;
+                coverageEl.className = 'stat-value ' + (promptType === 'structured' ? 'high' : 'medium');
+            }
+        }
+
+        function updateSceneIndicators() {
+            const container = document.getElementById('scene-indicators');
+            container.innerHTML = '';
+
+            CONFIG.scenes.forEach((s, i) => {
+                const dot = document.createElement('div');
+                dot.className = 'scene-dot' + (i === currentScene ? ' active' : '');
+                dot.title = s.name;
+                dot.addEventListener('click', () => goToScene(i));
+                container.appendChild(dot);
+            });
+        }
+
+        function updatePlayButton(playing) {
+            const btn = document.getElementById('play-btn');
+            btn.innerHTML = playing ? '&#10074;&#10074; Pause' : '&#9658; Play';
+        }
+
+        // ============================================
+        // CONTROLS
+        // ============================================
+        function setupControls() {
+            document.getElementById('play-btn').addEventListener('click', togglePlay);
+            document.getElementById('prev-btn').addEventListener('click', prevScene);
+            document.getElementById('next-btn').addEventListener('click', nextScene);
+            document.getElementById('reset-btn').addEventListener('click', reset);
+
+            document.addEventListener('keydown', (e) => {
+                if (e.code === 'Space') {
+                    e.preventDefault();
+                    togglePlay();
+                } else if (e.code === 'ArrowRight') {
+                    nextScene();
+                } else if (e.code === 'ArrowLeft') {
+                    prevScene();
+                }
+            });
+
+            // Initialize scene indicators
+            updateSceneIndicators();
+        }
+
+        function togglePlay() {
+            isPlaying = !isPlaying;
+            updatePlayButton(isPlaying);
+
+            if (isPlaying) {
+                playSequence();
+            }
+        }
+
+        function playSequence() {
+            if (!isPlaying) return;
+
+            renderScene(currentScene);
+
+            setTimeout(() => {
+                if (isPlaying && currentScene < CONFIG.scenes.length - 1) {
+                    currentScene++;
+                    playSequence();
+                } else if (currentScene >= CONFIG.scenes.length - 1) {
+                    isPlaying = false;
+                    updatePlayButton(false);
+                }
+            }, 5000); // 5 seconds per scene
+        }
+
+        function nextScene() {
+            if (currentScene < CONFIG.scenes.length - 1) {
+                currentScene++;
+                renderScene(currentScene);
+            }
+        }
+
+        function prevScene() {
+            if (currentScene > 0) {
+                currentScene--;
+                renderScene(currentScene);
+            }
+        }
+
+        function goToScene(index) {
+            isPlaying = false;
+            updatePlayButton(false);
+            currentScene = index;
+            renderScene(index);
+        }
+
+        function reset() {
+            isPlaying = false;
+            updatePlayButton(false);
+            currentScene = 0;
+            renderScene(0);
+            camera.position.set(0, 0, 15);
+            controls.reset();
+        }
+
+        // ============================================
+        // INITIALIZATION
+        // ============================================
+        function init() {
+            initThree();
+            setupControls();
+            renderScene(0);
+        }
+
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
