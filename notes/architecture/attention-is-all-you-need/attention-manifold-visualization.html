@@ -343,6 +343,10 @@
             <span>Context Sphere</span>
         </div>
         <div class="legend-item">
+            <div class="legend-dot" style="background: #00CED1; opacity: 0.6;"></div>
+            <span>Hypersurface (Landing)</span>
+        </div>
+        <div class="legend-item">
             <div class="legend-dot" style="background: #334455; width: 20px; border-radius: 2px;"></div>
             <span>Space Grid (Warps)</span>
         </div>
@@ -616,6 +620,8 @@
             return texture;
         }
 
+        let hypersurface;
+
         function createContextSphere() {
             const geometry = new THREE.SphereGeometry(1, 32, 32);
             const material = new THREE.MeshBasicMaterial({
@@ -627,6 +633,51 @@
             contextSphere = new THREE.Mesh(geometry, material);
             contextSphere.visible = false;
             scene.add(contextSphere);
+
+            // Create hypersurface - a denser wireframe mesh showing where points land
+            const hypersurfaceGeometry = new THREE.IcosahedronGeometry(1, 3); // Icosahedron for even distribution
+            const hypersurfaceMaterial = new THREE.MeshBasicMaterial({
+                color: 0x00CED1,
+                transparent: true,
+                opacity: 0,
+                wireframe: true,
+                wireframeLinewidth: 1
+            });
+            hypersurface = new THREE.Mesh(hypersurfaceGeometry, hypersurfaceMaterial);
+            hypersurface.visible = false;
+            scene.add(hypersurface);
+        }
+
+        function showHypersurface(radius) {
+            hypersurface.scale.set(radius, radius, radius);
+            hypersurface.visible = true;
+
+            gsap.to(hypersurface.material, {
+                opacity: 0.4,
+                duration: 2,
+                ease: 'power2.out'
+            });
+
+            // Gentle rotation animation
+            gsap.to(hypersurface.rotation, {
+                y: Math.PI * 2,
+                duration: 30,
+                repeat: -1,
+                ease: 'none'
+            });
+        }
+
+        function hideHypersurface() {
+            if (hypersurface && hypersurface.visible) {
+                gsap.killTweensOf(hypersurface.rotation);
+                gsap.to(hypersurface.material, {
+                    opacity: 0,
+                    duration: 0.5,
+                    onComplete: () => {
+                        hypersurface.visible = false;
+                    }
+                });
+            }
         }
 
         function createWarpGrid() {
@@ -922,6 +973,9 @@
 
             // Hide flow lines
             hideFlowLines();
+
+            // Hide hypersurface
+            hideHypersurface();
         }
 
         let transformationAnimation = null;
@@ -938,47 +992,49 @@
                 cancelAnimationFrame(transformationAnimation);
             }
 
+            // Get the target sphere radius for this prompt
+            const sphereRadius = promptData.sphereRadius || 3.0;
+
             // Set target positions and colors
             points.forEach((p, i) => {
                 const isRelevant = promptData.relevantCategories.includes(p.category);
                 p.isRelevant = isRelevant;
 
                 if (isRelevant) {
-                    // Calculate pull toward center with some randomness
-                    const pullAmount = pullStrength * (0.7 + Math.random() * 0.3);
-                    const dirToCenter = new THREE.Vector3().subVectors(
-                        new THREE.Vector3(0, 0, 0),
-                        p.originalPosition
-                    );
+                    // Move relevant points ONTO the hypersphere surface
+                    // Project the point onto the sphere surface
+                    const dir = p.originalPosition.clone().normalize();
 
-                    p.targetPosition = new THREE.Vector3().addVectors(
-                        p.originalPosition,
-                        dirToCenter.multiplyScalar(pullAmount)
-                    );
+                    // Add some variation so points spread across the sphere surface
+                    const jitterAngle = (Math.random() - 0.5) * 0.5;
+                    const jitterAxis = new THREE.Vector3(
+                        Math.random() - 0.5,
+                        Math.random() - 0.5,
+                        Math.random() - 0.5
+                    ).normalize();
+                    dir.applyAxisAngle(jitterAxis, jitterAngle);
+
+                    // Place on sphere surface with slight depth variation
+                    const depthVariation = 0.9 + Math.random() * 0.2; // 0.9 to 1.1
+                    p.targetPosition = dir.multiplyScalar(sphereRadius * depthVariation);
 
                     // Bright gold/white for relevant points
                     p.targetColor = { r: 1.0, g: 0.9, b: 0.3 };
-                    p.targetSize = p.size * 2.0;
+                    p.targetSize = p.size * 2.5;
                 } else {
-                    // Push irrelevant points slightly outward
-                    const pushAmount = 0.1;
-                    const dirFromCenter = p.originalPosition.clone().normalize();
+                    // Irrelevant points STAY WHERE THEY ARE - just dim them
+                    p.targetPosition = p.originalPosition.clone();
 
-                    p.targetPosition = new THREE.Vector3().addVectors(
-                        p.originalPosition,
-                        dirFromCenter.multiplyScalar(pushAmount * p.originalPosition.length())
-                    );
-
-                    // Very dim for irrelevant
+                    // Dim but still visible
                     const color = new THREE.Color(p.color);
-                    p.targetColor = { r: color.r * 0.08, g: color.g * 0.08, b: color.b * 0.08 };
-                    p.targetSize = p.size * 0.3;
+                    p.targetColor = { r: color.r * 0.15, g: color.g * 0.15, b: color.b * 0.15 };
+                    p.targetSize = p.size * 0.6;
                 }
             });
 
             // Animate the transformation
             let progress = 0;
-            const duration = 2000; // 2 seconds
+            const duration = 5000; // 5 seconds - slower for readability
             const startTime = Date.now();
 
             function animateTransformation() {
@@ -1023,13 +1079,13 @@
 
             transformationAnimation = requestAnimationFrame(animateTransformation);
 
-            // Trigger warp grid deformation
-            warpGridTowardCenter(pullStrength, 2000);
+            // Trigger warp grid deformation (slower - 5 seconds)
+            warpGridTowardCenter(pullStrength, 5000);
 
-            // Create flow lines after a short delay
+            // Create flow lines after the transformation starts
             setTimeout(() => {
                 createFlowLines(promptType);
-            }, 500);
+            }, 1500);
         }
 
         function showContextSphere(promptType) {
@@ -1040,13 +1096,16 @@
 
             gsap.fromTo(contextSphere.material,
                 { opacity: 0 },
-                { opacity: 0.1, duration: 1 }
+                { opacity: 0.08, duration: 2 }
             );
 
             gsap.fromTo(contextSphere.scale,
                 { x: 0, y: 0, z: 0 },
-                { x: radius, y: radius, z: radius, duration: 1.5, ease: 'elastic.out(1, 0.5)' }
+                { x: radius, y: radius, z: radius, duration: 2.5, ease: 'elastic.out(1, 0.5)' }
             );
+
+            // Show the hypersurface (the raster covering where points land)
+            showHypersurface(radius);
         }
 
         function hideContextSphere() {
@@ -1057,6 +1116,8 @@
                     onComplete: () => { contextSphere.visible = false; }
                 });
             }
+            // Also hide hypersurface
+            hideHypersurface();
         }
 
         // ============================================
@@ -1189,7 +1250,7 @@
                     isPlaying = false;
                     updatePlayButton(false);
                 }
-            }, 5000); // 5 seconds per scene
+            }, 10000); // 10 seconds per scene - more time to read and observe
         }
 
         function nextScene() {
