@@ -350,6 +350,10 @@
             <div class="legend-dot" style="background: #334455; width: 20px; border-radius: 2px;"></div>
             <span>Space Grid (Warps)</span>
         </div>
+        <div class="legend-item">
+            <div class="legend-dot" style="background: #00FF00;"></div>
+            <span>Generation Path</span>
+        </div>
     </div>
 
     <div class="ui-overlay instructions">
@@ -383,7 +387,8 @@
                     pullStrength: 0.3,  // Weak pull
                     sphereRadius: 1.8,
                     focusDensity: 'Very Low',
-                    coverage: '1 topic'
+                    coverage: '1 topic',
+                    generatedResponse: "Machine learning is a type of AI that learns from data."
                 },
                 structured: {
                     text: "You are a patient teacher explaining to a curious 5-year-old. Using cooking analogies (like recipes and ingredients), explain how machine learning works. Include: what data is (ingredients), what training means (following a recipe), and how the model improves (getting better at cooking). Make it fun and memorable with examples a child would understand.",
@@ -391,7 +396,8 @@
                     pullStrength: 0.85,  // Strong pull
                     sphereRadius: 4.0,
                     focusDensity: 'Very High',
-                    coverage: '7 topics'
+                    coverage: '7 topics',
+                    generatedResponse: "Imagine you're learning to bake cookies! Data is like your ingredients - flour, sugar, eggs. Training is like following mom's recipe and tasting each batch. When cookies taste bad, you learn what went wrong. Machine learning works the same way - it tastes millions of cookies until it knows the perfect recipe!"
                 }
             },
             scenes: [
@@ -429,6 +435,14 @@
                 },
                 {
                     id: 5,
+                    name: 'Generation',
+                    narration: 'Now watch <strong>text generation</strong>! The AI traces a path across the hypersphere surface, each word drawing from the rich context gathered. The path shows how the response unfolds through connected knowledge.',
+                    promptType: 'structured',
+                    showSphere: true,
+                    showGeneration: true
+                },
+                {
+                    id: 6,
                     name: 'Comparison',
                     narration: '<strong>This is why prompt engineering matters.</strong> Your prompt literally <strong>bends the knowledge space</strong>. Same AI, same knowledge - but structured prompts create stronger "gravity" that pulls in more relevant context.',
                     promptType: 'comparison'
@@ -621,6 +635,8 @@
         }
 
         let hypersurface;
+        let generationPath;
+        let generationLabels = [];
 
         function createContextSphere() {
             const geometry = new THREE.SphereGeometry(1, 32, 32);
@@ -678,6 +694,158 @@
                     }
                 });
             }
+        }
+
+        function createGenerationPath(radius, generatedText) {
+            // Remove existing path
+            hideGenerationPath();
+
+            // Create a spiral/path on the sphere surface
+            const pathPoints = [];
+            const numPoints = 50;
+
+            // Generate a path that spirals across the sphere surface
+            for (let i = 0; i < numPoints; i++) {
+                const t = i / numPoints;
+                // Spiral from top to bottom-ish
+                const phi = t * Math.PI * 1.5 - Math.PI * 0.25; // latitude
+                const theta = t * Math.PI * 3; // longitude - spiral around
+
+                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const y = radius * Math.cos(phi);
+                const z = radius * Math.sin(phi) * Math.sin(theta);
+
+                pathPoints.push(new THREE.Vector3(x, y, z));
+            }
+
+            // Create the path line
+            const curve = new THREE.CatmullRomCurve3(pathPoints);
+            const curvePoints = curve.getPoints(100);
+            const geometry = new THREE.BufferGeometry().setFromPoints(curvePoints);
+
+            // Gradient colors along the path
+            const colors = [];
+            for (let i = 0; i < curvePoints.length; i++) {
+                const t = i / curvePoints.length;
+                // Green gradient
+                colors.push(0.2, 1.0 - t * 0.3, 0.2 + t * 0.3);
+            }
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const material = new THREE.LineBasicMaterial({
+                vertexColors: true,
+                transparent: true,
+                opacity: 0,
+                linewidth: 3
+            });
+
+            generationPath = new THREE.Line(geometry, material);
+            scene.add(generationPath);
+
+            // Animate path appearing progressively
+            const pathLength = generationPath.geometry.attributes.position.count;
+            generationPath.geometry.setDrawRange(0, 0);
+
+            gsap.to(material, { opacity: 0.9, duration: 1 });
+
+            // Animate draw range to show path being traced
+            const drawRangeObj = { count: 0 };
+            gsap.to(drawRangeObj, {
+                count: pathLength,
+                duration: 6,
+                ease: 'power1.inOut',
+                onUpdate: () => {
+                    generationPath.geometry.setDrawRange(0, Math.floor(drawRangeObj.count));
+                }
+            });
+
+            // Add text labels along the path
+            const words = generatedText.split(' ');
+            const labelPositions = [];
+
+            // Pick positions along the path for each word
+            words.forEach((word, i) => {
+                const t = (i + 0.5) / words.length;
+                const idx = Math.floor(t * (pathPoints.length - 1));
+                labelPositions.push({
+                    word: word,
+                    position: pathPoints[idx],
+                    delay: (i / words.length) * 6 // Stagger appearance with path
+                });
+            });
+
+            // Create CSS2D-style labels (using divs positioned in 3D)
+            labelPositions.forEach((label, i) => {
+                const labelDiv = document.createElement('div');
+                labelDiv.className = 'generation-label';
+                labelDiv.textContent = label.word;
+                labelDiv.style.cssText = `
+                    position: absolute;
+                    color: #00FF00;
+                    font-size: 14px;
+                    font-family: monospace;
+                    font-weight: bold;
+                    text-shadow: 0 0 10px #00FF00, 0 0 20px #00FF00;
+                    pointer-events: none;
+                    opacity: 0;
+                    white-space: nowrap;
+                `;
+                document.body.appendChild(labelDiv);
+
+                generationLabels.push({
+                    element: labelDiv,
+                    position: label.position,
+                    delay: label.delay
+                });
+
+                // Animate label appearing
+                gsap.to(labelDiv, {
+                    opacity: 1,
+                    duration: 0.5,
+                    delay: label.delay
+                });
+            });
+
+            // Update label positions in animation loop
+            updateGenerationLabels();
+        }
+
+        function updateGenerationLabels() {
+            if (generationLabels.length === 0) return;
+
+            generationLabels.forEach(label => {
+                const vector = label.position.clone();
+                vector.project(camera);
+
+                const x = (vector.x * 0.5 + 0.5) * window.innerWidth;
+                const y = (-(vector.y * 0.5) + 0.5) * window.innerHeight;
+
+                // Only show if in front of camera
+                if (vector.z < 1) {
+                    label.element.style.left = x + 'px';
+                    label.element.style.top = y + 'px';
+                    label.element.style.display = 'block';
+                } else {
+                    label.element.style.display = 'none';
+                }
+            });
+
+            requestAnimationFrame(updateGenerationLabels);
+        }
+
+        function hideGenerationPath() {
+            if (generationPath) {
+                scene.remove(generationPath);
+                generationPath = null;
+            }
+
+            // Remove all labels
+            generationLabels.forEach(label => {
+                if (label.element && label.element.parentNode) {
+                    label.element.parentNode.removeChild(label.element);
+                }
+            });
+            generationLabels = [];
         }
 
         function createWarpGrid() {
@@ -894,6 +1062,11 @@
             // Reset all points first
             resetPointColors();
 
+            // Hide generation path when changing scenes (unless this scene shows it)
+            if (!sceneData.showGeneration) {
+                hideGenerationPath();
+            }
+
             if (sceneData.promptType === null) {
                 // Introduction - show all points dimly
                 showAllPointsDim();
@@ -918,6 +1091,14 @@
                     hideContextSphere();
                 }
                 updateStats('structured');
+
+                // Show generation path if this scene has it
+                if (sceneData.showGeneration) {
+                    const promptData = CONFIG.prompts.structured;
+                    setTimeout(() => {
+                        createGenerationPath(promptData.sphereRadius, promptData.generatedResponse);
+                    }, 1500); // Delay to let sphere fully form
+                }
             } else if (sceneData.promptType === 'comparison') {
                 updatePromptDisplay('comparison');
                 highlightRelevantPoints('structured');
@@ -976,6 +1157,9 @@
 
             // Hide hypersurface
             hideHypersurface();
+
+            // Hide generation path
+            hideGenerationPath();
         }
 
         let transformationAnimation = null;
@@ -1022,13 +1206,13 @@
                     p.targetColor = { r: 1.0, g: 0.9, b: 0.3 };
                     p.targetSize = p.size * 2.5;
                 } else {
-                    // Irrelevant points STAY WHERE THEY ARE - just dim them
+                    // Irrelevant points STAY WHERE THEY ARE - dim but STILL VISIBLE
                     p.targetPosition = p.originalPosition.clone();
 
-                    // Dim but still visible
+                    // Keep them visible - just reduce brightness, not make invisible
                     const color = new THREE.Color(p.color);
-                    p.targetColor = { r: color.r * 0.15, g: color.g * 0.15, b: color.b * 0.15 };
-                    p.targetSize = p.size * 0.6;
+                    p.targetColor = { r: color.r * 0.35, g: color.g * 0.35, b: color.b * 0.35 };
+                    p.targetSize = p.size * 0.8;  // Slightly smaller but still visible
                 }
             });
 
@@ -1086,6 +1270,11 @@
             setTimeout(() => {
                 createFlowLines(promptType);
             }, 1500);
+
+            // Show the hypersurface as points start moving onto it
+            setTimeout(() => {
+                showHypersurface(sphereRadius);
+            }, 1000);
         }
 
         function showContextSphere(promptType) {
@@ -1278,6 +1467,7 @@
             isPlaying = false;
             updatePlayButton(false);
             currentScene = 0;
+            hideGenerationPath();
             renderScene(0);
             camera.position.set(0, 0, 15);
             controls.reset();
