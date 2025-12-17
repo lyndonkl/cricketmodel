@@ -105,7 +105,7 @@ Framework & Mixed PyTorch/PyG & Full PyTorch Geometric \\
 
 \subsection{Node Types}
 
-The graph contains \textbf{6 node type categories}:
+The graph contains \textbf{6 node type categories} with \textbf{21 context nodes}:
 
 \begin{figure}[H]
 \centering
@@ -128,7 +128,7 @@ The graph contains \textbf{6 node type categories}:
     % Actor
     \node[nodetype, fill=actorcolor!40] (actor) at (4, 4) {
         \textbf{ACTOR}\\
-        striker, bowler,\\partnership\\(5 nodes)
+        striker, nonstriker,\\bowler, partnership\\(7 nodes)
     };
 
     % Dynamics
@@ -140,7 +140,7 @@ The graph contains \textbf{6 node type categories}:
     % Ball
     \node[nodetype, fill=ballcolor!40, minimum width=4cm] (ball) at (2, 1.5) {
         \textbf{BALL}\\
-        Each delivery in history\\(N nodes, full innings!)
+        15 features + embeddings\\(N nodes, full innings!)
     };
 
     % Query
@@ -151,10 +151,10 @@ The graph contains \textbf{6 node type categories}:
 
     % Counts
     \node[right=0.5cm of actor, align=left, font=\footnotesize] {
-        Context: 17 nodes\\
+        Context: 20 nodes\\
         History: N balls\\
         Query: 1 node\\
-        \textbf{Total: 18 + N}
+        \textbf{Total: 21 + N}
     };
 \end{tikzpicture}
 \caption{Six node type categories in the unified graph}
@@ -188,9 +188,10 @@ The graph contains \textbf{6 node type categories}:
     % Temporal
     \node[box, fill=purple!15] (temporal) at (4, 3) {
         \textbf{Temporal}\\[0.2cm]
-        ball $\to$ ball (precedes)\\
+        ball $\to$ ball (precedes*)\\
         ball $\leftrightarrow$ ball (same\_bowler)\\
-        ball $\leftrightarrow$ ball (same\_batsman)
+        ball $\leftrightarrow$ ball (same\_batsman)\\
+        ball $\leftrightarrow$ ball (same\_matchup)
     };
 
     % Cross-domain
@@ -198,6 +199,7 @@ The graph contains \textbf{6 node type categories}:
         \textbf{Cross-Domain}\\[0.2cm]
         ball $\to$ actor (bowled\_by)\\
         ball $\to$ actor (faced\_by)\\
+        ball $\to$ actor (partnered\_by)\\
         ball $\to$ dynamics (informs)
     };
 
@@ -211,7 +213,7 @@ The graph contains \textbf{6 node type categories}:
         query $\leftarrow$ ball
     };
 
-    \node[below=0.3cm of cross, font=\small] {14 edge types total};
+    \node[below=0.3cm of cross, font=\small] {16 edge types total (*precedes has edge features)};
 \end{tikzpicture}
 \caption{Edge type categories encoding different relationships}
 \end{figure}
@@ -492,13 +494,21 @@ Hierarchical & GATv2Conv & Attention learns which context matters \\
 Intra-layer & GATv2Conv & Self-attention for permutation equivariance \\
 Actor matchup & GATv2Conv & Learn matchup dynamics \\
 Temporal (precedes) & TransformerConv & Edge features for temporal distance \\
-Same-bowler/batsman & GATv2Conv & Aggregate spell patterns \\
-Cross-domain & SAGEConv & Simple aggregation \\
+Same-bowler/batsman/matchup & GATv2Conv & Aggregate spell/matchup patterns \\
+Cross-domain (faced/bowled/partnered) & GATv2Conv & Attention-weighted recency importance \\
+Dynamics (informs) & SAGEConv & Simple aggregation for momentum \\
 Query & GATv2Conv & Learn what to attend for prediction \\
 \bottomrule
 \end{tabular}
 \caption{Edge-type-specific convolution operators}
 \end{table}
+
+\textbf{Key design decisions:}
+\begin{itemize}
+    \item \textbf{Cross-domain edges use GATv2Conv} (not SAGEConv): This allows the model to attend more to recent/relevant balls when aggregating a player's performance
+    \item \textbf{Temporal edges have edge features}: The \texttt{precedes} edges carry a temporal distance attribute (closer to 0 = more recent) enabling recency-weighted attention
+    \item \textbf{Cross-domain edges respect Z2 symmetry}: Only balls actually faced by current striker connect to striker\_identity (not all balls)
+\end{itemize}
 
 \newpage
 %==========================================
@@ -680,6 +690,60 @@ In V2, they are \textbf{explicit graph structure} that the model must respect.
 \end{tikzpicture}
 \caption{Complete data flow from raw inputs to prediction}
 \end{figure}
+
+\newpage
+%==========================================
+\section{Ball Node Features}
+%==========================================
+
+Each ball node contains \textbf{15 numeric features} plus player embeddings:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llp{6cm}}
+\toprule
+Category & Feature & Description \\
+\midrule
+\multirow{5}{*}{Basic}
+& runs & Normalized by 6 \\
+& is\_wicket & Binary indicator \\
+& over & Normalized by 20 \\
+& ball\_in\_over & Normalized by 6 \\
+& is\_boundary & 4 or 6 scored \\
+\midrule
+\multirow{4}{*}{Extras}
+& is\_wide & Wide ball indicator \\
+& is\_noball & No-ball indicator \\
+& is\_bye & Bye runs indicator \\
+& is\_legbye & Leg bye indicator \\
+\midrule
+\multirow{6}{*}{Wicket Type}
+& wicket\_bowled & Bowled dismissal \\
+& wicket\_caught & Caught dismissal \\
+& wicket\_lbw & LBW dismissal \\
+& wicket\_run\_out & Run out dismissal \\
+& wicket\_stumped & Stumped dismissal \\
+& wicket\_other & Other dismissal types \\
+\bottomrule
+\end{tabular}
+\caption{Ball node features (15 dimensions)}
+\end{table}
+
+\textbf{Why wicket types matter:}
+\begin{itemize}
+    \item \textbf{Bowled/LBW}: Indicates bowler skill, good line and length
+    \item \textbf{Caught}: Suggests batsman aggression/risk-taking
+    \item \textbf{Run out}: Partnership running decisions and risk assessment
+    \item \textbf{Stumped}: Batsman error against spin bowling
+\end{itemize}
+
+Additionally, each ball has:
+\begin{itemize}
+    \item \textbf{Bowler ID}: 64-dim learned embedding of who bowled
+    \item \textbf{Batsman ID}: 64-dim learned embedding of who faced
+\end{itemize}
+
+Total ball input: 15 + 64 + 64 = 143 dimensions $\to$ projected to hidden\_dim (128).
 
 \newpage
 %==========================================
