@@ -15,6 +15,7 @@
 \geometry{margin=0.9in}
 \usepackage{float}
 \usepackage{multirow}
+\usepackage{enumitem}
 
 % Colors
 \definecolor{globalcolor}{RGB}{100, 149, 237}
@@ -34,189 +35,554 @@
 \maketitle
 
 \begin{abstract}
-This document describes Version 2 of the cricket ball prediction model. The key innovation is representing \textbf{all information as a single heterogeneous graph}, eliminating the separation between spatial and temporal processing. This enables full innings history while maintaining computational efficiency.
+This document describes Version 2 of the cricket ball prediction model. The model represents \textbf{all information as a single heterogeneous graph} where different types of nodes (venue, players, match state, ball history) are connected by typed edges that encode cricket-specific relationships. This enables processing full innings history while maintaining computational efficiency through sparse, structured attention patterns.
 \end{abstract}
 
 \tableofcontents
 \newpage
 
 %==========================================
-\section{Overview}
+\section{Overview: What is a Heterogeneous Graph?}
 %==========================================
 
-\subsection{The Core Idea}
+\subsection{The Key Idea}
 
-Instead of separate spatial and temporal streams, \textbf{everything becomes one heterogeneous graph}.
+A \textbf{heterogeneous graph} contains multiple types of nodes and multiple types of edges. Unlike a standard graph where all nodes are the same, our cricket graph has:
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    oldbox/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=1.5cm, align=center, fill=gray!20},
-    newbox/.style={rectangle, draw, rounded corners, minimum width=4cm, minimum height=2cm, align=center, fill=green!20},
-    arrow/.style={->, thick, >=stealth}
-]
-    % V1
-    \node[oldbox] (spatial) at (-3, 2) {Spatial Stream\\HierarchicalGAT};
-    \node[oldbox] (temporal) at (-3, 0) {Temporal Stream\\Transformer};
-    \node[oldbox, minimum width=2cm] (fusion) at (-3, -2) {Fusion};
+\begin{itemize}
+    \item \textbf{Different node types}: venue, teams, players, match state, momentum, ball history
+    \item \textbf{Different edge types}: ``conditions'', ``matchup'', ``precedes'', ``same\_bowler'', etc.
+\end{itemize}
 
-    \draw[arrow] (spatial) -- (fusion);
-    \draw[arrow] (temporal) -- (fusion);
+Each edge type can have its own neural network (convolution operator), allowing the model to learn relationship-specific patterns.
 
-    \node[above=0.3cm of spatial] {\textbf{V1: Dual Stream}};
+\subsection{Why This Matters for Cricket}
 
-    % Arrow
-    \node at (0, 0) {\Huge $\Rightarrow$};
+Cricket prediction requires understanding many different types of information and their relationships:
 
-    % V2
-    \node[newbox, minimum height=4cm] (unified) at (4, 0) {
-        \textbf{Unified}\\
-        \textbf{Heterogeneous}\\
-        \textbf{Graph}\\[0.3cm]
-        All nodes\\All edges\\One model
-    };
+\begin{itemize}
+    \item \textbf{Who} is batting and bowling (player identities)
+    \item \textbf{Where} the match is being played (venue characteristics)
+    \item \textbf{What} is the current score, required rate, wickets in hand
+    \item \textbf{How} the players are performing today (runs, strike rate, economy)
+    \item \textbf{What happened} in previous balls (ball-by-ball history)
+\end{itemize}
 
-    \node[above=0.3cm of unified] {\textbf{V2: Unified Graph}};
-\end{tikzpicture}
-\caption{Architecture evolution from V1 (dual stream) to V2 (unified graph)}
-\end{figure}
+By encoding all of this in a single graph, the model can learn complex interactions (e.g., ``Rohit struggles against left-arm spin at the MCG in the death overs'').
 
-\subsection{Why This Matters}
+\newpage
+%==========================================
+\section{Node Types: The Building Blocks}
+%==========================================
+
+The graph contains \textbf{21 context nodes} organized into \textbf{6 categories}, plus N ball history nodes.
+
+\textbf{Important distinction:}
+\begin{itemize}
+    \item A \textbf{category} is a semantic grouping (e.g., ``Actor'' = all player-related nodes)
+    \item Individual \textbf{nodes} within a category represent specific pieces of information
+\end{itemize}
+
+\subsection{Category 1: Global (3 nodes)}
+
+These nodes represent match-level constants that don't change during the innings:
 
 \begin{table}[H]
 \centering
-\begin{tabular}{lll}
+\begin{tabular}{llp{7cm}}
 \toprule
-Aspect & V1 (Dual Stream) & V2 (Unified Graph) \\
+Node Name & Features & What it Represents \\
 \midrule
-History length & Fixed 24 balls & Full innings \\
-Complexity & O(n²) attention & O(edges) \\
-Same-bowler patterns & Soft attention bias & Explicit edges \\
-Information flow & Separate then fuse & Unified message passing \\
-Framework & Mixed PyTorch/PyG & Full PyTorch Geometric \\
+\texttt{venue} & 32-dim embedding & The ground (MCG, Eden Gardens, etc.). Learned embedding captures pitch behavior, boundaries, historical scoring patterns. \\
+\texttt{batting\_team} & 32-dim embedding & The team currently batting. Captures team-level tendencies. \\
+\texttt{bowling\_team} & 32-dim embedding & The team currently bowling. \\
 \bottomrule
 \end{tabular}
+\caption{Global category: 3 nodes representing match constants}
+\end{table}
+
+\textbf{Example:} At the MCG, India batting vs Australia bowling $\to$ venue, batting\_team, bowling\_team nodes initialized with their learned embeddings.
+
+\subsection{Category 2: State (5 nodes)}
+
+These nodes capture the current match situation. They change as the match progresses:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llp{6cm}}
+\toprule
+Node Name & Features & What it Represents \\
+\midrule
+\texttt{score\_state} & 3 features & Current score, wickets, run rate \\
+\texttt{chase\_state} & 3 features & Target, required rate, balls remaining (2nd innings only) \\
+\texttt{phase\_state} & 5 features & Powerplay/middle/death phase, over progress, \textbf{is\_first\_ball} indicator \\
+\texttt{time\_pressure} & 3 features & Overs remaining, wickets remaining, urgency \\
+\texttt{wicket\_buffer} & 2 features & Partnership length, wickets in hand comfort \\
+\bottomrule
+\end{tabular}
+\caption{State category: 5 nodes representing current match situation}
+\end{table}
+
+\textbf{Example:} Score 150/3 in 15 overs chasing 180 $\to$ score\_state=(150, 3, 10.0), chase\_state=(180, 6.0, 30), phase\_state=(0, 1, 0, 0.75, 0).
+
+\textbf{Note:} \texttt{is\_first\_ball} in phase\_state is a cold-start indicator (1.0 if this is the very first ball of the innings, 0.0 otherwise).
+
+\subsection{Category 3: Actor (7 nodes)}
+
+These nodes represent the current players on the field and their performance:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llp{5.5cm}}
+\toprule
+Node Name & Features & What it Represents \\
+\midrule
+\texttt{striker\_identity} & 64-dim embedding & WHO is on strike (learned player embedding) \\
+\texttt{striker\_state} & 7 features & HOW they're batting: runs, balls, SR, dot\%, boundaries, set indicator, \textbf{is\_debut\_ball} \\
+\texttt{nonstriker\_identity} & 64-dim embedding & WHO is at the non-striker's end \\
+\texttt{nonstriker\_state} & 7 features & HOW the non-striker has been batting \\
+\texttt{bowler\_identity} & 64-dim embedding & WHO is bowling \\
+\texttt{bowler\_state} & 6 features & HOW they're bowling: overs, runs, wickets, economy, dot\% \\
+\texttt{partnership} & 4 features & Partnership runs, balls, run rate, boundaries \\
+\bottomrule
+\end{tabular}
+\caption{Actor category: 7 nodes representing current players}
+\end{table}
+
+\textbf{Key insight:} Separating identity from state allows the model to learn ``Bumrah is generally accurate'' (identity) independently from ``Bumrah is bowling well today'' (state).
+
+\textbf{Note:} \texttt{is\_debut\_ball} in striker/nonstriker state is 1.0 if this is the player's first ball of the match (cold-start handling).
+
+\subsection{Category 4: Dynamics (4 nodes)}
+
+These nodes capture recent momentum and pressure patterns:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llp{6cm}}
+\toprule
+Node Name & Features & What it Represents \\
+\midrule
+\texttt{batting\_momentum} & 4 features & Recent scoring rate, boundary\%, acceleration \\
+\texttt{bowling\_momentum} & 4 features & Recent economy, dot\%, control \\
+\texttt{pressure} & 3 features & Required rate vs actual rate, mounting pressure \\
+\texttt{dot\_pressure} & 3 features & Consecutive dots, dot ball spiral indicator \\
+\bottomrule
+\end{tabular}
+\caption{Dynamics category: 4 nodes representing momentum and pressure}
+\end{table}
+
+\textbf{Why this matters:} Cricket outcomes are heavily influenced by momentum. A batsman who just hit two boundaries is in a different mental state than one who faced 5 dots.
+
+\subsection{Category 5: Ball (N nodes)}
+
+Each historical ball in the innings becomes a node:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lp{9cm}}
+\toprule
+Features & Description \\
+\midrule
+15 numeric features & runs, is\_wicket, over, ball\_in\_over, is\_boundary, extras (wide, noball, bye, legbye), wicket types (bowled, caught, lbw, run\_out, stumped, other) \\
+64-dim bowler ID & Embedding of who bowled this ball \\
+64-dim batsman ID & Embedding of who faced this ball \\
+\bottomrule
+\end{tabular}
+\caption{Ball nodes: one per historical delivery}
+\end{table}
+
+\textbf{Total per ball:} 15 + 64 + 64 = 143 features $\to$ projected to 128-dim.
+
+\subsection{Category 6: Query (1 node)}
+
+A special node used to aggregate all information for the final prediction:
+
+\begin{itemize}
+    \item Initialized with zeros
+    \item After message passing, contains aggregated information from the entire graph
+    \item Final prediction is made from this node's representation
+\end{itemize}
+
+\subsection{Summary: Total Node Count}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+Category & Nodes in Category & Role \\
+\midrule
+Global & 3 & Match constants \\
+State & 5 & Current situation \\
+Actor & 7 & Players on field \\
+Dynamics & 4 & Momentum/pressure \\
+Ball & N (variable) & Full innings history \\
+Query & 1 & Prediction aggregation \\
+\midrule
+\textbf{Total} & \textbf{20 + N} & \\
+\bottomrule
+\end{tabular}
+\caption{Node count by category}
 \end{table}
 
 \newpage
 %==========================================
-\section{The Unified Graph Structure}
+\section{Edge Types: The Relationships}
 %==========================================
 
-\subsection{Node Types}
+Edges encode \textbf{how nodes relate to each other}. Different edge types have different meanings and use different neural network operations.
 
-The graph contains \textbf{6 node type categories} with \textbf{21 context nodes}:
+\subsection{Understanding Edge Type Notation}
+
+An edge type is written as: \texttt{(source\_type, relation, target\_type)}
+
+For example: \texttt{(global, conditions, state)} means ``global nodes have a 'conditions' relationship with state nodes''.
+
+\textbf{Important:} The categories (global, state, etc.) contain multiple nodes. An edge type like \texttt{(global, conditions, state)} means edges connect nodes \textit{within} those categories.
+
+\subsection{Category 1: Hierarchical Edges (3 types)}
+
+These edges encode a \textbf{top-down conditioning} structure: higher-level context influences lower-level interpretation.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llp{5cm}}
+\toprule
+Edge Type & Connectivity & Meaning \\
+\midrule
+\texttt{(global, conditions, state)} & 3 $\to$ 5 (15 edges) & Venue/teams influence how we interpret the score \\
+\texttt{(state, conditions, actor)} & 5 $\to$ 7 (35 edges) & Match situation influences how we interpret player performance \\
+\texttt{(actor, conditions, dynamics)} & 7 $\to$ 4 (28 edges) & Current players influence how we interpret momentum \\
+\bottomrule
+\end{tabular}
+\caption{Hierarchical edges: top-down conditioning}
+\end{table}
+
+\textbf{Concrete example:} 150/3 means different things at the MCG (good) vs Chennai (average). The edge from \texttt{venue} to \texttt{score\_state} allows this contextual interpretation.
+
+\subsection{Category 2: Intra-Layer Edges (4 types)}
+
+These edges connect nodes \textbf{within the same category}, allowing related information to interact.
+
+\subsubsection{What does ``global $\leftrightarrow$ global'' mean?}
+
+This means edges between the 3 nodes in the global category:
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
-    nodetype/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=1.2cm, align=center, font=\small},
-    scale=0.9, transform shape
+    node/.style={circle, draw, fill=globalcolor!40, minimum size=1.2cm, font=\small},
+    edge/.style={<->, thick, gray}
 ]
-    % Global
-    \node[nodetype, fill=globalcolor!40] (global) at (-4, 4) {
-        \textbf{GLOBAL}\\
-        venue, bat\_team,\\bowl\_team\\(3 nodes)
-    };
+    \node[node] (v) at (0, 0) {venue};
+    \node[node] (bt) at (3, 0) {bat\_team};
+    \node[node] (bot) at (1.5, -2) {bowl\_team};
 
-    % State
-    \node[nodetype, fill=statecolor!40] (state) at (0, 4) {
-        \textbf{STATE}\\
-        score, chase, phase,\\time, wickets\\(5 nodes)
-    };
+    \draw[edge] (v) -- node[above] {} (bt);
+    \draw[edge] (v) -- node[left] {} (bot);
+    \draw[edge] (bt) -- node[right] {} (bot);
 
-    % Actor
-    \node[nodetype, fill=actorcolor!40] (actor) at (4, 4) {
-        \textbf{ACTOR}\\
-        striker, nonstriker,\\bowler, partnership\\(7 nodes)
-    };
-
-    % Dynamics
-    \node[nodetype, fill=dynamicscolor!40] (dynamics) at (-2, 1.5) {
-        \textbf{DYNAMICS}\\
-        momentum,\\pressure, dots\\(4 nodes)
-    };
-
-    % Ball
-    \node[nodetype, fill=ballcolor!40, minimum width=4cm] (ball) at (2, 1.5) {
-        \textbf{BALL}\\
-        15 features + embeddings\\(N nodes, full innings!)
-    };
-
-    % Query
-    \node[nodetype, fill=querycolor, minimum width=3cm] (query) at (0, -1) {
-        \textbf{QUERY}\\
-        Prediction target\\(1 node)
-    };
-
-    % Counts
-    \node[right=0.5cm of actor, align=left, font=\footnotesize] {
-        Context: 20 nodes\\
-        History: N balls\\
-        Query: 1 node\\
-        \textbf{Total: 21 + N}
+    \node[below=0.5cm of bot, align=center, font=\small] {
+        6 edges total (bidirectional)\\
+        ``venue $\leftrightarrow$ bat\_team'', ``venue $\leftrightarrow$ bowl\_team'', ``bat\_team $\leftrightarrow$ bowl\_team''
     };
 \end{tikzpicture}
-\caption{Six node type categories in the unified graph}
+\caption{Intra-layer edges within the Global category}
 \end{figure}
 
-\subsection{Edge Types}
+\textbf{Why it matters:} India playing at home vs Australia playing away is different from the reverse. The venue-team combination matters.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llp{4.5cm}}
+\toprule
+Edge Type & Edges & What it Captures \\
+\midrule
+\texttt{(global, relates\_to, global)} & 6 & Home/away advantage, venue-team combinations \\
+\texttt{(state, relates\_to, state)} & 20 & Score relates to required rate, phase relates to pressure \\
+\texttt{(actor, matchup, actor)} & 22 & Striker-bowler confrontation, partnership dynamics \\
+\texttt{(dynamics, relates\_to, dynamics)} & 12 & Batting momentum vs bowling momentum (zero-sum) \\
+\bottomrule
+\end{tabular}
+\caption{Intra-layer edges: within-category relationships}
+\end{table}
+
+\subsubsection{The Actor Matchup Graph}
+
+The \texttt{(actor, matchup, actor)} edges deserve special attention. They encode:
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
-    box/.style={rectangle, draw, rounded corners, minimum width=3.5cm, minimum height=2cm, align=center, font=\small},
+    identity/.style={circle, draw, fill=actorcolor!60, minimum size=1.3cm, align=center, font=\scriptsize},
+    state/.style={circle, draw, fill=actorcolor!30, minimum size=1.3cm, align=center, font=\scriptsize},
+    partnership/.style={circle, draw, fill=actorcolor!45, minimum size=1.3cm, align=center, font=\scriptsize},
+    edge/.style={<->, thick, gray!70},
+    keyedge/.style={<->, very thick, red!70},
     scale=0.85, transform shape
 ]
-    % Hierarchical
-    \node[box, fill=blue!15] (hier) at (-4, 3) {
-        \textbf{Hierarchical}\\[0.2cm]
-        global $\to$ state\\
-        state $\to$ actor\\
-        actor $\to$ dynamics
-    };
+    % Striker
+    \node[identity] (si) at (-4, 2) {striker\\ID};
+    \node[state] (ss) at (-4, -1) {striker\\state};
 
-    % Intra-layer
-    \node[box, fill=green!15] (intra) at (0, 3) {
-        \textbf{Intra-Layer}\\[0.2cm]
-        global $\leftrightarrow$ global\\
-        state $\leftrightarrow$ state\\
-        actor $\leftrightarrow$ actor\\
-        dynamics $\leftrightarrow$ dynamics
-    };
+    % Non-striker
+    \node[identity] (ni) at (-1, 2) {nonstr\\ID};
+    \node[state] (ns) at (-1, -1) {nonstr\\state};
 
-    % Temporal
-    \node[box, fill=purple!15] (temporal) at (4, 3) {
-        \textbf{Temporal}\\[0.2cm]
-        ball $\to$ ball (precedes*)\\
-        ball $\leftrightarrow$ ball (same\_bowler)\\
-        ball $\leftrightarrow$ ball (same\_batsman)\\
-        ball $\leftrightarrow$ ball (same\_matchup)
-    };
+    % Bowler
+    \node[identity] (bi) at (4, 2) {bowler\\ID};
+    \node[state] (bs) at (4, -1) {bowler\\state};
 
-    % Cross-domain
-    \node[box, fill=orange!15] (cross) at (-2, 0) {
-        \textbf{Cross-Domain}\\[0.2cm]
-        ball $\to$ actor (bowled\_by)\\
-        ball $\to$ actor (faced\_by)\\
-        ball $\to$ actor (partnered\_by)\\
-        ball $\to$ dynamics (informs)
-    };
+    % Partnership
+    \node[partnership] (p) at (0, -3) {partnership};
 
-    % Query
-    \node[box, fill=yellow!30] (query) at (2, 0) {
-        \textbf{Query}\\[0.2cm]
-        query $\leftarrow$ global\\
-        query $\leftarrow$ state\\
-        query $\leftarrow$ actor\\
-        query $\leftarrow$ dynamics\\
-        query $\leftarrow$ ball
-    };
+    % Identity <-> State
+    \draw[edge] (si) -- (ss);
+    \draw[edge] (ni) -- (ns);
+    \draw[edge] (bi) -- (bs);
 
-    \node[below=0.3cm of cross, font=\small] {16 edge types total (*precedes has edge features)};
+    % Partnership connections
+    \draw[edge] (ss) -- (p);
+    \draw[edge] (ns) -- (p);
+    \draw[edge] (bs) -- (p);
+
+    % THE KEY MATCHUPS
+    \draw[keyedge] (si) -- node[above, font=\small] {\textbf{primary matchup}} (bi);
+    \draw[edge, orange!70, thick] (ni) -- (bi);
+    \draw[edge, blue!70, thick] (si) -- (ni);
+
+    \node[below=0.3cm of p, align=center, font=\small] {
+        \textcolor{red!70}{\textbf{Red:}} Striker vs Bowler (the key prediction)\\
+        \textcolor{orange!70}{\textbf{Orange:}} Non-striker vs Bowler (run-out risk)\\
+        \textcolor{blue!70}{\textbf{Blue:}} Striker $\leftrightarrow$ Non-striker (partnership chemistry)
+    };
 \end{tikzpicture}
-\caption{Edge type categories encoding different relationships}
+\caption{Actor matchup edges capture player interactions}
 \end{figure}
+
+\subsection{Category 3: Temporal Edges (6 types)}
+
+These edges encode the \textbf{structure of ball-by-ball history}. This is where V2 gains efficiency over transformer attention.
+
+\subsubsection{Multi-Scale Temporal Architecture}
+
+Cricket patterns occur at different time scales:
+\begin{itemize}
+    \item \textbf{Within-over (1-6 balls):} Immediate pressure, bowler's current plan
+    \item \textbf{2-over window (7-18 balls):} Momentum shifts, scoring patterns
+    \item \textbf{Historical (19+ balls):} Phase patterns, earlier wickets' impact
+\end{itemize}
+
+We use \textbf{three separate edge types} for these scales:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lp{4cm}p{5cm}}
+\toprule
+Edge Type & Connects & Neural Network \\
+\midrule
+\texttt{recent\_precedes} & Balls within 6 deliveries & TransformerConv (fast decay, attention to recency) \\
+\texttt{medium\_precedes} & Balls 7-18 apart & TransformerConv (medium decay) \\
+\texttt{distant\_precedes} & Balls 19+ apart (sparse) & SAGEConv (simple mean, sparse connections) \\
+\bottomrule
+\end{tabular}
+\caption{Multi-scale temporal edges}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    ball/.style={circle, draw, fill=ballcolor!40, minimum size=0.7cm, font=\tiny},
+    scale=0.8, transform shape
+]
+    % Balls
+    \foreach \i in {1,...,12} {
+        \node[ball] (b\i) at (\i*0.9, 0) {\i};
+    }
+    \node at (12.5, 0) {...};
+
+    % Recent (purple) - dense
+    \draw[->, purple!70, thick] (b1) -- (b2);
+    \draw[->, purple!70, thick] (b2) -- (b3);
+    \draw[->, purple!70, thick] (b3) -- (b4);
+    \draw[->, purple!70, thick] (b4) -- (b5);
+    \draw[->, purple!70, thick] (b5) -- (b6);
+
+    % Medium (blue) - from ball 1 to 7-12
+    \draw[->, blue!60, thick, bend left=40] (b1) to (b8);
+    \draw[->, blue!60, thick, bend left=40] (b2) to (b10);
+
+    % Labels
+    \node[below=0.8cm of b3, align=center, font=\small, purple!70] {\texttt{recent\_precedes}\\(dense, within 6 balls)};
+    \node[above=0.5cm of b6, align=center, font=\small, blue!60] {\texttt{medium\_precedes}\\(7-18 balls apart)};
+\end{tikzpicture}
+\caption{Multi-scale temporal edges (distant not shown for clarity)}
+\end{figure}
+
+\subsubsection{Same-Bowler and Same-Batsman Edges}
+
+These edges connect balls by the same player, regardless of temporal distance:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    ball/.style={circle, draw, minimum size=0.9cm, font=\small},
+    scale=0.8, transform shape
+]
+    % Balls with bowler labels
+    \foreach \i/\b in {1/Bu, 2/St, 3/Bu, 4/St, 5/Bu, 6/St, 7/Bu, 8/St} {
+        \node[ball, fill=ballcolor!30] (b\i) at (\i*1.3, 0) {\i};
+        \node[below=0.1cm of b\i, font=\tiny] {\b};
+    }
+
+    % Same bowler: Bumrah (1,3,5,7) - green
+    \draw[<->, green!70, thick, bend left=40] (b1) to (b3);
+    \draw[<->, green!70, thick, bend left=40] (b3) to (b5);
+    \draw[<->, green!70, thick, bend left=40] (b5) to (b7);
+
+    % Same bowler: Starc (2,4,6,8) - orange
+    \draw[<->, orange!70, thick, bend right=40] (b2) to (b4);
+    \draw[<->, orange!70, thick, bend right=40] (b4) to (b6);
+    \draw[<->, orange!70, thick, bend right=40] (b6) to (b8);
+
+    \node[below=1.2cm of b4, align=center, font=\small] {
+        \textcolor{green!70}{\textbf{same\_bowler:}} Bumrah's deliveries form a connected group\\
+        \textcolor{orange!70}{\textbf{same\_bowler:}} Starc's deliveries form another group
+    };
+\end{tikzpicture}
+\caption{same\_bowler edges group a bowler's spell}
+\end{figure}
+
+\textbf{Why this matters:} The model can ask ``How has Bumrah been bowling?'' by looking at all his deliveries together, without needing to attend to balls by other bowlers.
+
+\subsubsection{Same-Matchup Edges (CAUSAL)}
+
+\texttt{same\_matchup} connects balls with the same bowler-batsman combination:
+
+\textbf{Critical:} Unlike same\_bowler/same\_batsman (bidirectional), same\_matchup edges are \textbf{UNIDIRECTIONAL (older $\to$ newer)}. This prevents ``future information leakage'':
+
+\begin{itemize}
+    \item During training, the graph contains future balls
+    \item Bidirectional edges would let the model ``see'' future outcomes
+    \item At inference time, only historical balls exist
+    \item Causal edges ensure the model learns patterns valid at inference
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    ball/.style={circle, draw, fill=ballcolor!40, minimum size=0.8cm, font=\small},
+    scale=0.85, transform shape
+]
+    \node[ball] (b5) at (0, 0) {5};
+    \node[ball] (b21) at (2.5, 0) {21};
+    \node[ball] (b38) at (5, 0) {38};
+    \node[ball] (b52) at (7.5, 0) {52};
+
+    \draw[->, red!70, very thick] (b5) -- (b21);
+    \draw[->, red!70, very thick] (b21) -- (b38);
+    \draw[->, red!70, very thick] (b38) -- (b52);
+
+    \node[above=0.3cm of b21, font=\small] {Bumrah $\to$ Rohit matchup};
+    \node[below=0.5cm of b21, font=\small, red!70] {Causal: older $\to$ newer ONLY};
+\end{tikzpicture}
+\caption{same\_matchup edges are causal to prevent distribution shift}
+\end{figure}
+
+\subsection{Category 4: Cross-Domain Edges (4 types)}
+
+These edges connect ball history to current context nodes:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lp{6cm}l}
+\toprule
+Edge Type & Meaning & Connectivity \\
+\midrule
+\texttt{(ball, faced\_by, striker\_identity)} & Balls faced by current striker & Variable \\
+\texttt{(ball, bowled\_by, bowler\_identity)} & Balls bowled by current bowler & Variable \\
+\texttt{(ball, partnered\_by, nonstriker\_identity)} & Balls involving current non-striker & Variable \\
+\texttt{(ball, informs, dynamics)} & Recent balls inform momentum & 12 $\to$ 4 \\
+\bottomrule
+\end{tabular}
+\caption{Cross-domain edges connect history to context}
+\end{table}
+
+\textbf{Critical: Correct Player Attribution}
+
+Cross-domain edges ONLY connect to balls involving the CURRENT players:
+
+\begin{itemize}
+    \item If Kohli faced balls 1-20 then got out, and Sharma is now batting
+    \item Balls 1-20 do NOT connect to \texttt{striker\_identity} (which is now Sharma)
+    \item Only balls Sharma actually faced will connect
+\end{itemize}
+
+This respects the Z2 symmetry of striker/non-striker swapping.
+
+\subsection{Category 5: Query Edges (2 types)}
+
+\subsubsection{Attends Edges}
+
+The query node receives information from all other nodes:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+Edge Type & Connectivity \\
+\midrule
+\texttt{(*, attends, query)} & All 20 context nodes + N balls $\to$ query \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Drives Edges (NEW)}
+
+Dynamics nodes \textbf{directly drive} prediction through feedback loops:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lp{7cm}}
+\toprule
+Edge Type & Meaning \\
+\midrule
+\texttt{(dynamics, drives, query)} & Momentum and pressure directly influence prediction \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Why a separate edge type?}
+
+The \texttt{drives} edges capture \textbf{causal feedback loops}:
+
+\begin{enumerate}
+    \item \textbf{Confidence Spiral:} High batting momentum $\to$ more aggressive shots $\to$ more runs $\to$ higher momentum
+    \item \textbf{Required Rate Pressure:} High pressure $\to$ risk-taking $\to$ boundaries OR wickets
+    \item \textbf{Dot Ball Spiral:} High dot pressure $\to$ desperate shots $\to$ wickets $\to$ rebuilding
+\end{enumerate}
+
+By having learned attention weights on \texttt{drives} edges, the model can weight different dynamics signals appropriately.
+
+\subsection{Edge Type Summary}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+Category & Edge Types & Purpose \\
+\midrule
+Hierarchical & 3 & Top-down context conditioning \\
+Intra-layer & 4 & Within-category interactions \\
+Temporal & 6 & Ball history structure (multi-scale + actor grouping) \\
+Cross-domain & 4 & Connect history to context \\
+Query & 2 & Prediction aggregation + dynamics drive \\
+\midrule
+\textbf{Total} & \textbf{19} & \\
+\bottomrule
+\end{tabular}
+\caption{19 edge types organized by purpose}
+\end{table}
 
 \newpage
 %==========================================
@@ -248,12 +614,14 @@ The graph contains \textbf{6 node type categories} with \textbf{21 context nodes
     \node[snode] (s4) at (1, 6) {Ti};
     \node[snode] (s5) at (2, 6) {Wi};
 
-    % Actor nodes
+    % Actor nodes (now 7 with non-striker)
     \node[anode] (a1) at (4, 6) {SI};
     \node[anode] (a2) at (5, 6) {SS};
-    \node[anode] (a3) at (6, 6) {BI};
-    \node[anode] (a4) at (7, 6) {BS};
-    \node[anode] (a5) at (5.5, 5) {Pa};
+    \node[anode] (a6) at (4.5, 5) {NI};
+    \node[anode] (a7) at (5.5, 5) {NS};
+    \node[anode] (a3) at (7, 6) {BI};
+    \node[anode] (a4) at (8, 6) {BS};
+    \node[anode] (a5) at (6, 4) {Pa};
 
     % Dynamics nodes
     \node[dnode] (d1) at (-5.5, 3) {BM};
@@ -291,6 +659,8 @@ The graph contains \textbf{6 node type categories} with \textbf{21 context nodes
     \draw[biedge, actorcolor!70] (a3) -- (a4);
     \draw[biedge, actorcolor!70] (a2) -- (a5);
     \draw[biedge, actorcolor!70] (a4) -- (a5);
+    \draw[biedge, blue!50] (a1) -- (a6);
+    \draw[biedge, orange!50] (a6) -- (a3);
 
     % Temporal: precedes
     \foreach \i in {0,...,10} {
@@ -303,21 +673,15 @@ The graph contains \textbf{6 node type categories} with \textbf{21 context nodes
     \draw[biedge, green!60, bend left=30] (b3) to (b6);
     \draw[biedge, green!60, bend left=30] (b6) to (b9);
 
-    % Same batsman (example: balls 1, 2, 5, 8)
-    \draw[biedge, orange!60, bend right=30] (b1) to (b2);
-    \draw[biedge, orange!60, bend right=30] (b2) to (b5);
-    \draw[biedge, orange!60, bend right=30] (b5) to (b8);
-
-    % Ball -> actor
-    \draw[edge, gray!50] (b0) to[bend right=20] (a3);
-    \draw[edge, gray!50] (b3) to[bend right=20] (a3);
+    % Dynamics drives query
+    \draw[edge, red!60, thick] (d1) to[bend left=10] (q);
+    \draw[edge, red!60, thick] (d3) to[bend right=10] (q);
 
     % Query attends to everything
     \draw[edge, yellow!70!black, dashed] (q) -- (g2);
     \draw[edge, yellow!70!black, dashed] (q) -- (s3);
     \draw[edge, yellow!70!black, dashed] (q) -- (a1);
     \draw[edge, yellow!70!black, dashed] (q) -- (a3);
-    \draw[edge, yellow!70!black, dashed] (q) -- (d2);
     \draw[edge, yellow!70!black, dashed] (q) -- (b5);
     \draw[edge, yellow!70!black, dashed] (q) -- (b11);
 
@@ -330,108 +694,16 @@ The graph contains \textbf{6 node type categories} with \textbf{21 context nodes
     \node[below=0.1cm of q, font=\footnotesize] {Query};
 
     % Legend
-    \node[draw, fill=white, align=left, font=\tiny] at (8.5, 4) {
-        \textcolor{red!70}{\rule{0.5cm}{2pt}} Matchup edge\\
+    \node[draw, fill=white, align=left, font=\tiny] at (9, 3) {
+        \textcolor{red!70}{\rule{0.5cm}{2pt}} Matchup\\
         \textcolor{purple!60}{\rule{0.5cm}{2pt}} Temporal\\
         \textcolor{green!60}{\rule{0.5cm}{2pt}} Same bowler\\
-        \textcolor{orange!60}{\rule{0.5cm}{2pt}} Same batsman\\
-        \textcolor{yellow!70!black}{\rule{0.5cm}{2pt}} Query attends
+        \textcolor{red!60}{\rule{0.5cm}{2pt}} Drives\\
+        \textcolor{yellow!70!black}{\rule{0.5cm}{2pt}} Attends
     };
 \end{tikzpicture}
-\caption{Complete unified graph structure showing all node and edge types}
+\caption{Complete unified graph structure}
 \end{figure}
-
-\newpage
-%==========================================
-\section{Why Full History Now Works}
-%==========================================
-
-\subsection{The Quadratic Problem (V1)}
-
-In V1's Transformer, every ball attends to every other ball:
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    ball/.style={circle, draw, fill=ballcolor!40, minimum size=0.6cm},
-    scale=0.8, transform shape
-]
-    % Balls
-    \foreach \i in {1,...,6} {
-        \node[ball] (b\i) at (\i*1.2, 0) {\i};
-    }
-
-    % All-to-all attention
-    \foreach \i in {1,...,6} {
-        \foreach \j in {1,...,6} {
-            \ifnum\i<\j
-                \draw[gray!30, thin] (b\i) -- (b\j);
-            \fi
-        }
-    }
-
-    \node[below=1cm of b3, align=center] {
-        6 balls $\to$ 15 attention pairs\\
-        24 balls $\to$ 276 pairs\\
-        \textbf{120 balls $\to$ 7,140 pairs}
-    };
-\end{tikzpicture}
-\caption{V1: Full attention scales O(n²)}
-\end{figure}
-
-\subsection{The Linear Solution (V2)}
-
-In V2's graph, attention only flows along edges:
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    ball/.style={circle, draw, fill=ballcolor!40, minimum size=0.6cm},
-    scale=0.8, transform shape
-]
-    % Balls (bowler A = 1,3,5 | bowler B = 2,4,6)
-    \foreach \i in {1,...,6} {
-        \node[ball] (b\i) at (\i*1.2, 0) {\i};
-    }
-
-    % Temporal edges only
-    \foreach \i in {1,...,5} {
-        \pgfmathtruncatemacro{\j}{\i+1}
-        \draw[->, purple!60, thick] (b\i) -- (b\j);
-    }
-
-    % Same bowler (1-3-5)
-    \draw[<->, green!60, thick, bend left=40] (b1) to (b3);
-    \draw[<->, green!60, thick, bend left=40] (b3) to (b5);
-
-    % Same bowler (2-4-6)
-    \draw[<->, orange!60, thick, bend right=40] (b2) to (b4);
-    \draw[<->, orange!60, thick, bend right=40] (b4) to (b6);
-
-    \node[below=1cm of b3, align=center] {
-        6 balls $\to$ 11 edges\\
-        24 balls $\to$ \textasciitilde100 edges\\
-        \textbf{120 balls $\to$ \textasciitilde500 edges}
-    };
-\end{tikzpicture}
-\caption{V2: Sparse edges scale O(n)}
-\end{figure}
-
-\subsection{Efficiency Comparison}
-
-\begin{table}[H]
-\centering
-\begin{tabular}{lccc}
-\toprule
-History Length & V1 Attention Pairs & V2 Edges & Speedup \\
-\midrule
-24 balls & 576 & \textasciitilde150 & 4x \\
-60 balls & 3,600 & \textasciitilde350 & 10x \\
-120 balls (full innings) & 14,400 & \textasciitilde700 & \textbf{20x} \\
-\bottomrule
-\end{tabular}
-\caption{Computational comparison: V1 vs V2}
-\end{table}
 
 \newpage
 %==========================================
@@ -443,14 +715,14 @@ History Length & V1 Attention Pairs & V2 Edges & Speedup \\
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
-    stage/.style={rectangle, draw, rounded corners, minimum width=10cm, minimum height=2.5cm, align=center},
+    stage/.style={rectangle, draw, rounded corners, minimum width=11cm, minimum height=2.5cm, align=center},
     arrow/.style={->, thick, >=stealth}
 ]
     % Stage 1
     \node[stage, fill=blue!10] (s1) at (0, 6) {
         \textbf{Stage 1: Node Encoding}\\[0.2cm]
-        Entity embeddings (venue, teams, players)\\
-        Feature projections (state, dynamics)\\
+        Entity embeddings (venue, teams, players: learned)\\
+        Feature projections (state, dynamics: MLP)\\
         Ball encoding (events + player embeddings)\\
         All nodes $\to$ hidden\_dim (128)
     };
@@ -458,18 +730,16 @@ History Length & V1 Attention Pairs & V2 Edges & Speedup \\
     % Stage 2
     \node[stage, fill=green!10] (s2) at (0, 2.5) {
         \textbf{Stage 2: Message Passing}\\[0.2cm]
-        HeteroConv layers (×3)\\
-        Edge-type-specific convolutions\\
-        GATv2Conv for attention edges\\
-        TransformerConv for temporal edges
+        HeteroConv layers ($\times$3)\\
+        Each layer: edge-type-specific convolution $\to$ residual $\to$ LayerNorm $\to$ dropout
     };
 
     % Stage 3
     \node[stage, fill=red!10] (s3) at (0, -1) {
-        \textbf{Stage 3: Readout \& Prediction}\\[0.2cm]
-        Extract query node representation\\
-        MLP: 128 $\to$ 128 $\to$ 7\\
-        Softmax $\to$ probabilities
+        \textbf{Stage 3: Hybrid Readout \& Prediction}\\[0.2cm]
+        Matchup MLP: concat(striker, bowler) $\to$ 128-dim\\
+        Query projection: query $\to$ 128-dim\\
+        Combine: concat(matchup, query) $\to$ 128-dim $\to$ MLP $\to$ 7 classes
     };
 
     \draw[arrow] (s1) -- (s2);
@@ -479,296 +749,77 @@ History Length & V1 Attention Pairs & V2 Edges & Speedup \\
     \node[above=0.3cm of s1] {Input: HeteroData (nodes + edges)};
     \node[below=0.3cm of s3] {Output: [P(dot), P(1), P(2), P(3), P(4), P(6), P(wicket)]};
 \end{tikzpicture}
-\caption{Three-stage model pipeline}
+\caption{Three-stage model pipeline with hybrid readout}
 \end{figure}
+
+\subsection{Hybrid Readout: Why?}
+
+Cricket ball prediction is fundamentally an \textbf{edge-level task}: the outcome depends on the specific striker-bowler matchup, modulated by context.
+
+The hybrid readout combines:
+\begin{enumerate}
+    \item \textbf{Matchup interaction:} Direct combination of striker and bowler representations after message passing
+    \item \textbf{Query aggregation:} Global context (venue, phase, momentum) aggregated by the query node
+\end{enumerate}
+
+This respects the geometric structure: prediction is at the matchup level, influenced by graph-level context.
 
 \subsection{Convolution Choices per Edge Type}
 
 \begin{table}[H]
 \centering
-\begin{tabular}{lll}
+\begin{tabular}{llp{4.5cm}}
 \toprule
 Edge Type & Convolution & Rationale \\
 \midrule
-Hierarchical & GATv2Conv & Attention learns which context matters \\
-Intra-layer & GATv2Conv & Self-attention for permutation equivariance \\
+Hierarchical (conditions) & GATv2Conv & Learn which context matters \\
+Intra-layer (relates\_to) & GATv2Conv & Self-attention for interactions \\
 Actor matchup & GATv2Conv & Learn matchup dynamics \\
-Temporal (precedes) & TransformerConv & Edge features for temporal distance \\
-Same-bowler/batsman/matchup & GATv2Conv & Aggregate spell/matchup patterns \\
-Cross-domain (faced/bowled/partnered) & GATv2Conv & Attention-weighted recency importance \\
-Dynamics (informs) & SAGEConv & Simple aggregation for momentum \\
-Query & GATv2Conv & Learn what to attend for prediction \\
+recent/medium\_precedes & TransformerConv & Edge features for temporal distance \\
+distant\_precedes & SAGEConv & Simple mean for sparse history \\
+same\_bowler/batsman & GATv2Conv & Aggregate spell patterns \\
+same\_matchup (causal) & GATv2Conv & Historical matchup outcomes \\
+Cross-domain (faced/bowled/partnered) & GATv2Conv & Attention-weighted recency \\
+Dynamics (informs) & SAGEConv & Simple aggregation \\
+Dynamics (drives) & GATv2Conv & Weight momentum vs pressure \\
+Query (attends) & GATv2Conv & Learn what matters for prediction \\
 \bottomrule
 \end{tabular}
 \caption{Edge-type-specific convolution operators}
 \end{table}
 
-\textbf{Key design decisions:}
-\begin{itemize}
-    \item \textbf{Cross-domain edges use GATv2Conv} (not SAGEConv): This allows the model to attend more to recent/relevant balls when aggregating a player's performance
-    \item \textbf{Temporal edges have edge features}: The \texttt{precedes} edges carry a temporal distance attribute (closer to 0 = more recent) enabling recency-weighted attention
-    \item \textbf{Cross-domain edges respect Z2 symmetry}: Only balls actually faced by current striker connect to striker\_identity (not all balls)
-\end{itemize}
-
 \newpage
 %==========================================
-\section{Temporal Edge Structure}
+\section{Training: Focal Loss for Class Imbalance}
 %==========================================
 
-\subsection{Three Types of Ball-to-Ball Edges}
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    ball/.style={circle, draw, minimum size=1cm, font=\small},
-    scale=0.9, transform shape
-]
-    % Row of balls
-    \foreach \i/\b/\ba in {1/St/R, 2/Bu/K, 3/St/R, 4/Cu/K, 5/Bu/R, 6/St/K, 7/Cu/R, 8/Bu/K} {
-        \node[ball, fill=ballcolor!30] (b\i) at (\i*1.5, 0) {\i};
-        \node[below=0.1cm of b\i, font=\tiny] {\b};
-        \node[above=0.1cm of b\i, font=\tiny] {\ba};
-    }
-
-    % Legend
-    \node[left=0.5cm of b1, align=right, font=\small] {Ball\\Bowler\\Batsman};
-
-    % Temporal edges
-    \foreach \i in {1,...,7} {
-        \pgfmathtruncatemacro{\j}{\i+1}
-        \draw[->, thick, purple!70] (b\i) -- (b\j);
-    }
-    \node[right=0.3cm of b8, font=\small, purple!70] {Precedes};
-
-    % Same bowler: Starc (1,3,6)
-    \draw[<->, thick, green!70, bend left=50] (b1) to (b3);
-    \draw[<->, thick, green!70, bend left=50] (b3) to (b6);
-
-    % Same bowler: Bumrah (2,5,8)
-    \draw[<->, thick, green!70, bend right=50] (b2) to (b5);
-    \draw[<->, thick, green!70, bend right=50] (b5) to (b8);
-
-    % Same batsman: Rohit (1,3,5,7)
-    \draw[<->, thick, orange!70, bend left=70] (b1) to (b5);
-    \draw[<->, thick, orange!70, bend left=70] (b3) to (b7);
-
-    % Same batsman: Kohli (2,4,6,8)
-    \draw[<->, thick, orange!70, bend right=70] (b2) to (b6);
-    \draw[<->, thick, orange!70, bend right=70] (b4) to (b8);
-
-    % Labels
-    \node[below=2cm of b4, align=center] {
-        \textcolor{purple!70}{\textbf{Precedes}}: Causal temporal order (ball $i \to i+1$)\\[0.2cm]
-        \textcolor{green!70}{\textbf{Same Bowler}}: Balls by same bowler form cliques\\[0.2cm]
-        \textcolor{orange!70}{\textbf{Same Batsman}}: Balls faced by same batsman form cliques
-    };
-\end{tikzpicture}
-\caption{Temporal edge structure enables efficient pattern learning}
-\end{figure}
-
-\subsection{Why This Structure Matters}
-
+Cricket outcomes are heavily imbalanced:
 \begin{itemize}
-    \item \textbf{Precedes}: Captures immediate context, momentum shifts
-    \item \textbf{Same Bowler}: How is this bowler's spell going? Patterns in their deliveries
-    \item \textbf{Same Batsman}: How is this batsman building their innings?
+    \item Dots: $\sim$35-40\%
+    \item Singles: $\sim$25-30\%
+    \item Twos: $\sim$5-8\%
+    \item Threes: $\sim$1-2\%
+    \item Fours: $\sim$12-15\%
+    \item Sixes: $\sim$5-8\%
+    \item Wickets: $\sim$5\%
 \end{itemize}
 
-In V1, these patterns were captured via soft attention biases.\\
-In V2, they are \textbf{explicit graph structure} that the model must respect.
+Standard cross-entropy loss is dominated by the majority class (dots). We use \textbf{Focal Loss}:
 
-\newpage
-%==========================================
-\section{The Actor Matchup Graph}
-%==========================================
+\[
+\mathcal{L}_{focal} = -\alpha_t (1 - p_t)^\gamma \log(p_t)
+\]
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    identity/.style={circle, draw, fill=actorcolor!60, minimum size=1.5cm, align=center, font=\small},
-    state/.style={circle, draw, fill=actorcolor!30, minimum size=1.5cm, align=center, font=\small},
-    partnership/.style={circle, draw, fill=actorcolor!45, minimum size=1.5cm, align=center, font=\small},
-    edge/.style={<->, thick},
-    scale=0.9, transform shape
-]
-    % Striker side
-    \node[identity] (si) at (-3, 2) {Striker\\ID};
-    \node[state] (ss) at (-3, -1) {Striker\\State};
-
-    % Bowler side
-    \node[identity] (bi) at (3, 2) {Bowler\\ID};
-    \node[state] (bs) at (3, -1) {Bowler\\State};
-
-    % Partnership
-    \node[partnership] (p) at (0, -2.5) {Partnership};
-
-    % Edges
-    \draw[edge, actorcolor!80] (si) -- (ss);
-    \draw[edge, actorcolor!80] (bi) -- (bs);
-    \draw[edge, red!70, very thick] (si) -- node[above, font=\small] {THE MATCHUP} (bi);
-    \draw[edge, actorcolor!80] (ss) -- (p);
-    \draw[edge, actorcolor!80] (bs) -- (p);
-
-    % Annotations
-    \node[right=0.5cm of bi, align=left, font=\small] {
-        Identity: WHO\\
-        (learned embedding)
-    };
-    \node[right=0.5cm of bs, align=left, font=\small] {
-        State: HOW\\
-        (today's performance)
-    };
-
-    % Key insight
-    \node[below=1cm of p, align=center, font=\small] {
-        The \textcolor{red!70}{\textbf{Striker $\leftrightarrow$ Bowler}} edge is crucial:\\
-        ``Rohit vs Bumrah'' encodes their historical confrontation
-    };
-\end{tikzpicture}
-\caption{Actor layer graph structure (same as V1, now explicit)}
-\end{figure}
-
-%==========================================
-\section{Data Flow Summary}
-%==========================================
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    input/.style={rectangle, draw, rounded corners, fill=gray!20, minimum width=2cm, minimum height=0.8cm, align=center, font=\scriptsize},
-    proc/.style={rectangle, draw, rounded corners, fill=blue!20, minimum width=3cm, minimum height=1cm, align=center, font=\small},
-    output/.style={rectangle, draw, rounded corners, fill=green!20, minimum width=2.5cm, minimum height=0.8cm, align=center, font=\small},
-    scale=0.7, transform shape
-]
-    % Raw inputs
-    \node[input] (venue) at (-6, 8) {Venue ID};
-    \node[input] (teams) at (-4, 8) {Team IDs};
-    \node[input] (score) at (-2, 8) {Score/Wickets};
-    \node[input] (players) at (0, 8) {Player IDs};
-    \node[input] (perf) at (2, 8) {Performance};
-    \node[input] (mom) at (4, 8) {Momentum};
-    \node[input] (balls) at (6, 8) {Ball History};
-
-    % Encoding
-    \node[proc, minimum width=14cm] (encode) at (0, 6) {
-        \textbf{Node Encoding}\\
-        Embeddings + Projections $\to$ all nodes at 128-dim
-    };
-
-    % Message passing
-    \node[proc, minimum width=14cm, minimum height=1.5cm] (mp) at (0, 3.5) {
-        \textbf{HeteroConv Message Passing (×3 layers)}\\
-        Information flows along all edge types\\
-        Each layer: attend, aggregate, update, normalize
-    };
-
-    % Query
-    \node[proc, minimum width=6cm] (query) at (0, 1) {
-        \textbf{Query Node Readout}\\
-        Has aggregated all information
-    };
-
-    % Prediction
-    \node[proc, minimum width=4cm] (pred) at (0, -1) {
-        \textbf{MLP + Softmax}\\
-        128 $\to$ 7
-    };
-
-    % Output
-    \node[output, minimum width=10cm] (out) at (0, -3) {
-        \textbf{Output}: [35\% dot, 28\% single, 10\% two, 5\% three, 12\% four, 5\% six, 5\% wicket]
-    };
-
-    % Arrows
-    \foreach \n in {venue, teams, score, players, perf, mom, balls} {
-        \draw[->, thick] (\n) -- (encode);
-    }
-    \draw[->, thick] (encode) -- (mp);
-    \draw[->, thick] (mp) -- (query);
-    \draw[->, thick] (query) -- (pred);
-    \draw[->, thick] (pred) -- (out);
-\end{tikzpicture}
-\caption{Complete data flow from raw inputs to prediction}
-\end{figure}
-
-\newpage
-%==========================================
-\section{Ball Node Features}
-%==========================================
-
-Each ball node contains \textbf{15 numeric features} plus player embeddings:
-
-\begin{table}[H]
-\centering
-\begin{tabular}{llp{6cm}}
-\toprule
-Category & Feature & Description \\
-\midrule
-\multirow{5}{*}{Basic}
-& runs & Normalized by 6 \\
-& is\_wicket & Binary indicator \\
-& over & Normalized by 20 \\
-& ball\_in\_over & Normalized by 6 \\
-& is\_boundary & 4 or 6 scored \\
-\midrule
-\multirow{4}{*}{Extras}
-& is\_wide & Wide ball indicator \\
-& is\_noball & No-ball indicator \\
-& is\_bye & Bye runs indicator \\
-& is\_legbye & Leg bye indicator \\
-\midrule
-\multirow{6}{*}{Wicket Type}
-& wicket\_bowled & Bowled dismissal \\
-& wicket\_caught & Caught dismissal \\
-& wicket\_lbw & LBW dismissal \\
-& wicket\_run\_out & Run out dismissal \\
-& wicket\_stumped & Stumped dismissal \\
-& wicket\_other & Other dismissal types \\
-\bottomrule
-\end{tabular}
-\caption{Ball node features (15 dimensions)}
-\end{table}
-
-\textbf{Why wicket types matter:}
+where:
 \begin{itemize}
-    \item \textbf{Bowled/LBW}: Indicates bowler skill, good line and length
-    \item \textbf{Caught}: Suggests batsman aggression/risk-taking
-    \item \textbf{Run out}: Partnership running decisions and risk assessment
-    \item \textbf{Stumped}: Batsman error against spin bowling
+    \item $p_t$ = model's probability for the correct class
+    \item $\gamma = 2.0$ = focusing parameter (higher = more focus on hard examples)
+    \item $\alpha_t$ = optional class weights
 \end{itemize}
 
-Additionally, each ball has:
-\begin{itemize}
-    \item \textbf{Bowler ID}: 64-dim learned embedding of who bowled
-    \item \textbf{Batsman ID}: 64-dim learned embedding of who faced
-\end{itemize}
+\textbf{Key insight:} $(1 - p_t)^\gamma$ down-weights ``easy'' examples where the model is already confident, focusing learning on hard/rare cases like wickets.
 
-Total ball input: 15 + 64 + 64 = 143 dimensions $\to$ projected to hidden\_dim (128).
-
-\newpage
-%==========================================
-\section{Implementation Summary}
-%==========================================
-
-\subsection{Key PyTorch Geometric Components}
-
-\begin{table}[H]
-\centering
-\begin{tabular}{ll}
-\toprule
-Component & PyG Class \\
-\midrule
-Data structure & \texttt{HeteroData} \\
-Message passing & \texttt{HeteroConv} \\
-Attention convolution & \texttt{GATv2Conv} \\
-Temporal convolution & \texttt{TransformerConv} \\
-Simple aggregation & \texttt{SAGEConv} \\
-Batching & \texttt{DataLoader} (auto-batches HeteroData) \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Model Configuration}
+\subsection{Training Configuration}
 
 \begin{table}[H]
 \centering
@@ -780,22 +831,72 @@ Hidden dimension & 128 \\
 Number of layers & 3 \\
 Attention heads & 4 \\
 Dropout & 0.1 \\
-Number of classes & 7 \\
 \midrule
-Estimated parameters & \textasciitilde720K \\
+Loss & Focal Loss ($\gamma=2.0$) \\
+Optimizer & AdamW (lr=1e-3, wd=0.01) \\
+Scheduler & Cosine annealing \\
+Early stopping & Patience 10 epochs \\
+\midrule
+Estimated parameters & $\sim$720K \\
 \bottomrule
 \end{tabular}
+\caption{Model and training configuration}
 \end{table}
 
-\subsection{Training Details}
+\newpage
+%==========================================
+\section{Why Full History Now Works}
+%==========================================
 
+\subsection{The Quadratic Problem (V1)}
+
+In V1's Transformer, every ball attends to every other ball:
+
+\[
+\text{Attention pairs} = \frac{n(n-1)}{2} = O(n^2)
+\]
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc}
+\toprule
+History Length & Attention Pairs \\
+\midrule
+24 balls & 276 \\
+60 balls & 1,770 \\
+120 balls (full innings) & 7,140 \\
+\bottomrule
+\end{tabular}
+\caption{Quadratic growth in V1}
+\end{table}
+
+\subsection{The Sparse Solution (V2)}
+
+In V2, attention only flows along explicit edges. Cricket structure provides natural sparsity:
 \begin{itemize}
-    \item \textbf{Loss}: Cross-entropy with class weights (imbalanced outcomes)
-    \item \textbf{Optimizer}: AdamW (lr=1e-3, weight\_decay=0.01)
-    \item \textbf{Scheduler}: Cosine annealing
-    \item \textbf{Early stopping}: Patience of 10 epochs
+    \item Only $\sim$6 bowlers per innings $\to$ sparse same\_bowler
+    \item Only $\sim$4-6 batsmen $\to$ sparse same\_batsman
+    \item Matchups are intersection of above $\to$ very sparse
+    \item Multi-scale temporal limits long-range connections
 \end{itemize}
 
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+History Length & V1 Attention & V2 Edges & Speedup \\
+\midrule
+24 balls & 576 & $\sim$150 & 4x \\
+60 balls & 3,600 & $\sim$800 & 4.5x \\
+120 balls (full innings) & 14,400 & $\sim$2,500 & \textbf{6x} \\
+\bottomrule
+\end{tabular}
+\caption{Computational comparison: V1 vs V2}
+\end{table}
+
+\textbf{Key insight:} V2 is not just faster---it's more informative. The 20 context nodes (venue, players, dynamics) provide rich structure that V1 processed separately.
+
+\newpage
 %==========================================
 \section{Interpretability Benefits}
 %==========================================
@@ -806,9 +907,28 @@ The unified graph provides natural interpretability:
     \item \textbf{Edge attention weights}: Which historical balls mattered most?
     \item \textbf{Same-bowler attention}: How much did the bowler's spell inform the prediction?
     \item \textbf{Matchup attention}: How important was the striker-bowler confrontation?
-    \item \textbf{Hierarchical attention}: Did global context (venue) or local dynamics drive the prediction?
+    \item \textbf{Dynamics drives attention}: Was momentum or pressure more influential?
+    \item \textbf{Hierarchical attention}: Did venue or match state dominate?
 \end{enumerate}
 
 All of these are directly extractable from the GATv2Conv attention weights.
+
+%==========================================
+\section{Summary}
+%==========================================
+
+The V2 architecture represents cricket prediction as a heterogeneous graph where:
+
+\begin{itemize}
+    \item \textbf{21 context nodes} capture venue, teams, match state, players, and dynamics
+    \item \textbf{N ball nodes} capture full innings history
+    \item \textbf{19 edge types} encode cricket-specific relationships
+    \item \textbf{Multi-scale temporal edges} capture patterns at different time scales
+    \item \textbf{Causal same\_matchup edges} prevent train-test distribution shift
+    \item \textbf{Hybrid readout} combines matchup interaction with global context
+    \item \textbf{Focal loss} handles class imbalance
+\end{itemize}
+
+This design follows Geometric Deep Learning principles: the inductive bias matches cricket's inherent structure, enabling efficient processing of full innings while respecting symmetries (player attribution, temporal causality).
 
 \end{document}
