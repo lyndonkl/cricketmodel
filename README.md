@@ -11,7 +11,7 @@ Match Context Graph (21 node types, 16 edge types)
 ├── Actor Layer:     striker_identity, striker_state, nonstriker_identity, nonstriker_state,
 │                    bowler_identity, bowler_state, partnership
 ├── Dynamics Layer:  batting_momentum, bowling_momentum, pressure_index, dot_pressure
-├── Ball Nodes:      Full innings history (N balls, 9 features each)
+├── Ball Nodes:      Full innings history (N balls, 15 features each)
 └── Query Node:      Aggregates information for prediction
 ```
 
@@ -20,8 +20,10 @@ Match Context Graph (21 node types, 16 edge types)
 - **Unified Graph**: All match context in one heterogeneous graph
 - **Full History**: O(n) sparse edges enable complete innings history (vs V1's 24-ball window)
 - **Non-Striker Modeling**: Partnership dynamics and strike rotation patterns
-- **Rich Ball Features**: 9 features including extras (wide, noball, bye, legbye)
-- **Typed Edges**: Different convolution operators per relationship type
+- **Rich Ball Features**: 15 features including extras and wicket types (bowled, caught, lbw, run out, stumped)
+- **Typed Edges**: Different convolution operators per relationship type (GATv2Conv, TransformerConv, SAGEConv)
+- **Temporal Edge Features**: Precedes edges include temporal distance for recency-weighted attention
+- **Correct Player Attribution**: Cross-domain edges respect Z2 symmetry of striker/non-striker swap
 - **Interpretable**: Attention weights show which context influences predictions
 
 ### Edge Types

@@ -109,10 +109,17 @@ class CricketHeteroGNN(nn.Module):
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
 
-        # 2. Message passing
+        # 2. Message passing with edge attributes (e.g., temporal distance for precedes edges)
         edge_index_dict = data.edge_index_dict
+
+        # Extract edge attributes if available
+        edge_attr_dict = {}
+        for edge_type in edge_index_dict.keys():
+            if hasattr(data[edge_type], 'edge_attr') and data[edge_type].edge_attr is not None:
+                edge_attr_dict[edge_type] = data[edge_type].edge_attr
+
         for conv_block in self.conv_stack:
-            x_dict = conv_block(x_dict, edge_index_dict)
+            x_dict = conv_block(x_dict, edge_index_dict, edge_attr_dict if edge_attr_dict else None)
 
         # 3. Readout from query nodes
         query_repr = x_dict['query']  # [batch_size, hidden_dim]
@@ -208,10 +215,17 @@ class CricketHeteroGNNWithPooling(CricketHeteroGNN):
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
 
-        # 2. Message passing
+        # 2. Message passing with edge attributes
         edge_index_dict = data.edge_index_dict
+
+        # Extract edge attributes if available
+        edge_attr_dict = {}
+        for edge_type in edge_index_dict.keys():
+            if hasattr(data[edge_type], 'edge_attr') and data[edge_type].edge_attr is not None:
+                edge_attr_dict[edge_type] = data[edge_type].edge_attr
+
         for conv_block in self.conv_stack:
-            x_dict = conv_block(x_dict, edge_index_dict)
+            x_dict = conv_block(x_dict, edge_index_dict, edge_attr_dict if edge_attr_dict else None)
 
         # 3. Query representation
         query_repr = x_dict['query']  # [batch_size, hidden_dim]

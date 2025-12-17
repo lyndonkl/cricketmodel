@@ -182,16 +182,23 @@ def create_hetero_data(
         data['ball'].x = torch.tensor(ball_features, dtype=torch.float)
 
         # Ball player IDs (for embedding lookup in model)
+        # These track WHO actually faced/bowled/partnered each historical ball
         ball_bowler_ids = [entity_mapper.get_player_id(d['bowler']) for d in history]
         ball_batsman_ids = [entity_mapper.get_player_id(d['batter']) for d in history]
+        ball_nonstriker_ids = [
+            entity_mapper.get_player_id(d.get('non_striker', d['batter']))
+            for d in history
+        ]
 
         data['ball'].bowler_ids = torch.tensor(ball_bowler_ids, dtype=torch.long)
         data['ball'].batsman_ids = torch.tensor(ball_batsman_ids, dtype=torch.long)
+        data['ball'].nonstriker_ids = torch.tensor(ball_nonstriker_ids, dtype=torch.long)
     else:
         # Empty ball nodes for first ball prediction
         data['ball'].x = torch.zeros((0, BALL_FEATURE_DIM), dtype=torch.float)
         data['ball'].bowler_ids = torch.zeros((0,), dtype=torch.long)
         data['ball'].batsman_ids = torch.zeros((0,), dtype=torch.long)
+        data['ball'].nonstriker_ids = torch.zeros((0,), dtype=torch.long)
 
     # =========================================================================
     # 6. QUERY NODE
@@ -204,24 +211,36 @@ def create_hetero_data(
     # 7. BUILD EDGES
     # =========================================================================
 
-    # Get ball player IDs for temporal edge building
+    # Get ball player IDs for temporal and cross-domain edge building
     if num_balls > 0:
         bowler_ids_list = data['ball'].bowler_ids.tolist()
         batsman_ids_list = data['ball'].batsman_ids.tolist()
+        nonstriker_ids_list = data['ball'].nonstriker_ids.tolist()
     else:
         bowler_ids_list = []
         batsman_ids_list = []
+        nonstriker_ids_list = []
 
-    # Build all edges
-    edge_dict = build_all_edges(
+    # Build all edges with correct player attribution
+    # This ensures cross-domain edges connect to the ACTUAL players
+    # who faced/bowled each historical ball (respecting Z2 swap symmetry)
+    edge_dict, edge_attr_dict = build_all_edges(
         num_balls=num_balls,
         bowler_ids=bowler_ids_list,
-        batsman_ids=batsman_ids_list
+        batsman_ids=batsman_ids_list,
+        nonstriker_ids=nonstriker_ids_list,
+        current_striker_id=striker_id,
+        current_bowler_id=bowler_id,
+        current_nonstriker_id=nonstriker_id
     )
 
     # Add edges to HeteroData
     for edge_type, edge_index in edge_dict.items():
         data[edge_type].edge_index = edge_index
+
+    # Add edge attributes where available (e.g., temporal distance for precedes edges)
+    for edge_type, edge_attr in edge_attr_dict.items():
+        data[edge_type].edge_attr = edge_attr
 
     # =========================================================================
     # 8. LABEL
@@ -340,7 +359,10 @@ def get_node_feature_dims() -> Dict[str, int]:
         'bowling_momentum': 1,
         'pressure_index': 1,
         'dot_pressure': 2,
-        # Ball nodes (9 features + embeddings added in model)
+        # Ball nodes (15 features + embeddings added in model):
+        # - 5 basic: runs, is_wicket, over, ball_in_over, is_boundary
+        # - 4 extras: is_wide, is_noball, is_bye, is_legbye
+        # - 6 wicket types: bowled, caught, lbw, run_out, stumped, other
         'ball': BALL_FEATURE_DIM,
         # Query node (learned embedding)
         'query': 1,

@@ -5,6 +5,7 @@ Constructs HeteroConv layers with appropriate convolution operators
 for each edge type in the heterogeneous graph.
 """
 
+import torch
 import torch.nn as nn
 from torch_geometric.nn import HeteroConv, GATv2Conv, SAGEConv, TransformerConv
 from typing import Dict, List, Tuple, Optional
@@ -97,14 +98,16 @@ def build_hetero_conv(
             )
 
         elif rel == 'precedes':
-            # Temporal ordering: position-aware attention
+            # Temporal ordering: position-aware attention with temporal distance edge features
+            # Edge features encode how recent the transition is (closer to 0 = more recent)
+            # This allows the model to weight recent ball transitions more heavily
             convs[edge_type] = TransformerConv(
                 hidden_dim,
                 head_dim,
                 heads=num_heads,
                 concat=True,
                 dropout=dropout,
-                # Note: Could add edge_dim for positional info
+                edge_dim=1,  # Temporal distance feature dimension
             )
 
         elif rel in ['same_bowler', 'same_batsman', 'same_matchup']:
@@ -119,8 +122,22 @@ def build_hetero_conv(
                 dropout=dropout,
             )
 
-        elif rel in ['faced_by', 'bowled_by', 'partnered_by', 'informs']:
-            # Cross-domain edges: simple aggregation
+        elif rel in ['faced_by', 'bowled_by', 'partnered_by']:
+            # Cross-domain edges: Use attention to weight recent/relevant balls more
+            # This allows the model to learn which historical balls are most informative
+            # for predicting the current situation (recency, similar game state, etc.)
+            convs[edge_type] = GATv2Conv(
+                hidden_dim,
+                head_dim,
+                heads=num_heads,
+                add_self_loops=False,
+                concat=True,
+                dropout=dropout,
+            )
+
+        elif rel == 'informs':
+            # Dynamics aggregation: simple mean is appropriate
+            # as all recent balls contribute equally to momentum/pressure
             convs[edge_type] = SAGEConv(
                 hidden_dim,
                 hidden_dim,
@@ -202,6 +219,7 @@ class HeteroConvBlock(nn.Module):
         self,
         x_dict: Dict[str, 'torch.Tensor'],
         edge_index_dict: Dict[EdgeType, 'torch.Tensor'],
+        edge_attr_dict: Optional[Dict[EdgeType, 'torch.Tensor']] = None,
     ) -> Dict[str, 'torch.Tensor']:
         """
         Forward pass with residual connection and normalization.
@@ -209,12 +227,16 @@ class HeteroConvBlock(nn.Module):
         Args:
             x_dict: Dict of node features {node_type: [num_nodes, hidden_dim]}
             edge_index_dict: Dict of edge indices {edge_type: [2, num_edges]}
+            edge_attr_dict: Optional dict of edge attributes {edge_type: [num_edges, edge_dim]}
 
         Returns:
             Updated x_dict with same structure
         """
-        # Message passing
-        out_dict = self.conv(x_dict, edge_index_dict)
+        # Message passing with edge attributes if provided
+        if edge_attr_dict is not None:
+            out_dict = self.conv(x_dict, edge_index_dict, edge_attr_dict=edge_attr_dict)
+        else:
+            out_dict = self.conv(x_dict, edge_index_dict)
 
         # Residual + Norm + Dropout
         result = {}

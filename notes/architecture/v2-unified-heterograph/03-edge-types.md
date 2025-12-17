@@ -183,10 +183,11 @@ These edges encode the structure of the ball-by-ball history. **This is where we
 
 ### 3.1 (ball, precedes, ball)
 
-**Semantics:** Temporal/causal ordering of deliveries.
+**Semantics:** Temporal/causal ordering of deliveries with recency-weighted attention.
 
 ```
 Ball 1 ──► Ball 2 ──► Ball 3 ──► ... ──► Ball N
+         (d=0.99)   (d=0.98)           (d=0.01)
 ```
 
 | Property | Value |
@@ -196,10 +197,17 @@ Ball 1 ──► Ball 2 ──► Ball 3 ──► ... ──► Ball N
 | Target type | ball |
 | Connectivity | Sequential (N-1 edges) |
 | Direction | past → future (respects causality) |
+| **Edge features** | Temporal distance (1 dim) |
+| Convolution | TransformerConv with edge_dim=1 |
 
 **Construction:** For balls i, j where i < j and j = i + 1, create edge (i, precedes, j).
 
-**Intuition:** "What happened on the previous ball directly influences the next."
+**Edge Attribute:** Each edge carries a temporal distance feature:
+- `edge_attr = (num_balls - target_idx) / max_distance`
+- Closer to 0 = more recent transition
+- Allows model to weight recent transitions more heavily
+
+**Intuition:** "What happened on the previous ball directly influences the next, but recent transitions matter more."
 
 **Note:** We could extend to k-hop temporal edges (ball i connects to balls i+1, i+2, ..., i+k) if needed.
 
@@ -276,53 +284,66 @@ Starc → Kohli:   B7 ◄──► B25 ◄──► B31 ◄──► ...
 
 These edges link the ball history to the current context nodes.
 
+**CRITICAL: Correct Player Attribution (Z2 Symmetry Respect)**
+
+Cross-domain edges connect ONLY to balls involving the CURRENT players. This respects the Z2 symmetry of striker/non-striker swapping:
+
+- `faced_by`: Only balls that the CURRENT striker actually faced
+- `partnered_by`: Only balls where CURRENT non-striker was involved (as striker or non-striker)
+- `bowled_by`: Only balls that the CURRENT bowler actually bowled
+
+This is semantically correct: if Kohli faced balls 1-20 then got out, and Sharma is now batting, balls 1-20 should NOT connect to striker_identity (which represents Sharma). Only balls Sharma actually faced will connect.
+
 ### 4.1 (ball, bowled_by, actor)
 
-**Semantics:** Links each ball to the bowler who delivered it.
+**Semantics:** Links balls to the CURRENT bowler's identity IF they actually bowled those balls.
 
 | Property | Value |
 |----------|-------|
 | Source type | ball |
 | Edge type | bowled_by |
 | Target type | actor (specifically bowler_identity) |
-| Connectivity | Each ball → one bowler (N edges) |
+| Connectivity | Only balls bowled by current bowler (variable, ≤ N edges) |
 | Direction | ball → actor |
+| Convolution | **GATv2Conv** (attention-weighted aggregation) |
 
-**Note:** Only connects to `bowler_identity` node (actor index 2), not all actor nodes.
+**Construction:** For each historical ball i where `bowler(i) == current_bowler`, create edge (i, bowled_by, bowler_identity).
 
-**Intuition:** "This ball was delivered by Bumrah, so it connects to Bumrah's identity node."
+**Intuition:** "Show me only the balls from the current bowler's spell - how has THIS bowler been bowling today?"
 
 ### 4.2 (ball, faced_by, actor)
 
-**Semantics:** Links each ball to the batsman who faced it.
+**Semantics:** Links balls to the CURRENT striker's identity IF they actually faced those balls.
 
 | Property | Value |
 |----------|-------|
 | Source type | ball |
 | Edge type | faced_by |
 | Target type | actor (specifically striker_identity) |
-| Connectivity | Each ball → one batsman (N edges) |
+| Connectivity | Only balls faced by current striker (variable, ≤ N edges) |
 | Direction | ball → actor |
+| Convolution | **GATv2Conv** (attention-weighted aggregation) |
 
-**Note:** Only connects to `striker_identity` node (actor index 0), not all actor nodes.
+**Construction:** For each historical ball i where `batsman(i) == current_striker`, create edge (i, faced_by, striker_identity).
 
-**Intuition:** "This ball was faced by Rohit, so it connects to Rohit's identity node."
+**Intuition:** "Show me only the balls the current striker has faced - how have THEY been batting?"
 
 ### 4.3 (ball, partnered_by, actor)
 
-**Semantics:** Links each ball to the non-striker who was at the other end.
+**Semantics:** Links balls to the CURRENT non-striker's identity IF they were involved.
 
 | Property | Value |
 |----------|-------|
 | Source type | ball |
 | Edge type | partnered_by |
 | Target type | actor (specifically nonstriker_identity) |
-| Connectivity | Each ball → one non-striker (N edges) |
+| Connectivity | Balls where current non-striker was involved (variable, ≤ N edges) |
 | Direction | ball → actor |
+| Convolution | **GATv2Conv** (attention-weighted aggregation) |
 
-**Note:** Only connects to `nonstriker_identity` node (actor index 2), not all actor nodes.
+**Construction:** For each historical ball i where `nonstriker(i) == current_nonstriker` OR `batsman(i) == current_nonstriker`, create edge (i, partnered_by, nonstriker_identity).
 
-**Intuition:** "Who was at the other end when this ball was bowled? This context matters for understanding run-taking patterns and partnership dynamics."
+**Intuition:** "What has the current non-striker's involvement been? Both when they faced (before swap) and when they partnered."
 
 ### 4.4 (dynamics, reflects, ball)
 

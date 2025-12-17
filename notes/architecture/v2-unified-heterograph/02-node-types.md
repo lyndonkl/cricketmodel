@@ -373,9 +373,10 @@ Each historical delivery is a node. N = number of balls bowled so far in innings
 |----------|-------|
 | Node type | `ball` |
 | Node index | 0 to N-1 |
-| Input dim | 9 + embeddings |
+| Input dim | 15 + embeddings |
 
-**Features:**
+**Features (15 dimensions):**
+
 | Feature | Encoding | Description |
 |---------|----------|-------------|
 | runs | normalized / 6 | Runs scored |
@@ -387,15 +388,31 @@ Each historical delivery is a node. N = number of balls bowled so far in innings
 | is_noball | boolean | No ball |
 | is_bye | boolean | Bye runs |
 | is_legbye | boolean | Leg bye runs |
+| wicket_bowled | boolean | Bowled dismissal |
+| wicket_caught | boolean | Caught dismissal |
+| wicket_lbw | boolean | LBW dismissal |
+| wicket_run_out | boolean | Run out dismissal |
+| wicket_stumped | boolean | Stumped dismissal |
+| wicket_other | boolean | Other dismissals |
+
+**Player embeddings:**
+| Feature | Encoding | Description |
+|---------|----------|-------------|
 | bowler_id | embedding (64d) | Who bowled |
 | batsman_id | embedding (64d) | Who faced |
 
-**Total input dim:** 9 + 64 + 64 = 137 → projected to hidden_dim (128)
+**Total input dim:** 15 + 64 + 64 = 143 → projected to hidden_dim (128)
 
 **Why extras matter:**
 - Wides/no-balls indicate bowler control issues
 - Byes suggest keeper/pitch conditions
 - Leg byes can indicate batsman discomfort with deliveries
+
+**Why wicket types matter:**
+- Bowled/LBW: Bowler skill, good line and length
+- Caught: Risk-taking behavior by batsman
+- Run out: Partnership running decisions and risk
+- Stumped: Batsman error against spin bowling
 
 ---
 
@@ -429,8 +446,17 @@ The prediction target node that aggregates information.
 | state | 5 | 2-4 each | Current situation |
 | actor | 7 | 4-64 each | Players & matchup (incl. non-striker) |
 | dynamics | 4 | 1-2 each | Momentum |
-| ball | N | 137 | History (9 features + embeddings) |
+| ball | N | 143 | History (15 features + 2×64 embeddings) |
 | query | 1 | 128 | Prediction target |
-| **Total** | **20 + N** | - | - |
+| **Total** | **21 + N** | - | - |
 
-For a typical innings at ball 60: 20 + 60 = 80 nodes per prediction.
+For a typical innings at ball 60: 21 + 60 = 81 nodes per prediction.
+
+### Ball Feature Breakdown
+
+| Category | Features | Count |
+|----------|----------|-------|
+| Basic | runs, is_wicket, over, ball_in_over, is_boundary | 5 |
+| Extras | is_wide, is_noball, is_bye, is_legbye | 4 |
+| Wicket Types | bowled, caught, lbw, run_out, stumped, other | 6 |
+| **Total** | | **15** |

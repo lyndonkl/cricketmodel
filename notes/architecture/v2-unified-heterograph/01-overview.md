@@ -33,18 +33,29 @@ Instead of treating "current state" and "ball history" differently, we represent
 
 ```
 MATCH GRAPH
-├── Context Nodes (17 total, same as V1)
-│   ├── Global: venue, batting_team, bowling_team
-│   ├── State: score, chase, phase, time, wickets
-│   ├── Actor: striker_id, striker_state, bowler_id, bowler_state, partnership
-│   └── Dynamics: batting_momentum, bowling_momentum, pressure, dots
+├── Context Nodes (21 total)
+│   ├── Global (3): venue, batting_team, bowling_team
+│   ├── State (5): score, chase, phase, time, wickets
+│   ├── Actor (7): striker_id, striker_state, nonstriker_id, nonstriker_state,
+│   │              bowler_id, bowler_state, partnership
+│   └── Dynamics (4): batting_momentum, bowling_momentum, pressure, dots
 │
 ├── Ball Nodes (N balls, entire innings history)
-│   └── Each ball: runs, wicket, over, who bowled, who faced
+│   └── Each ball: 15 features (runs, wicket type, over, extras, etc.)
+│   └── Player embeddings: who bowled, who faced, who partnered
 │
 └── Query Node (1 node)
     └── "What happens on the next ball?"
 ```
+
+### Geometric Deep Learning Principles
+
+The architecture respects key symmetries in cricket data:
+
+1. **Temporal Ordering**: `precedes` edges with TransformerConv + temporal distance edge features
+2. **Correct Player Attribution**: Cross-domain edges connect balls to the players who ACTUALLY faced/bowled them (not current players)
+3. **Z2 Striker/Non-striker Symmetry**: Partnership dynamics and `partnered_by` edges capture the relationship
+4. **Set Membership**: `same_bowler`/`same_batsman`/`same_matchup` create symmetric cliques
 
 ### Relationships are Edges
 

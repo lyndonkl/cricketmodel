@@ -112,8 +112,10 @@ class BallEncoder(nn.Module):
     Encodes ball nodes with both numeric features and player embeddings.
 
     Ball nodes contain:
-    - 9 numeric features (runs, is_wicket, over, ball_in_over, is_boundary,
-                          is_wide, is_noball, is_bye, is_legbye)
+    - 15 numeric features:
+        - Basic: runs, is_wicket, over, ball_in_over, is_boundary
+        - Extras: is_wide, is_noball, is_bye, is_legbye
+        - Wicket types: bowled, caught, lbw, run_out, stumped, other
     - Bowler ID (to be embedded)
     - Batsman ID (to be embedded)
     """
@@ -267,10 +269,11 @@ class NodeEncoderDict(nn.Module):
             'dot_pressure': FeatureEncoder(2, hidden_dim, dropout),
         })
 
-        # Ball encoder (9 features: runs, is_wicket, over, ball_in_over, is_boundary,
-        # is_wide, is_noball, is_bye, is_legbye)
+        # Ball encoder (15 features: runs, is_wicket, over, ball_in_over, is_boundary,
+        # is_wide, is_noball, is_bye, is_legbye,
+        # wicket_bowled, wicket_caught, wicket_lbw, wicket_run_out, wicket_stumped, wicket_other)
         self.ball_encoder = BallEncoder(
-            num_players, player_embed_dim, 9, hidden_dim, dropout
+            num_players, player_embed_dim, 15, hidden_dim, dropout
         )
 
         # Query encoder

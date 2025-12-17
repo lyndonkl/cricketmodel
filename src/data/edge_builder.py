@@ -6,7 +6,7 @@ All edge indices are returned as PyTorch tensors.
 """
 
 import torch
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Tuple, Set, Optional
 from collections import defaultdict
 
 
@@ -191,13 +191,14 @@ def build_intra_layer_edges() -> Dict[EdgeType, torch.Tensor]:
 def build_temporal_edges(
     num_balls: int,
     bowler_ids: List[int],
-    batsman_ids: List[int]
-) -> Dict[EdgeType, torch.Tensor]:
+    batsman_ids: List[int],
+    max_temporal_distance: int = 120
+) -> Tuple[Dict[EdgeType, torch.Tensor], Dict[EdgeType, torch.Tensor]]:
     """
     Build temporal edges between ball nodes.
 
     Creates four types of temporal edges:
-    - precedes: sequential ordering (ball i -> ball i+1)
+    - precedes: sequential ordering (ball i -> ball i+1) with temporal distance features
     - same_bowler: connects balls by same bowler
     - same_batsman: connects balls faced by same batsman
     - same_matchup: connects balls with same bowler-batsman pair (key for matchup learning)
@@ -206,11 +207,15 @@ def build_temporal_edges(
         num_balls: Number of historical balls
         bowler_ids: List of bowler IDs for each ball
         batsman_ids: List of batsman IDs for each ball
+        max_temporal_distance: Maximum temporal distance for normalization (T20 = 120 balls)
 
     Returns:
-        Dict mapping edge type to edge_index tensor [2, num_edges]
+        Tuple of:
+        - Dict mapping edge type to edge_index tensor [2, num_edges]
+        - Dict mapping edge type to edge_attr tensor [num_edges, edge_dim]
     """
     edges = {}
+    edge_attrs = {}
 
     if num_balls == 0:
         # Return empty edges for empty history
@@ -218,15 +223,26 @@ def build_temporal_edges(
         edges[('ball', 'same_bowler', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         edges[('ball', 'same_batsman', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         edges[('ball', 'same_matchup', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
-        return edges
+        # Empty edge attributes
+        edge_attrs[('ball', 'precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+        return edges, edge_attrs
 
-    # 1. Precedes edges: sequential ordering
+    # 1. Precedes edges: sequential ordering with temporal distance features
     if num_balls > 1:
         src = list(range(num_balls - 1))
         tgt = list(range(1, num_balls))
         edges[('ball', 'precedes', 'ball')] = torch.tensor([src, tgt], dtype=torch.long)
+
+        # Temporal distance edge feature: normalized distance from target to end of innings
+        # This encodes "how recent is this transition" - recent transitions should matter more
+        # Edge attr[i] = (num_balls - tgt[i]) / max_distance (closer to 0 = more recent)
+        temporal_distances = [(num_balls - t) / max_temporal_distance for t in tgt]
+        edge_attrs[('ball', 'precedes', 'ball')] = torch.tensor(
+            [[d] for d in temporal_distances], dtype=torch.float
+        )
     else:
         edges[('ball', 'precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edge_attrs[('ball', 'precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
 
     # 2. Same bowler edges: connect balls by same bowler
     bowler_to_balls = defaultdict(list)
@@ -296,24 +312,42 @@ def build_temporal_edges(
     else:
         edges[('ball', 'same_matchup', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
 
-    return edges
+    return edges, edge_attrs
 
 
 def build_cross_domain_edges(
     num_balls: int,
+    historical_batsman_ids: List[int],
+    historical_bowler_ids: List[int],
+    historical_nonstriker_ids: List[int],
+    current_striker_id: int,
+    current_bowler_id: int,
+    current_nonstriker_id: int,
     recent_k: int = 12
 ) -> Dict[EdgeType, torch.Tensor]:
     """
     Build edges connecting ball nodes to context nodes.
 
-    Creates edges:
-    - ball -> striker_identity (faced_by)
-    - ball -> nonstriker_identity (partnered_by)
-    - ball -> bowler_identity (bowled_by)
-    - dynamics <- recent balls (informs)
+    Creates SEMANTICALLY CORRECT edges that connect each historical ball
+    to the players who actually faced/bowled/partnered that ball, filtered
+    to only include edges to CURRENT players (for relevance).
+
+    Edge types:
+    - ball -> striker_identity (faced_by): Only balls faced by CURRENT striker
+    - ball -> nonstriker_identity (partnered_by): Only balls where CURRENT non-striker was partner
+    - ball -> bowler_identity (bowled_by): Only balls bowled by CURRENT bowler
+    - dynamics <- recent balls (informs): Recent balls inform momentum/pressure
+
+    This respects the Z2 symmetry of striker/non-striker swapping after odd runs.
 
     Args:
         num_balls: Number of historical balls
+        historical_batsman_ids: Player ID of batsman who faced each historical ball
+        historical_bowler_ids: Player ID of bowler who bowled each historical ball
+        historical_nonstriker_ids: Player ID of non-striker for each historical ball
+        current_striker_id: ID of current striker
+        current_bowler_id: ID of current bowler
+        current_nonstriker_id: ID of current non-striker
         recent_k: Number of recent balls for dynamics connection
 
     Returns:
@@ -330,22 +364,46 @@ def build_cross_domain_edges(
             edges[('ball', 'informs', dynamics_node)] = torch.zeros((2, 0), dtype=torch.long)
         return edges
 
-    # All balls connect to current striker/nonstriker/bowler identity
-    # (Note: these are the CURRENT players, not historical)
-    ball_indices = list(range(num_balls))
-    target_indices = [0] * num_balls  # All point to single identity node
+    # faced_by: Connect balls actually faced by the CURRENT striker
+    # This gives the model the current striker's historical performance
+    striker_faced_balls = [
+        i for i, batsman_id in enumerate(historical_batsman_ids)
+        if batsman_id == current_striker_id
+    ]
+    if striker_faced_balls:
+        edges[('ball', 'faced_by', 'striker_identity')] = torch.tensor(
+            [striker_faced_balls, [0] * len(striker_faced_balls)], dtype=torch.long
+        )
+    else:
+        edges[('ball', 'faced_by', 'striker_identity')] = torch.zeros((2, 0), dtype=torch.long)
 
-    edges[('ball', 'faced_by', 'striker_identity')] = torch.tensor(
-        [ball_indices, target_indices], dtype=torch.long
-    )
-    edges[('ball', 'partnered_by', 'nonstriker_identity')] = torch.tensor(
-        [ball_indices, target_indices], dtype=torch.long
-    )
-    edges[('ball', 'bowled_by', 'bowler_identity')] = torch.tensor(
-        [ball_indices, target_indices], dtype=torch.long
-    )
+    # partnered_by: Connect balls where CURRENT non-striker was at non-striker end
+    # OR balls that the current non-striker actually faced (they were striker then)
+    nonstriker_partner_balls = [
+        i for i, (ns_id, bat_id) in enumerate(zip(historical_nonstriker_ids, historical_batsman_ids))
+        if ns_id == current_nonstriker_id or bat_id == current_nonstriker_id
+    ]
+    if nonstriker_partner_balls:
+        edges[('ball', 'partnered_by', 'nonstriker_identity')] = torch.tensor(
+            [nonstriker_partner_balls, [0] * len(nonstriker_partner_balls)], dtype=torch.long
+        )
+    else:
+        edges[('ball', 'partnered_by', 'nonstriker_identity')] = torch.zeros((2, 0), dtype=torch.long)
 
-    # Recent balls inform dynamics
+    # bowled_by: Connect balls actually bowled by the CURRENT bowler
+    # This gives the model the current bowler's spell performance
+    bowler_bowled_balls = [
+        i for i, bowler_id in enumerate(historical_bowler_ids)
+        if bowler_id == current_bowler_id
+    ]
+    if bowler_bowled_balls:
+        edges[('ball', 'bowled_by', 'bowler_identity')] = torch.tensor(
+            [bowler_bowled_balls, [0] * len(bowler_bowled_balls)], dtype=torch.long
+        )
+    else:
+        edges[('ball', 'bowled_by', 'bowler_identity')] = torch.zeros((2, 0), dtype=torch.long)
+
+    # Recent balls inform dynamics (unchanged - all recent balls matter for momentum)
     recent_balls = list(range(max(0, num_balls - recent_k), num_balls))
     dynamics_target = [0] * len(recent_balls)
 
@@ -401,39 +459,63 @@ def build_all_edges(
     num_balls: int,
     bowler_ids: List[int],
     batsman_ids: List[int],
+    nonstriker_ids: List[int],
+    current_striker_id: int,
+    current_bowler_id: int,
+    current_nonstriker_id: int,
     recent_k: int = 12
-) -> Dict[EdgeType, torch.Tensor]:
+) -> Tuple[Dict[EdgeType, torch.Tensor], Dict[EdgeType, torch.Tensor]]:
     """
     Build all edges for the heterogeneous graph.
 
     Combines:
     - Hierarchical conditioning edges
     - Intra-layer interaction edges
-    - Temporal ball edges
-    - Cross-domain edges
+    - Temporal ball edges (with edge attributes for temporal distance)
+    - Cross-domain edges (with correct player attribution)
     - Query aggregation edges
 
     Args:
         num_balls: Number of historical balls
-        bowler_ids: Bowler ID for each ball
-        batsman_ids: Batsman ID for each ball
+        bowler_ids: Bowler ID for each historical ball (who bowled)
+        batsman_ids: Batsman ID for each historical ball (who faced)
+        nonstriker_ids: Non-striker ID for each historical ball
+        current_striker_id: ID of current striker (for cross-domain edges)
+        current_bowler_id: ID of current bowler (for cross-domain edges)
+        current_nonstriker_id: ID of current non-striker (for cross-domain edges)
         recent_k: Number of recent balls for dynamics
 
     Returns:
-        Dict mapping edge type to edge_index tensor [2, num_edges]
+        Tuple of:
+        - Dict mapping edge type to edge_index tensor [2, num_edges]
+        - Dict mapping edge type to edge_attr tensor [num_edges, edge_dim] (for edges with attributes)
     """
     all_edges = {}
+    all_edge_attrs = {}
 
     # Static edges (don't depend on ball count)
     all_edges.update(build_hierarchical_edges())
     all_edges.update(build_intra_layer_edges())
 
     # Dynamic edges (depend on ball history)
-    all_edges.update(build_temporal_edges(num_balls, bowler_ids, batsman_ids))
-    all_edges.update(build_cross_domain_edges(num_balls, recent_k))
+    # Temporal edges now return both edge_index and edge_attr
+    temporal_edges, temporal_edge_attrs = build_temporal_edges(num_balls, bowler_ids, batsman_ids)
+    all_edges.update(temporal_edges)
+    all_edge_attrs.update(temporal_edge_attrs)
+
+    all_edges.update(build_cross_domain_edges(
+        num_balls=num_balls,
+        historical_batsman_ids=batsman_ids,
+        historical_bowler_ids=bowler_ids,
+        historical_nonstriker_ids=nonstriker_ids,
+        current_striker_id=current_striker_id,
+        current_bowler_id=current_bowler_id,
+        current_nonstriker_id=current_nonstriker_id,
+        recent_k=recent_k
+    ))
     all_edges.update(build_query_edges(num_balls))
 
-    return all_edges
+    return all_edges, all_edge_attrs
 
 
 def get_all_edge_types() -> List[EdgeType]:

@@ -480,7 +480,8 @@ def compute_ball_features(delivery: Dict) -> List[float]:
 
     Returns:
         [runs/6, is_wicket, over/20, ball_in_over/6, is_boundary,
-         is_wide, is_noball, is_bye, is_legbye]
+         is_wide, is_noball, is_bye, is_legbye,
+         wicket_bowled, wicket_caught, wicket_lbw, wicket_run_out, wicket_stumped, wicket_other]
     """
     runs = delivery['runs']['total']
     is_wicket = 1.0 if 'wickets' in delivery else 0.0
@@ -495,6 +496,35 @@ def compute_ball_features(delivery: Dict) -> List[float]:
     is_bye = 1.0 if 'byes' in extras else 0.0
     is_legbye = 1.0 if 'legbyes' in extras else 0.0
 
+    # Wicket type one-hot encoding (6 categories)
+    # This captures important information about HOW the wicket fell:
+    # - bowled/lbw: bowler skill, good line and length
+    # - caught: aggression/risk-taking by batsman
+    # - run_out: partnership running decisions
+    # - stumped: batsman error against spin
+    wicket_bowled = 0.0
+    wicket_caught = 0.0
+    wicket_lbw = 0.0
+    wicket_run_out = 0.0
+    wicket_stumped = 0.0
+    wicket_other = 0.0
+
+    if 'wickets' in delivery and len(delivery['wickets']) > 0:
+        wicket_kind = delivery['wickets'][0].get('kind', 'other').lower()
+        if wicket_kind == 'bowled':
+            wicket_bowled = 1.0
+        elif wicket_kind in ['caught', 'caught and bowled']:
+            wicket_caught = 1.0
+        elif wicket_kind == 'lbw':
+            wicket_lbw = 1.0
+        elif wicket_kind == 'run out':
+            wicket_run_out = 1.0
+        elif wicket_kind == 'stumped':
+            wicket_stumped = 1.0
+        else:
+            # hit wicket, obstructing the field, timed out, retired, etc.
+            wicket_other = 1.0
+
     return [
         runs / 6.0,           # runs normalized (max single ball = 6 + extras)
         is_wicket,            # wicket indicator
@@ -504,12 +534,19 @@ def compute_ball_features(delivery: Dict) -> List[float]:
         is_wide,              # wide ball indicator
         is_noball,            # no-ball indicator
         is_bye,               # bye indicator
-        is_legbye             # leg bye indicator
+        is_legbye,            # leg bye indicator
+        wicket_bowled,        # bowled dismissal
+        wicket_caught,        # caught dismissal
+        wicket_lbw,           # LBW dismissal
+        wicket_run_out,       # run out dismissal
+        wicket_stumped,       # stumped dismissal
+        wicket_other          # other dismissal types
     ]
 
 
 # Number of features per ball node (for validation)
-BALL_FEATURE_DIM = 9
+# 9 original + 6 wicket type one-hot = 15 features
+BALL_FEATURE_DIM = 15
 
 
 def outcome_to_class(delivery: Dict) -> int:
