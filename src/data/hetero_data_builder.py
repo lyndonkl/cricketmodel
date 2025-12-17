@@ -343,15 +343,15 @@ def get_node_feature_dims() -> Dict[str, int]:
         'striker_identity': 1,
         'nonstriker_identity': 1,
         'bowler_identity': 1,
-        # State nodes
+        # State nodes (phase_state has 5 features including is_first_ball cold start indicator)
         'score_state': 4,
         'chase_state': 3,
-        'phase_state': 4,
+        'phase_state': 5,  # +1 for is_first_ball cold start indicator
         'time_pressure': 3,
         'wicket_buffer': 2,
-        # Actor state nodes
-        'striker_state': 6,
-        'nonstriker_state': 6,
+        # Actor state nodes (striker/nonstriker have 7 features including is_debut_ball)
+        'striker_state': 7,  # +1 for is_debut_ball cold start indicator
+        'nonstriker_state': 7,  # +1 for is_debut_ball cold start indicator
         'bowler_state': 6,
         'partnership': 4,
         # Dynamics nodes

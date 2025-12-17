@@ -8,12 +8,12 @@ The unified graph uses **typed edges** to encode different relationships. Each e
 Edge Type Categories
 ├── Hierarchical (3 types)   - Top-down conditioning between layers
 ├── Intra-layer (4 types)    - Within-layer interactions
-├── Temporal (4 types)       - Ball history structure (incl. same_matchup)
+├── Temporal (6 types)       - Ball history structure (multi-scale + matchup edges)
 ├── Cross-domain (4 types)   - Connecting balls to context (incl. partnered_by)
-└── Query (1 type)           - Prediction aggregation
+└── Query (2 types)          - Prediction aggregation (attends + drives)
 ```
 
-**Total: 16 edge types**
+**Total: 19 edge types**
 
 ---
 
@@ -181,37 +181,75 @@ nonstriker_id ◄───┼───► nonstriker_state
 
 These edges encode the structure of the ball-by-ball history. **This is where we gain efficiency over sequence attention.**
 
-### 3.1 (ball, precedes, ball)
+### Multi-Scale Temporal Architecture
 
-**Semantics:** Temporal/causal ordering of deliveries with recency-weighted attention.
+Cricket temporal patterns operate at multiple scales:
+- **Recent (6 balls):** Within-over context, immediate pressure
+- **Medium (7-18 balls):** 2-over momentum window
+- **Distant (19+ balls):** Historical patterns, phase transitions
+
+We use three separate edge types to capture these patterns, each with appropriate convolution operators.
+
+### 3.1 (ball, recent_precedes, ball)
+
+**Semantics:** Recent temporal context within the current over.
 
 ```
-Ball 1 ──► Ball 2 ──► Ball 3 ──► ... ──► Ball N
-         (d=0.99)   (d=0.98)           (d=0.01)
+Ball N-5 ──► Ball N-4 ──► Ball N-3 ──► Ball N-2 ──► Ball N-1 ──► Ball N
+         (d=0.17)    (d=0.33)     (d=0.50)     (d=0.67)     (d=0.83)
 ```
 
 | Property | Value |
 |----------|-------|
 | Source type | ball |
-| Edge type | precedes |
+| Edge type | recent_precedes |
 | Target type | ball |
-| Connectivity | Sequential (N-1 edges) |
+| Connectivity | All pairs within 6-ball window |
 | Direction | past → future (respects causality) |
-| **Edge features** | Temporal distance (1 dim) |
-| Convolution | TransformerConv with edge_dim=1 |
+| **Edge features** | `gap / 6.0` (normalized distance) |
+| Convolution | TransformerConv with edge_dim=1 (fast decay) |
 
-**Construction:** For balls i, j where i < j and j = i + 1, create edge (i, precedes, j).
+**Construction:** For balls i, j where j - i ≤ 6, create edge (i, recent_precedes, j).
 
-**Edge Attribute:** Each edge carries a temporal distance feature:
-- `edge_attr = (num_balls - target_idx) / max_distance`
-- Closer to 0 = more recent transition
-- Allows model to weight recent transitions more heavily
+**Intuition:** "The last 6 balls form the immediate context - what just happened affects what's next."
 
-**Intuition:** "What happened on the previous ball directly influences the next, but recent transitions matter more."
+### 3.2 (ball, medium_precedes, ball)
 
-**Note:** We could extend to k-hop temporal edges (ball i connects to balls i+1, i+2, ..., i+k) if needed.
+**Semantics:** Medium-range momentum window (2-over context).
 
-### 3.2 (ball, same_bowler, ball)
+| Property | Value |
+|----------|-------|
+| Source type | ball |
+| Edge type | medium_precedes |
+| Target type | ball |
+| Connectivity | All pairs with gap 7-18 balls |
+| Direction | past → future (respects causality) |
+| **Edge features** | `(gap - 6) / 12.0` (normalized distance) |
+| Convolution | TransformerConv with edge_dim=1 (medium decay) |
+
+**Construction:** For balls i, j where 7 ≤ j - i ≤ 18, create edge (i, medium_precedes, j).
+
+**Intuition:** "The 2-over momentum window captures scoring patterns and bowler effectiveness."
+
+### 3.3 (ball, distant_precedes, ball)
+
+**Semantics:** Historical patterns and phase transitions.
+
+| Property | Value |
+|----------|-------|
+| Source type | ball |
+| Edge type | distant_precedes |
+| Target type | ball |
+| Connectivity | Sparse (every 6 balls for gaps > 18) |
+| Direction | past → future (respects causality) |
+| **Edge features** | `(gap - 18) / max_distance` |
+| Convolution | SAGEConv mean aggregation (slow decay) |
+
+**Construction:** For balls i, j where j - i > 18 AND (j - i) % 6 == 0, create edge (i, distant_precedes, j).
+
+**Intuition:** "Historical context is sparse but important for phase-level patterns."
+
+### 3.4 (ball, same_bowler, ball)
 
 **Semantics:** Balls delivered by the same bowler.
 
@@ -234,7 +272,7 @@ Starc's balls:   B1 ◄──► B7 ◄──► B13 ◄──► B19 ◄──�
 
 **Efficiency:** If bowler A bowled 20 balls, that's 20×19/2 = 190 edges for that bowler. With ~6 bowlers, total ~600 edges. Much less than 120×120 = 14,400 for full attention!
 
-### 3.3 (ball, same_batsman, ball)
+### 3.5 (ball, same_batsman, ball)
 
 **Semantics:** Balls faced by the same batsman.
 
@@ -255,13 +293,13 @@ Kohli's balls:   B1 ◄──► B3 ◄──► B7 ◄──► B11 ◄──�
 
 **Intuition:** "All balls Rohit faced form his innings narrative - building, accelerating, getting out."
 
-### 3.4 (ball, same_matchup, ball)
+### 3.6 (ball, same_matchup, ball) - CAUSAL
 
 **Semantics:** Balls with the same bowler-batsman combination (the key predictor).
 
 ```
-Bumrah → Rohit:  B3 ◄──► B21 ◄──► B45 ◄──► ...
-Starc → Kohli:   B7 ◄──► B25 ◄──► B31 ◄──► ...
+Bumrah → Rohit:  B3 ──► B21 ──► B45 ──► ...   (older → newer ONLY)
+Starc → Kohli:   B7 ──► B25 ──► B31 ──► ...
 ```
 
 | Property | Value |
@@ -269,12 +307,21 @@ Starc → Kohli:   B7 ◄──► B25 ◄──► B31 ◄──► ...
 | Source type | ball |
 | Edge type | same_matchup |
 | Target type | ball |
-| Connectivity | Clique within matchup (very sparse) |
-| Direction | Bidirectional |
+| Connectivity | **CAUSAL** within matchup (older → newer) |
+| Direction | **Unidirectional (older → newer)** |
 
-**Construction:** For balls i, j where bowler(i) == bowler(j) AND batsman(i) == batsman(j), create edge (i, same_matchup, j).
+**CRITICAL: CAUSAL EDGES ONLY**
 
-**Intuition:** "How has this specific bowler-batsman matchup played out? This is THE key predictor for the next ball."
+Unlike same_bowler and same_batsman (bidirectional), same_matchup edges are **CAUSAL** (older → newer only). This is essential to prevent train-test distribution shift:
+
+- During training, the graph contains future balls
+- Bidirectional edges would allow "future information leakage"
+- At inference, only historical balls exist
+- Causal edges ensure model learns patterns valid at inference time
+
+**Construction:** For balls i, j where bowler(i) == bowler(j) AND batsman(i) == batsman(j) AND i < j, create edge (i, same_matchup, j).
+
+**Intuition:** "How has this specific bowler-batsman matchup played out SO FAR? Past matchup outcomes inform future predictions."
 
 **Efficiency:** Same_matchup is the intersection of same_bowler and same_batsman, so it's very sparse but highly informative.
 
@@ -390,6 +437,40 @@ The query node needs to gather information from everywhere.
 
 This allows learning different attention patterns for each category.
 
+### 5.2 (dynamics, drives, query)
+
+**Semantics:** Dynamics nodes directly drive prediction via the query node.
+
+| Property | Value |
+|----------|-------|
+| Source type | dynamics |
+| Edge type | drives |
+| Target type | query |
+| Connectivity | 4 → 1 (4 edges) |
+| Direction | dynamics → query |
+| Convolution | **GATv2Conv** (attention-weighted) |
+
+**Specific edges:**
+- batting_momentum → query
+- bowling_momentum → query
+- pressure → query
+- dot_pressure → query
+
+**Why a separate edge type (not just attends)?**
+
+The `drives` edge type captures a distinct causal relationship: momentum and pressure **directly cause** outcome changes through feedback loops:
+
+1. **R1 Confidence Spiral:** High batting momentum → batsman plays more shots → more runs → higher momentum
+2. **B1 Required Rate Pressure:** High pressure → batsman takes risks → more boundaries OR wickets
+3. **B2 Dot Ball Spiral:** High dot pressure → desperate shots → wickets → rebuilding → more dots
+
+These feedback loops are the core of cricket dynamics. By having `drives` edges with learned attention weights, the model can:
+- Weight batting vs bowling momentum appropriately for the situation
+- Learn when pressure is decisive vs when momentum dominates
+- Capture the tension between conservative play (dot pressure) and aggressive play (momentum)
+
+**Intuition:** "Current momentum and pressure directly influence what happens next - this is the core feedback mechanism of cricket dynamics."
+
 ---
 
 ## Edge Count Analysis
@@ -400,18 +481,29 @@ For a typical innings at ball 60:
 |-----------|---------|-------|
 | Hierarchical conditioning | 15 + 35 + 28 | 78 |
 | Intra-layer | 6 + 20 + 22 + 12 | 60 |
-| Temporal precedes | N - 1 | 59 |
+| **Multi-scale temporal:** | | |
+| - recent_precedes (≤6 balls) | ~6 × N (recent pairs) | ~360 |
+| - medium_precedes (7-18 balls) | ~12 × N (medium pairs) | ~720 |
+| - distant_precedes (>18, sparse) | ~N/6 (every 6 balls) | ~300 |
 | Same bowler | ~6 bowlers × C(10,2) | ~270 |
 | Same batsman | ~4 batsmen × C(15,2) | ~420 |
-| Same matchup | ~12 matchups × C(5,2) | ~120 |
+| Same matchup (CAUSAL) | ~12 matchups × ~5 edges each | ~60 |
 | Ball → actor (faced_by + bowled_by + partnered_by) | 3N | 180 |
-| Dynamics ← ball | 4 × 12 | 48 |
-| Query | 19 + N | 79 |
-| **Total** | | **~1300** |
+| Dynamics ← ball (informs) | 4 × 12 | 48 |
+| Query attends | 19 + N | 79 |
+| Dynamics drives query | 4 | 4 |
+| **Total** | | **~2,580** |
 
 Compare to V1 Transformer: 60 × 60 = 3,600 attention pairs (temporal only!)
 
-**Efficiency gain: ~2.7x fewer computations, with MORE information (full context graph including non-striker)**
+**Key differences from simple precedes:**
+- Multi-scale temporal captures cricket-relevant time scales
+- Recent (6 balls) = within-over context with fast decay
+- Medium (7-18 balls) = 2-over momentum window
+- Distant (sparse) = historical patterns without quadratic blowup
+- Same_matchup is now CAUSAL (older→newer only), preventing train-test distribution shift
+
+**Efficiency gain: ~1.4x fewer computations, with MORE information (full context graph including non-striker, multi-scale temporal, causal matchup edges)**
 
 ---
 

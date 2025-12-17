@@ -39,6 +39,9 @@ class ModelConfig:
     # Task
     num_classes: int = 7  # Dot, Single, Two, Three, Four, Six, Wicket
 
+    # Model variant
+    use_hybrid_readout: bool = True  # Use matchup + query hybrid readout
+
 
 class CricketHeteroGNN(nn.Module):
     """
@@ -251,6 +254,95 @@ class CricketHeteroGNNWithPooling(CricketHeteroGNN):
         # 5. Combine
         combined = torch.cat([query_repr, pooled_balls], dim=-1)
         combined = self.combiner(combined)
+
+        # 6. Predict
+        logits = self.predictor(combined)
+
+        return logits
+
+
+class CricketHeteroGNNHybrid(CricketHeteroGNN):
+    """
+    Hybrid readout variant that combines matchup interaction with query aggregation.
+
+    Cricket ball prediction is most naturally an edge-level task: the outcome depends
+    on the specific striker-bowler interaction, modulated by context. This variant:
+
+    1. Computes matchup interaction from striker + bowler representations
+    2. Uses query node to aggregate global context (venue, phase, momentum)
+    3. Combines matchup + context for final prediction
+
+    This respects the GDL principle that the prediction task level should match
+    the structural level of the phenomenon being predicted.
+    """
+
+    def __init__(self, config: ModelConfig):
+        super().__init__(config)
+
+        # Matchup interaction layer
+        # Projects concatenated striker + bowler representations
+        self.matchup_mlp = nn.Sequential(
+            nn.Linear(config.hidden_dim * 2, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+        )
+
+        # Query projection (for context aggregation)
+        self.query_proj = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+        )
+
+        # Combine matchup and context
+        # Input: matchup (hidden_dim) + context (hidden_dim) = 2 * hidden_dim
+        self.combiner = nn.Sequential(
+            nn.Linear(config.hidden_dim * 2, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+        )
+
+    def forward(self, data) -> torch.Tensor:
+        """
+        Forward pass with hybrid matchup + query readout.
+
+        Args:
+            data: HeteroData or batched HeteroData
+
+        Returns:
+            Logits [batch_size, num_classes]
+        """
+        # 1. Encode all nodes
+        x_dict = self.encoders.encode_nodes(data)
+
+        # 2. Message passing with edge attributes
+        edge_index_dict = data.edge_index_dict
+
+        # Extract edge attributes if available
+        edge_attr_dict = {}
+        for edge_type in edge_index_dict.keys():
+            if hasattr(data[edge_type], 'edge_attr') and data[edge_type].edge_attr is not None:
+                edge_attr_dict[edge_type] = data[edge_type].edge_attr
+
+        for conv_block in self.conv_stack:
+            x_dict = conv_block(x_dict, edge_index_dict, edge_attr_dict if edge_attr_dict else None)
+
+        # 3. Matchup interaction (edge-level)
+        # The core prediction depends on striker-bowler interaction
+        striker = x_dict['striker_identity']  # [batch_size, hidden_dim]
+        bowler = x_dict['bowler_identity']    # [batch_size, hidden_dim]
+        matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))  # [batch_size, hidden_dim]
+
+        # 4. Context aggregation (graph-level)
+        # Query has aggregated global context: venue, phase, momentum, etc.
+        query = self.query_proj(x_dict['query'])  # [batch_size, hidden_dim]
+
+        # 5. Combine matchup + context
+        # Matchup is modulated by context (pressure, phase, momentum)
+        combined = torch.cat([matchup, query], dim=-1)  # [batch_size, 2*hidden_dim]
+        combined = self.combiner(combined)  # [batch_size, hidden_dim]
 
         # 6. Predict
         logits = self.predictor(combined)

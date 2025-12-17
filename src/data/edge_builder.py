@@ -197,11 +197,20 @@ def build_temporal_edges(
     """
     Build temporal edges between ball nodes.
 
-    Creates four types of temporal edges:
-    - precedes: sequential ordering (ball i -> ball i+1) with temporal distance features
+    Creates MULTI-SCALE temporal edges to capture different temporal patterns:
+    - recent_precedes: Last 6 balls (within-over, immediate context)
+    - medium_precedes: 7-18 balls ago (2-over window, momentum context)
+    - distant_precedes: 19+ balls ago (historical patterns, sparse connections)
+
+    Plus set-based edges:
     - same_bowler: connects balls by same bowler
     - same_batsman: connects balls faced by same batsman
-    - same_matchup: connects balls with same bowler-batsman pair (key for matchup learning)
+    - same_matchup: connects balls with same bowler-batsman pair (CAUSAL: older -> newer)
+
+    Multi-scale temporal edges allow the model to:
+    - Weight recent transitions more heavily (fast decay)
+    - Capture medium-range momentum patterns (medium decay)
+    - Access historical context when relevant (slow decay)
 
     Args:
         num_balls: Number of historical balls
@@ -219,30 +228,72 @@ def build_temporal_edges(
 
     if num_balls == 0:
         # Return empty edges for empty history
-        edges[('ball', 'precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edges[('ball', 'recent_precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edges[('ball', 'medium_precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edges[('ball', 'distant_precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         edges[('ball', 'same_bowler', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         edges[('ball', 'same_batsman', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         edges[('ball', 'same_matchup', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         # Empty edge attributes
-        edge_attrs[('ball', 'precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+        edge_attrs[('ball', 'recent_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+        edge_attrs[('ball', 'medium_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+        edge_attrs[('ball', 'distant_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
         return edges, edge_attrs
 
-    # 1. Precedes edges: sequential ordering with temporal distance features
-    if num_balls > 1:
-        src = list(range(num_balls - 1))
-        tgt = list(range(1, num_balls))
-        edges[('ball', 'precedes', 'ball')] = torch.tensor([src, tgt], dtype=torch.long)
+    # 1. Multi-scale precedes edges
+    # Each scale captures different temporal patterns in cricket:
+    # - Recent (6 balls): Current over context, immediate pressure
+    # - Medium (12 balls): 2-over momentum window
+    # - Distant (18+ balls): Historical patterns, phase transitions
 
-        # Temporal distance edge feature: normalized distance from target to end of innings
-        # This encodes "how recent is this transition" - recent transitions should matter more
-        # Edge attr[i] = (num_balls - tgt[i]) / max_distance (closer to 0 = more recent)
-        temporal_distances = [(num_balls - t) / max_temporal_distance for t in tgt]
-        edge_attrs[('ball', 'precedes', 'ball')] = torch.tensor(
-            [[d] for d in temporal_distances], dtype=torch.float
-        )
+    recent_src, recent_tgt, recent_dist = [], [], []
+    medium_src, medium_tgt, medium_dist = [], [], []
+    distant_src, distant_tgt, distant_dist = [], [], []
+
+    for i in range(num_balls):
+        for j in range(i + 1, num_balls):
+            gap = j - i
+            # Temporal distance feature: normalized by window size
+            if gap <= 6:
+                # Recent: within current over context
+                recent_src.append(i)
+                recent_tgt.append(j)
+                recent_dist.append(gap / 6.0)
+            elif gap <= 18:
+                # Medium: 2-over momentum window
+                medium_src.append(i)
+                medium_tgt.append(j)
+                medium_dist.append((gap - 6) / 12.0)
+            else:
+                # Distant: sparse connections every 6 balls for efficiency
+                if gap % 6 == 0:
+                    distant_src.append(i)
+                    distant_tgt.append(j)
+                    distant_dist.append((gap - 18) / max_temporal_distance)
+
+    # Recent precedes
+    if recent_src:
+        edges[('ball', 'recent_precedes', 'ball')] = torch.tensor([recent_src, recent_tgt], dtype=torch.long)
+        edge_attrs[('ball', 'recent_precedes', 'ball')] = torch.tensor([[d] for d in recent_dist], dtype=torch.float)
     else:
-        edges[('ball', 'precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
-        edge_attrs[('ball', 'precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+        edges[('ball', 'recent_precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edge_attrs[('ball', 'recent_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+
+    # Medium precedes
+    if medium_src:
+        edges[('ball', 'medium_precedes', 'ball')] = torch.tensor([medium_src, medium_tgt], dtype=torch.long)
+        edge_attrs[('ball', 'medium_precedes', 'ball')] = torch.tensor([[d] for d in medium_dist], dtype=torch.float)
+    else:
+        edges[('ball', 'medium_precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edge_attrs[('ball', 'medium_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+
+    # Distant precedes
+    if distant_src:
+        edges[('ball', 'distant_precedes', 'ball')] = torch.tensor([distant_src, distant_tgt], dtype=torch.long)
+        edge_attrs[('ball', 'distant_precedes', 'ball')] = torch.tensor([[d] for d in distant_dist], dtype=torch.float)
+    else:
+        edges[('ball', 'distant_precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edge_attrs[('ball', 'distant_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
 
     # 2. Same bowler edges: connect balls by same bowler
     bowler_to_balls = defaultdict(list)
@@ -290,6 +341,9 @@ def build_temporal_edges(
 
     # 4. Same matchup edges: connect balls with same bowler-batsman pair
     # This is THE key predictor - specific matchup history
+    # CRITICAL: Use CAUSAL edges only (older -> newer) to prevent train-test distribution shift
+    # During training, bidirectional edges would allow future-to-past information flow,
+    # but at inference only historical balls exist. Causal edges ensure consistent behavior.
     matchup_to_balls = defaultdict(list)
     for ball_idx, (bowler_id, batsman_id) in enumerate(zip(bowler_ids, batsman_ids)):
         matchup_key = (bowler_id, batsman_id)
@@ -299,11 +353,13 @@ def build_temporal_edges(
     same_matchup_tgt = []
     for balls in matchup_to_balls.values():
         if len(balls) > 1:
-            # Create clique edges (bidirectional)
-            for i in range(len(balls)):
-                for j in range(i + 1, len(balls)):
-                    same_matchup_src.extend([balls[i], balls[j]])
-                    same_matchup_tgt.extend([balls[j], balls[i]])
+            # Sort to ensure temporal order, then create CAUSAL edges (older -> newer only)
+            sorted_balls = sorted(balls)
+            for i in range(len(sorted_balls)):
+                for j in range(i + 1, len(sorted_balls)):
+                    # Only older -> newer direction (causal)
+                    same_matchup_src.append(sorted_balls[i])
+                    same_matchup_tgt.append(sorted_balls[j])
 
     if same_matchup_src:
         edges[('ball', 'same_matchup', 'ball')] = torch.tensor(
@@ -422,6 +478,11 @@ def build_query_edges(num_balls: int) -> Dict[EdgeType, torch.Tensor]:
     The query node aggregates information from everything for prediction.
     Information flows FROM other nodes TO query (for message passing).
 
+    Additionally, dynamics nodes have explicit 'drives' edges to query to ensure
+    momentum and pressure signals directly influence predictions. This is critical
+    because momentum is a forward-looking predictor (positive momentum predicts
+    more positive outcomes).
+
     Args:
         num_balls: Number of historical balls
 
@@ -441,6 +502,14 @@ def build_query_edges(num_balls: int) -> Dict[EdgeType, torch.Tensor]:
     for node_type in context_types:
         edge_index = torch.tensor([[0], [0]], dtype=torch.long)
         edges[(node_type, 'attends', 'query')] = edge_index
+
+    # Dynamics nodes also have explicit 'drives' edges to query
+    # This ensures momentum/pressure directly influence predictions
+    # The 'drives' relation is separate from 'attends' to allow different
+    # convolution operators (momentum should have strong influence on prediction)
+    for dynamics_node in LAYER_NODES['dynamics']:
+        edge_index = torch.tensor([[0], [0]], dtype=torch.long)
+        edges[(dynamics_node, 'drives', 'query')] = edge_index
 
     # Balls -> query
     if num_balls > 0:
@@ -551,8 +620,10 @@ def get_all_edge_types() -> List[EdgeType]:
         edge_types.add((src, 'relates_to', tgt))
         edge_types.add((tgt, 'relates_to', src))
 
-    # Temporal
-    edge_types.add(('ball', 'precedes', 'ball'))
+    # Temporal - Multi-scale for different temporal patterns
+    edge_types.add(('ball', 'recent_precedes', 'ball'))   # Last 6 balls (within-over)
+    edge_types.add(('ball', 'medium_precedes', 'ball'))   # 7-18 balls (momentum window)
+    edge_types.add(('ball', 'distant_precedes', 'ball'))  # 19+ balls (historical, sparse)
     edge_types.add(('ball', 'same_bowler', 'ball'))
     edge_types.add(('ball', 'same_batsman', 'ball'))
     edge_types.add(('ball', 'same_matchup', 'ball'))
@@ -574,6 +645,10 @@ def get_all_edge_types() -> List[EdgeType]:
     for node_type in context_types:
         edge_types.add((node_type, 'attends', 'query'))
     edge_types.add(('ball', 'attends', 'query'))
+
+    # Dynamics -> query 'drives' edges (momentum directly influences prediction)
+    for dynamics_node in LAYER_NODES['dynamics']:
+        edge_types.add((dynamics_node, 'drives', 'query'))
 
     return sorted(list(edge_types))
 

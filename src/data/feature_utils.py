@@ -107,7 +107,7 @@ def compute_phase_state(balls_bowled: int) -> List[float]:
         balls_bowled: Number of balls bowled in innings
 
     Returns:
-        [is_powerplay, is_middle, is_death, over_progress]
+        [is_powerplay, is_middle, is_death, over_progress, is_first_ball]
     """
     over = balls_bowled // 6
     ball_in_over = balls_bowled % 6
@@ -124,7 +124,11 @@ def compute_phase_state(balls_bowled: int) -> List[float]:
     # Progress through current over
     over_progress = ball_in_over / 6.0
 
-    return [is_powerplay, is_middle, is_death, over_progress]
+    # Cold start indicator: first ball of innings has no history
+    # This helps the model learn first-ball-specific behavior
+    is_first_ball = 1.0 if balls_bowled == 0 else 0.0
+
+    return [is_powerplay, is_middle, is_death, over_progress, is_first_ball]
 
 
 def compute_time_pressure(
@@ -199,7 +203,7 @@ def compute_batsman_state(
         batsman_name: Name of the batsman
 
     Returns:
-        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10]
+        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10, is_debut_ball]
     """
     runs = 0
     balls_faced = 0
@@ -222,13 +226,19 @@ def compute_batsman_state(
     dots_pct = (dots / balls_faced) if balls_faced > 0 else 0.0
     is_set = 1.0 if balls_faced > 10 else 0.0
 
+    # Cold start indicator: debut ball means this batsman has not faced any balls yet
+    # This is crucial for new batsmen after a wicket falls - the model must rely
+    # on player embeddings rather than in-innings performance
+    is_debut_ball = 1.0 if balls_faced == 0 else 0.0
+
     return [
         min(runs / 100.0, 1.0),           # runs normalized
         min(balls_faced / 60.0, 1.0),     # balls faced normalized
         min(strike_rate / 200.0, 1.0),    # strike rate normalized
         dots_pct,                          # dot ball percentage
         is_set,                            # settled indicator
-        min(boundaries / 10.0, 1.0)       # boundaries normalized
+        min(boundaries / 10.0, 1.0),      # boundaries normalized
+        is_debut_ball                      # cold start indicator
     ]
 
 
@@ -244,7 +254,7 @@ def compute_striker_state(
         striker_name: Name of the current striker
 
     Returns:
-        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10]
+        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10, is_debut_ball]
     """
     return compute_batsman_state(deliveries, striker_name)
 
@@ -261,7 +271,7 @@ def compute_nonstriker_state(
         nonstriker_name: Name of the current non-striker
 
     Returns:
-        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10]
+        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10, is_debut_ball]
     """
     return compute_batsman_state(deliveries, nonstriker_name)
 

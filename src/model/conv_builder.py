@@ -97,10 +97,12 @@ def build_hetero_conv(
                 dropout=dropout,
             )
 
-        elif rel == 'precedes':
-            # Temporal ordering: position-aware attention with temporal distance edge features
-            # Edge features encode how recent the transition is (closer to 0 = more recent)
-            # This allows the model to weight recent ball transitions more heavily
+        elif rel in ['recent_precedes', 'medium_precedes']:
+            # Multi-scale temporal edges: position-aware attention with distance features
+            # - recent_precedes: Last 6 balls (within-over context, fast decay)
+            # - medium_precedes: 7-18 balls (momentum window, medium decay)
+            # TransformerConv with edge features allows the model to learn
+            # scale-appropriate attention patterns
             convs[edge_type] = TransformerConv(
                 hidden_dim,
                 head_dim,
@@ -108,6 +110,15 @@ def build_hetero_conv(
                 concat=True,
                 dropout=dropout,
                 edge_dim=1,  # Temporal distance feature dimension
+            )
+
+        elif rel == 'distant_precedes':
+            # Distant temporal context: simpler aggregation for sparse historical connections
+            # These edges are sparser (every 6 balls) so mean aggregation is efficient
+            convs[edge_type] = SAGEConv(
+                hidden_dim,
+                hidden_dim,
+                aggr='mean',
             )
 
         elif rel in ['same_bowler', 'same_batsman', 'same_matchup']:
@@ -146,6 +157,22 @@ def build_hetero_conv(
 
         elif rel == 'attends':
             # Query aggregation: attention for selective aggregation
+            convs[edge_type] = GATv2Conv(
+                hidden_dim,
+                head_dim,
+                heads=num_heads,
+                add_self_loops=False,
+                concat=True,
+                dropout=dropout,
+            )
+
+        elif rel == 'drives':
+            # Dynamics -> Query: momentum/pressure directly drive predictions
+            # Use attention-based aggregation so the model can weight different
+            # dynamics signals (batting_momentum, bowling_momentum, pressure, dots)
+            # This is critical for capturing feedback loops like:
+            # - R1: Confidence spiral (momentum -> more runs)
+            # - B1: Required rate pressure (pressure -> risk-taking)
             convs[edge_type] = GATv2Conv(
                 hidden_dim,
                 head_dim,

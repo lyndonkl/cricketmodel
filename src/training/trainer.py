@@ -19,6 +19,7 @@ from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 from .metrics import compute_metrics, print_classification_report
+from .losses import FocalLoss
 
 
 @dataclass
@@ -46,6 +47,10 @@ class TrainingConfig:
     # Logging
     log_interval: int = 100  # batches
     eval_interval: int = 1  # epochs
+
+    # Loss function
+    use_focal_loss: bool = True  # Use Focal Loss for class imbalance
+    focal_gamma: float = 2.0  # Focal loss focusing parameter
 
 
 class Trainer:
@@ -93,7 +98,18 @@ class Trainer:
         # Loss
         if class_weights is not None:
             class_weights = class_weights.to(self.device)
-        self.criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+        if config.use_focal_loss:
+            # Focal Loss: better handles class imbalance by down-weighting easy examples
+            # This is critical for cricket where dots (~35-40%) dominate and wickets (~5%) are rare
+            self.criterion = FocalLoss(
+                gamma=config.focal_gamma,
+                alpha=class_weights,
+                reduction='mean'
+            )
+            print(f"Using Focal Loss with gamma={config.focal_gamma}")
+        else:
+            self.criterion = nn.CrossEntropyLoss(weight=class_weights)
 
         # Optimizer
         self.optimizer = AdamW(
