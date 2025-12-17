@@ -1,270 +1,323 @@
-"""PyTorch Dataset for cricket ball prediction."""
+"""
+Cricket Dataset for PyTorch Geometric
 
-from dataclasses import dataclass
+InMemoryDataset implementation for cricket ball prediction.
+Handles data loading, processing, and train/val/test splitting.
+"""
+
+import json
+import os
+import random
 from pathlib import Path
-from typing import Optional
+from typing import Callable, List, Optional, Tuple
 
 import torch
-from torch.utils.data import Dataset
+from torch_geometric.data import HeteroData, InMemoryDataset
+from torch_geometric.loader import DataLoader
+from tqdm import tqdm
 
-from .loader import Match, Innings, Delivery, load_matches_from_dir
-
-
-@dataclass
-class BallSample:
-    """Single training sample - state before a ball and its outcome."""
-
-    # Match context
-    match_id: str
-    venue: str
-    batting_team: str
-    bowling_team: str
-    innings_num: int  # 1 or 2
-
-    # Current ball actors
-    batter: str
-    bowler: str
-    non_striker: str
-
-    # Match state before this ball
-    score: int
-    wickets: int
-    over: int
-    ball_in_over: int
-    target: Optional[int]  # None for first innings
-
-    # Ball history (for temporal attention)
-    ball_history: list[dict]  # Last N balls with outcomes
-
-    # Label: outcome of this ball
-    outcome: int  # 0=dot, 1=1, 2=2, 3=3, 4=4, 5=6, 6=wicket
+from .entity_mapper import EntityMapper
+from .hetero_data_builder import create_samples_from_match
 
 
-OUTCOME_MAP = {
-    (0, False): 0,  # dot
-    (1, False): 1,  # single
-    (2, False): 2,  # two
-    (3, False): 3,  # three
-    (4, False): 4,  # boundary
-    (6, False): 5,  # six
-}
+class CricketDataset(InMemoryDataset):
+    """
+    PyTorch Geometric dataset for cricket ball prediction.
 
+    Each sample is a HeteroData object representing the match state
+    before a specific ball, with the label being that ball's outcome.
 
-def _delivery_to_outcome(d: Delivery) -> int:
-    """Map delivery to outcome class."""
-    if d.is_wicket:
-        return 6  # wicket
-    runs = d.runs_batter
-    if runs == 0:
-        return 0
-    elif runs == 1:
-        return 1
-    elif runs == 2:
-        return 2
-    elif runs == 3:
-        return 3
-    elif runs == 4:
-        return 4
-    elif runs >= 6:
-        return 5
-    return 0
+    The dataset processes raw match JSON files and caches processed
+    data for efficient loading.
 
+    IMPORTANT: Split by MATCH, not by ball, to avoid data leakage.
 
-def _extract_samples_from_innings(
-    match: Match,
-    innings: Innings,
-    innings_num: int,
-    target: Optional[int],
-    history_len: int,
-) -> list[BallSample]:
-    """Extract training samples from single innings."""
-    samples = []
-    score = 0
-    wickets = 0
-
-    for i, delivery in enumerate(innings.deliveries):
-        # Build ball history (previous balls)
-        start_idx = max(0, i - history_len)
-        history = []
-        for h_d in innings.deliveries[start_idx:i]:
-            history.append({
-                "batter": h_d.batter,
-                "bowler": h_d.bowler,
-                "runs": h_d.runs_total,
-                "is_wicket": h_d.is_wicket,
-                "over": h_d.over,
-                "ball_in_over": h_d.ball_in_over,
-            })
-
-        sample = BallSample(
-            match_id=match.match_id,
-            venue=match.venue,
-            batting_team=innings.batting_team,
-            bowling_team=innings.bowling_team,
-            innings_num=innings_num,
-            batter=delivery.batter,
-            bowler=delivery.bowler,
-            non_striker=delivery.non_striker,
-            score=score,
-            wickets=wickets,
-            over=delivery.over,
-            ball_in_over=delivery.ball_in_over,
-            target=target,
-            ball_history=history,
-            outcome=_delivery_to_outcome(delivery),
-        )
-        samples.append(sample)
-
-        # Update state for next ball
-        score += delivery.runs_total
-        if delivery.is_wicket:
-            wickets += 1
-
-    return samples
-
-
-def extract_samples_from_match(match: Match, history_len: int = 24) -> list[BallSample]:
-    """Extract all training samples from a match."""
-    samples = []
-
-    for innings_num, innings in enumerate(match.innings, start=1):
-        # Second innings has a target
-        target = None
-        if innings_num == 2 and len(match.innings) >= 1:
-            target = match.innings[0].total_runs + 1
-
-        samples.extend(
-            _extract_samples_from_innings(match, innings, innings_num, target, history_len)
-        )
-
-    return samples
-
-
-class CricketDataset(Dataset):
-    """Dataset of ball-by-ball samples."""
+    Args:
+        root: Root directory containing raw and processed data
+        split: One of 'train', 'val', 'test', or 'all'
+        transform: Optional transform to apply to samples
+        pre_transform: Optional pre-transform to apply during processing
+        min_history: Minimum balls of history required for prediction
+        train_ratio: Fraction of matches for training (default 0.8)
+        val_ratio: Fraction of matches for validation (default 0.1)
+        seed: Random seed for reproducible splits
+    """
 
     def __init__(
         self,
-        data_dir: str | Path,
-        history_len: int = 24,
-        min_balls: int = 60,
+        root: str,
+        split: str = 'train',
+        transform: Optional[Callable] = None,
+        pre_transform: Optional[Callable] = None,
+        min_history: int = 1,
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        seed: int = 42,
     ):
-        self.data_dir = Path(data_dir)
-        self.history_len = history_len
-        self.samples: list[BallSample] = []
+        self.split = split
+        self.min_history = min_history
+        self.train_ratio = train_ratio
+        self.val_ratio = val_ratio
+        self.seed = seed
 
-        # Build unique entity sets for embedding indices
-        self.players: set[str] = set()
-        self.venues: set[str] = set()
-        self.teams: set[str] = set()
+        super().__init__(root, transform, pre_transform)
 
-        self._load_data(min_balls)
+        # Load the appropriate split
+        split_idx = {'train': 0, 'val': 1, 'test': 2, 'all': 3}[split]
+        self.load(self.processed_paths[split_idx])
 
-        # Create index mappings
-        self.player_to_idx = {p: i for i, p in enumerate(sorted(self.players))}
-        self.venue_to_idx = {v: i for i, v in enumerate(sorted(self.venues))}
-        self.team_to_idx = {t: i for i, t in enumerate(sorted(self.teams))}
+    @property
+    def raw_dir(self) -> str:
+        return os.path.join(self.root, 'raw')
 
-    def _load_data(self, min_balls: int) -> None:
-        """Load all matches and extract samples."""
-        for match in load_matches_from_dir(self.data_dir, min_balls):
-            # Collect entities
-            self.venues.add(match.venue)
-            self.teams.update(match.teams)
-            for innings in match.innings:
-                for d in innings.deliveries:
-                    self.players.add(d.batter)
-                    self.players.add(d.bowler)
-                    self.players.add(d.non_striker)
+    @property
+    def processed_dir(self) -> str:
+        return os.path.join(self.root, 'processed')
 
-            # Extract samples
-            self.samples.extend(extract_samples_from_match(match, self.history_len))
+    @property
+    def raw_file_names(self) -> List[str]:
+        """Expected raw files."""
+        return ['matches']  # Directory containing .json files
 
-    def __len__(self) -> int:
-        return len(self.samples)
+    @property
+    def processed_file_names(self) -> List[str]:
+        """Processed data files for each split."""
+        return [
+            'train_data.pt',
+            'val_data.pt',
+            'test_data.pt',
+            'all_data.pt',
+            'entity_mapper.pkl',
+            'metadata.json',
+        ]
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        sample = self.samples[idx]
+    def download(self):
+        """Download not implemented - data should be provided."""
+        raise RuntimeError(
+            f"Dataset not found at {self.raw_dir}. "
+            "Please provide match JSON files in raw/matches/ directory."
+        )
 
-        # Match state features
-        total_balls = sample.over * 6 + sample.ball_in_over
-        balls_remaining = 120 - total_balls  # T20 max
+    def process(self):
+        """Process raw match files into HeteroData samples."""
+        # Find all match JSON files
+        matches_dir = os.path.join(self.raw_dir, 'matches')
+        if not os.path.exists(matches_dir):
+            raise RuntimeError(
+                f"Matches directory not found at {matches_dir}. "
+                "Please provide match JSON files."
+            )
 
-        state = torch.tensor([
-            sample.score / 200.0,  # Normalize to typical max
-            sample.wickets / 10.0,
-            total_balls / 120.0,
-            sample.innings_num - 1,  # 0 or 1
-        ], dtype=torch.float32)
+        match_files = sorted(Path(matches_dir).glob('*.json'))
+        print(f"Found {len(match_files)} match files")
 
-        # Chase features (only for 2nd innings)
-        if sample.target is not None:
-            runs_needed = sample.target - sample.score
-            rrr = (runs_needed / (balls_remaining / 6)) if balls_remaining > 0 else 0
-            chase = torch.tensor([
-                runs_needed / 200.0,
-                rrr / 15.0,  # Normalize RRR
-                1.0,  # Is chase
-            ], dtype=torch.float32)
-        else:
-            chase = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)
+        if len(match_files) == 0:
+            raise RuntimeError("No match JSON files found")
 
-        # Entity indices
-        batter_idx = self.player_to_idx.get(sample.batter, 0)
-        bowler_idx = self.player_to_idx.get(sample.bowler, 0)
-        non_striker_idx = self.player_to_idx.get(sample.non_striker, 0)
-        venue_idx = self.venue_to_idx.get(sample.venue, 0)
-        batting_team_idx = self.team_to_idx.get(sample.batting_team, 0)
-        bowling_team_idx = self.team_to_idx.get(sample.bowling_team, 0)
+        # Step 1: Build entity mapper from ALL matches
+        print("Building entity mapper...")
+        entity_mapper = EntityMapper()
+        entity_mapper.build_from_matches(match_files)
+        print(f"Entity mapper: {entity_mapper}")
 
-        # Ball history sequence
-        history_runs = []
-        history_wickets = []
-        history_overs = []
-        history_batters = []
-        history_bowlers = []
+        # Save entity mapper
+        entity_mapper.save(os.path.join(self.processed_dir, 'entity_mapper.pkl'))
 
-        for h in sample.ball_history[-self.history_len:]:
-            history_runs.append(h["runs"] / 6.0)
-            history_wickets.append(float(h["is_wicket"]))
-            history_overs.append((h["over"] * 6 + h["ball_in_over"]) / 120.0)
-            history_batters.append(self.player_to_idx.get(h["batter"], 0))
-            history_bowlers.append(self.player_to_idx.get(h["bowler"], 0))
+        # Step 2: Split matches (not balls!)
+        random.seed(self.seed)
+        match_files = list(match_files)
+        random.shuffle(match_files)
 
-        # Pad history to fixed length
-        pad_len = self.history_len - len(history_runs)
-        if pad_len > 0:
-            history_runs = [0.0] * pad_len + history_runs
-            history_wickets = [0.0] * pad_len + history_wickets
-            history_overs = [0.0] * pad_len + history_overs
-            history_batters = [0] * pad_len + history_batters
-            history_bowlers = [0] * pad_len + history_bowlers
+        n_matches = len(match_files)
+        n_train = int(n_matches * self.train_ratio)
+        n_val = int(n_matches * self.val_ratio)
 
-        return {
-            "state": state,
-            "chase": chase,
-            "batter_idx": torch.tensor(batter_idx, dtype=torch.long),
-            "bowler_idx": torch.tensor(bowler_idx, dtype=torch.long),
-            "non_striker_idx": torch.tensor(non_striker_idx, dtype=torch.long),
-            "venue_idx": torch.tensor(venue_idx, dtype=torch.long),
-            "batting_team_idx": torch.tensor(batting_team_idx, dtype=torch.long),
-            "bowling_team_idx": torch.tensor(bowling_team_idx, dtype=torch.long),
-            "history_runs": torch.tensor(history_runs, dtype=torch.float32),
-            "history_wickets": torch.tensor(history_wickets, dtype=torch.float32),
-            "history_overs": torch.tensor(history_overs, dtype=torch.float32),
-            "history_batters": torch.tensor(history_batters, dtype=torch.long),
-            "history_bowlers": torch.tensor(history_bowlers, dtype=torch.long),
-            "label": torch.tensor(sample.outcome, dtype=torch.long),
+        train_matches = match_files[:n_train]
+        val_matches = match_files[n_train:n_train + n_val]
+        test_matches = match_files[n_train + n_val:]
+
+        print(f"Split: {len(train_matches)} train, {len(val_matches)} val, "
+              f"{len(test_matches)} test matches")
+
+        # Step 3: Process each split
+        splits = {
+            'train': train_matches,
+            'val': val_matches,
+            'test': test_matches,
+            'all': match_files,
         }
 
-    @property
-    def num_players(self) -> int:
-        return len(self.players)
+        for split_name, split_files in splits.items():
+            print(f"Processing {split_name} split...")
+            samples = self._process_matches(split_files, entity_mapper)
+            print(f"  {len(samples)} samples")
 
-    @property
-    def num_venues(self) -> int:
-        return len(self.venues)
+            if self.pre_transform is not None:
+                samples = [self.pre_transform(s) for s in samples]
 
-    @property
-    def num_teams(self) -> int:
-        return len(self.teams)
+            # Save processed data
+            path = os.path.join(self.processed_dir, f'{split_name}_data.pt')
+            self.save(samples, path)
+
+        # Save metadata
+        metadata = {
+            'num_matches': n_matches,
+            'num_train_matches': len(train_matches),
+            'num_val_matches': len(val_matches),
+            'num_test_matches': len(test_matches),
+            'num_venues': entity_mapper.num_venues,
+            'num_teams': entity_mapper.num_teams,
+            'num_players': entity_mapper.num_players,
+            'min_history': self.min_history,
+            'train_ratio': self.train_ratio,
+            'val_ratio': self.val_ratio,
+            'seed': self.seed,
+        }
+        with open(os.path.join(self.processed_dir, 'metadata.json'), 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+    def _process_matches(
+        self,
+        match_files: List[Path],
+        entity_mapper: EntityMapper
+    ) -> List[HeteroData]:
+        """Process list of match files into HeteroData samples."""
+        samples = []
+
+        for match_file in tqdm(match_files, desc="Processing matches"):
+            try:
+                with open(match_file, 'r') as f:
+                    match_data = json.load(f)
+
+                match_samples = create_samples_from_match(
+                    match_data=match_data,
+                    entity_mapper=entity_mapper,
+                    min_history=self.min_history
+                )
+                samples.extend(match_samples)
+
+            except Exception as e:
+                print(f"Warning: Failed to process {match_file}: {e}")
+
+        return samples
+
+    def get_entity_mapper(self) -> EntityMapper:
+        """Load and return the entity mapper."""
+        mapper_path = os.path.join(self.processed_dir, 'entity_mapper.pkl')
+        return EntityMapper.load(mapper_path)
+
+    def get_metadata(self) -> dict:
+        """Load and return dataset metadata."""
+        metadata_path = os.path.join(self.processed_dir, 'metadata.json')
+        with open(metadata_path, 'r') as f:
+            return json.load(f)
+
+
+def create_dataloaders(
+    root: str,
+    batch_size: int = 64,
+    num_workers: int = 4,
+    **dataset_kwargs
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """
+    Create train, validation, and test dataloaders.
+
+    Args:
+        root: Root directory for dataset
+        batch_size: Batch size for dataloaders
+        num_workers: Number of worker processes
+        **dataset_kwargs: Additional arguments for CricketDataset
+
+    Returns:
+        Tuple of (train_loader, val_loader, test_loader)
+    """
+    train_dataset = CricketDataset(root, split='train', **dataset_kwargs)
+    val_dataset = CricketDataset(root, split='val', **dataset_kwargs)
+    test_dataset = CricketDataset(root, split='test', **dataset_kwargs)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    return train_loader, val_loader, test_loader
+
+
+def compute_class_weights(dataset: CricketDataset) -> torch.Tensor:
+    """
+    Compute inverse frequency class weights for imbalanced data.
+
+    Args:
+        dataset: CricketDataset to compute weights from
+
+    Returns:
+        Tensor of class weights [num_classes]
+    """
+    from collections import Counter
+
+    class_counts = Counter()
+    for data in dataset:
+        class_counts[data.y.item()] += 1
+
+    total = sum(class_counts.values())
+    num_classes = 7  # 0-6
+
+    weights = []
+    for c in range(num_classes):
+        if class_counts[c] > 0:
+            weights.append(total / (num_classes * class_counts[c]))
+        else:
+            weights.append(1.0)
+
+    return torch.tensor(weights, dtype=torch.float)
+
+
+def get_class_distribution(dataset: CricketDataset) -> dict:
+    """
+    Get class distribution statistics.
+
+    Args:
+        dataset: CricketDataset to analyze
+
+    Returns:
+        Dict with class names and their percentages
+    """
+    from collections import Counter
+
+    class_names = ['Dot', 'Single', 'Two', 'Three', 'Four', 'Six', 'Wicket']
+    class_counts = Counter()
+
+    for data in dataset:
+        class_counts[data.y.item()] += 1
+
+    total = sum(class_counts.values())
+
+    distribution = {}
+    for c in range(7):
+        count = class_counts[c]
+        percentage = (count / total * 100) if total > 0 else 0
+        distribution[class_names[c]] = {
+            'count': count,
+            'percentage': round(percentage, 2)
+        }
+
+    return distribution

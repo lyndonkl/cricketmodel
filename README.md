@@ -1,121 +1,222 @@
 # Cricket Ball Prediction Model
 
-Predict T20 cricket ball outcomes using hierarchical graph attention and temporal transformers. Designed for **interpretable attention** that an LLM can observe and translate into real-time match insights.
+Predict T20 cricket ball outcomes using a **unified heterogeneous graph neural network**. The V2 architecture models the entire match context as a single graph with typed nodes and edges, enabling full innings history through sparse O(n) edges instead of O(n²) attention.
 
 ## Architecture
 
 ```
-Input (per ball) → Hierarchical GAT (17 nodes) → Temporal Transformer → Prediction
-                          ↓                              ↓
-                   Within-ball attention         Cross-ball attention
-                   (what factors matter)         (which past balls matter)
+Match Context Graph (21 node types, 16 edge types)
+├── Global Layer:    venue, batting_team, bowling_team
+├── State Layer:     score_state, chase_state, phase_state, time_pressure, wicket_buffer
+├── Actor Layer:     striker_identity, striker_state, nonstriker_identity, nonstriker_state,
+│                    bowler_identity, bowler_state, partnership
+├── Dynamics Layer:  batting_momentum, bowling_momentum, pressure_index, dot_pressure
+├── Ball Nodes:      Full innings history (N balls, 9 features each)
+└── Query Node:      Aggregates information for prediction
 ```
 
-### Hierarchical Graph Structure
+### Key Features
 
-17 semantic nodes across 4 layers with learned attention:
+- **Unified Graph**: All match context in one heterogeneous graph
+- **Full History**: O(n) sparse edges enable complete innings history (vs V1's 24-ball window)
+- **Non-Striker Modeling**: Partnership dynamics and strike rotation patterns
+- **Rich Ball Features**: 9 features including extras (wide, noball, bye, legbye)
+- **Typed Edges**: Different convolution operators per relationship type
+- **Interpretable**: Attention weights show which context influences predictions
 
-| Layer | Nodes | Purpose |
-|-------|-------|---------|
-| **Global** | Venue, Batting Team, Bowling Team | Match-level context |
-| **State** | Score, Chase, Phase, Time, Wickets | Current situation |
-| **Actor** | Striker ID/State, Bowler ID/State, Partnership | Player dynamics |
-| **Dynamics** | Batting Momentum, Bowling Momentum, Pressure, Dot Pressure | Recent trends |
+### Edge Types
 
-### Temporal Transformer
+| Category | Edges | Purpose |
+|----------|-------|---------|
+| **Hierarchical** | global→state→actor→dynamics | Top-down conditioning |
+| **Intra-layer** | Within-layer interactions | E.g., striker↔bowler↔nonstriker matchup |
+| **Temporal** | precedes, same_bowler, same_batsman, same_matchup | Ball history structure |
+| **Cross-domain** | faced_by, partnered_by, bowled_by, informs | Connect history to context |
+| **Query** | all→query | Aggregate for prediction |
 
-Specialized attention heads for cricket-specific patterns:
-- **Recency head**: Recent balls weighted higher
-- **Same-bowler head**: Pattern from current bowler's deliveries
-- **Same-batsman head**: Current batsman's recent form
-- **Learned heads**: Free to discover other patterns
+## Quick Start
 
-## Installation
+### Prerequisites
+
+- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/)
+- macOS, Linux, or Windows
+
+### Installation
 
 ```bash
-# Clone and install
+# Clone the repository
 git clone https://github.com/lyndonkl/cricketmodel.git
 cd cricketmodel
-pip install -e .
 
-# Download Cricsheet T20 data
-# Place JSON files in data/t20s_male_json/
+# Run setup script (creates conda environment)
+chmod +x scripts/setup.sh
+./scripts/setup.sh
+
+# Activate environment
+conda activate cricketmodel
+
+# Verify installation
+python scripts/verify_install.py
 ```
 
-**Requirements**: Python 3.10+, PyTorch 2.1+, PyTorch Geometric 2.4+
+### Manual Installation
+
+If you prefer manual setup:
+
+```bash
+# Create conda environment
+conda env create -f environment.yml
+
+# Activate
+conda activate cricketmodel
+
+# Verify
+python scripts/verify_install.py
+```
+
+### Data Setup
+
+Download T20 data from [Cricsheet](https://cricsheet.org/downloads/):
+
+```bash
+mkdir -p data
+cd data
+curl -O https://cricsheet.org/downloads/t20s_male_json.zip
+unzip t20s_male_json.zip
+cd ..
+```
+
+The data should be in `data/t20s_male_json/*.json`.
 
 ## Training
 
-### Single GPU / Apple Silicon (MPS)
-
 ```bash
-python train.py --device mps --epochs 50 --batch-size 64
+# Basic training
+python train.py
+
+# Custom settings
+python train.py \
+    --epochs 100 \
+    --batch-size 64 \
+    --hidden-dim 128 \
+    --num-layers 3 \
+    --lr 1e-3 \
+    --device auto
+
+# Test a trained model
+python train.py --test-only
 ```
 
-### Multi-GPU with DDP
-
-```bash
-torchrun --nproc_per_node=2 train.py --distributed --epochs 50
-```
-
-### Options
+### Command Line Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--device` | mps | Device: mps, cuda, cpu |
-| `--epochs` | 50 | Training epochs |
-| `--batch-size` | 64 | Batch size |
+| `--data-dir` | data/t20s_male_json | Raw JSON match files |
+| `--batch-size` | 64 | Training batch size |
+| `--hidden-dim` | 128 | Hidden dimension |
+| `--num-layers` | 3 | Message passing layers |
+| `--num-heads` | 4 | Attention heads |
+| `--epochs` | 100 | Training epochs |
 | `--lr` | 1e-3 | Learning rate |
-| `--distributed` | False | Enable DDP |
+| `--patience` | 10 | Early stopping patience |
+| `--device` | auto | Device: auto, cuda, mps, cpu |
+| `--test-only` | False | Only evaluate existing model |
 
 ## Project Structure
 
 ```
-src/
-├── data/           # Cricsheet JSON loading, PyTorch Dataset
-├── features/       # Match state, derived features (pressure, momentum)
-├── embeddings/     # Player/venue embeddings with cold-start handling
-├── model/
-│   ├── hierarchical.py   # 4-layer GAT with attention extraction
-│   ├── temporal.py       # Transformer with specialized heads
-│   └── predictor.py      # Full model combining both
-└── training/       # Trainer with MPS/DDP support
+cricketmodel/
+├── src/
+│   ├── data/
+│   │   ├── entity_mapper.py       # Venue/team/player ID mapping
+│   │   ├── feature_utils.py       # Feature computation for all node types
+│   │   ├── edge_builder.py        # Graph structure and edge construction
+│   │   ├── hetero_data_builder.py # PyG HeteroData creation
+│   │   └── dataset.py             # CricketDataset class
+│   ├── model/
+│   │   ├── encoders.py            # Node encoders (entity, feature, ball, query)
+│   │   ├── conv_builder.py        # HeteroConv with typed convolutions
+│   │   └── hetero_gnn.py          # Main CricketHeteroGNN model
+│   ├── training/
+│   │   ├── trainer.py             # Training loop with early stopping
+│   │   └── metrics.py             # Multi-class evaluation metrics
+│   └── config.py                  # Configuration dataclasses
+├── scripts/
+│   ├── setup.sh                   # Automated environment setup
+│   └── verify_install.py          # Installation verification
+├── train.py                       # Main training script
+├── environment.yml                # Conda environment specification
+├── pyproject.toml                 # Package configuration
+└── notes/
+    └── architecture/
+        └── v2-unified-heterograph/  # Design documentation
 ```
 
-## Interpretability
+## Output Classes
 
-The model outputs attention weights at multiple levels:
+The model predicts 7 outcome classes:
 
-```python
-output = model(batch, return_attention=True)
-print(output["gat_attention"]["layer_importance"])
-# {'global': 0.12, 'match_state': 0.38, 'actor': 0.28, 'dynamics': 0.22}
-```
+| Class | Outcome | Typical % |
+|-------|---------|-----------|
+| 0 | Dot | ~40% |
+| 1 | Single | ~30% |
+| 2 | Two | ~8% |
+| 3 | Three | ~2% |
+| 4 | Four | ~12% |
+| 5 | Six | ~5% |
+| 6 | Wicket | ~3% |
 
-This enables an LLM to generate insights like:
-> "The model predicts a single with 28% confidence. Focus is heavily on the chase equation (42%) and current pressure (38%). The model looked at this bowler's previous deliveries where 2 boundaries were scored."
-
-## Cold-Start Handling
-
-Unknown players/venues are handled via feature-based embedding generation:
-
-```python
-# The model never sees player IDs - only embedding vectors
-# generated from stats. New players get embeddings from:
-# 1. Career stats (if available)
-# 2. Role prototypes (opener_aggressive, death_pace, etc.)
-# 3. Country/position inference
-```
-
-See `notes/implementation/08-cold-start-embeddings.md` for details.
+Class weights are automatically computed to handle imbalance.
 
 ## Documentation
 
-Detailed design docs in `notes/implementation/`:
-- `02-graph-structure.md` - 17-node semantic graph design
-- `03-hierarchical-attention.md` - Layer-wise attention with conditioning
-- `04-temporal-attention.md` - Specialized attention heads
-- `07-live-data-contract.md` - API for live predictions
+Detailed design documentation in `notes/architecture/v2-unified-heterograph/`:
+
+- `01-overview.md` - High-level architecture
+- `02-node-types.md` - 21 node type specifications
+- `03-edge-types.md` - 16 edge type specifications
+- `04-model-architecture.md` - HeteroGNN implementation details
+- `05-data-pipeline.md` - Dataset and DataLoader design
+- `06-training.md` - Training procedure
+
+## Troubleshooting
+
+### Environment Issues
+
+```bash
+# Remove and recreate environment
+conda env remove -n cricketmodel
+./scripts/setup.sh
+```
+
+### Memory Issues
+
+For large datasets, reduce batch size or use fewer message passing layers:
+
+```bash
+python train.py --batch-size 32 --num-layers 2
+```
+
+### Apple Silicon (M1/M2/M3)
+
+The environment auto-detects MPS. Verify with:
+
+```bash
+python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"
+```
+
+## Dependencies
+
+Core dependencies managed via conda for reproducibility:
+
+| Package | Version | Notes |
+|---------|---------|-------|
+| Python | 3.11 | Required |
+| PyTorch | >=2.1,<2.3 | MPS/CUDA support |
+| PyTorch Geometric | >=2.4 | Installed via pip (no conda pkg for ARM) |
+| NumPy | >=1.24,<2 | Pinned for PyTorch compatibility |
+
+See `environment.yml` for full specification.
 
 ## License
 

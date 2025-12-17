@@ -1,345 +1,420 @@
-"""Training loop with MPS/CUDA support and optional DDP.
+"""
+Trainer for Cricket Ball Prediction Model
 
-Best practices implemented from PyTorch documentation:
-- model.train()/model.eval() mode switching
-- torch.no_grad() for inference
-- drop_last=True for consistent batch sizes
-- Proper device handling for MPS/CUDA/CPU
-- Gradient clipping
-- Learning rate scheduling
-- DDP support for multi-GPU training
+Handles training loop, validation, early stopping, and checkpointing.
 """
 
 import os
-from pathlib import Path
-from typing import Callable
+import json
+import time
+from dataclasses import dataclass, asdict
+from typing import Dict, Optional, Tuple, List
 
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
-from torch.utils.data.distributed import DistributedSampler
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
-from ..config import Config
-from ..data import CricketDataset
-from ..model import CricketPredictor
-from .metrics import compute_metrics, print_metrics
+from .metrics import compute_metrics, print_classification_report
 
 
-def get_device(preferred: str = "mps") -> torch.device:
-    """Get best available device."""
-    if preferred == "mps" and torch.backends.mps.is_available():
-        return torch.device("mps")
-    elif preferred == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
+@dataclass
+class TrainingConfig:
+    """Configuration for training."""
 
+    # Optimization
+    lr: float = 1e-3
+    weight_decay: float = 0.01
+    max_grad_norm: float = 1.0
 
-def setup_ddp(rank: int, world_size: int) -> None:
-    """Initialize DDP process group."""
-    os.environ["MASTER_ADDR"] = os.environ.get("MASTER_ADDR", "localhost")
-    os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "12355")
+    # Schedule
+    epochs: int = 100
+    warmup_epochs: int = 5
+    scheduler: str = 'cosine'  # 'cosine' or 'plateau'
 
-    backend = "nccl" if torch.cuda.is_available() else "gloo"
-    torch.distributed.init_process_group(backend, rank=rank, world_size=world_size)
+    # Early stopping
+    patience: int = 10
+    min_delta: float = 1e-4
 
+    # Checkpointing
+    checkpoint_dir: str = 'checkpoints'
+    save_best_only: bool = True
 
-def cleanup_ddp() -> None:
-    """Clean up DDP process group."""
-    if torch.distributed.is_initialized():
-        torch.distributed.destroy_process_group()
+    # Logging
+    log_interval: int = 100  # batches
+    eval_interval: int = 1  # epochs
 
 
 class Trainer:
-    """Training loop for cricket prediction model."""
+    """
+    Training manager for CricketHeteroGNN.
+
+    Handles:
+    - Training loop with progress tracking
+    - Validation with early stopping
+    - Checkpoint saving/loading
+    - Learning rate scheduling
+    - Gradient clipping
+    """
 
     def __init__(
         self,
-        config: Config,
-        model: CricketPredictor | None = None,
-        dataset: CricketDataset | None = None,
-        rank: int = 0,
-        world_size: int = 1,
+        model: nn.Module,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        config: TrainingConfig,
+        class_weights: Optional[torch.Tensor] = None,
+        device: Optional[torch.device] = None,
     ):
+        """
+        Args:
+            model: CricketHeteroGNN model
+            train_loader: Training data loader
+            val_loader: Validation data loader
+            config: Training configuration
+            class_weights: Optional class weights for imbalanced data
+            device: Device to train on
+        """
         self.config = config
-        self.rank = rank
-        self.world_size = world_size
-        self.is_distributed = world_size > 1
-        self.is_main_process = rank == 0
-
-        # Device setup
-        if self.is_distributed:
-            self.device = torch.device(f"cuda:{rank}")
-            torch.cuda.set_device(self.device)
-        else:
-            self.device = get_device(config.training.device)
-
-        if self.is_main_process:
-            print(f"Using device: {self.device}")
-            if self.is_distributed:
-                print(f"DDP: rank {rank}/{world_size}")
-
-        # Load dataset if not provided
-        if dataset is None:
-            if self.is_main_process:
-                print("Loading dataset...")
-            dataset = CricketDataset(
-                data_dir=Path(config.data.data_dir) / "t20s_male_json",
-                history_len=config.model.temporal_seq_len,
-                min_balls=config.data.min_balls_per_match,
-            )
-            if self.is_main_process:
-                print(f"Loaded {len(dataset)} samples")
-                print(f"Players: {dataset.num_players}, Venues: {dataset.num_venues}")
-
-        self.dataset = dataset
-
-        # Split dataset
-        train_size = int(len(dataset) * config.data.train_split)
-        val_size = int(len(dataset) * config.data.val_split)
-        test_size = len(dataset) - train_size - val_size
-
-        generator = torch.Generator().manual_seed(42)
-        self.train_dataset, self.val_dataset, self.test_dataset = random_split(
-            dataset, [train_size, val_size, test_size], generator=generator
+        self.device = device or torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'
         )
 
-        # Create model if not provided
-        if model is None:
-            model = CricketPredictor(
-                num_players=dataset.num_players,
-                num_venues=dataset.num_venues,
-                num_teams=dataset.num_teams,
-                num_outcomes=config.model.num_outcomes,
-                hidden_dim=config.model.transformer_dim,
-                gat_heads=config.model.num_gat_heads,
-                transformer_heads=config.model.transformer_heads,
-                transformer_layers=config.model.transformer_layers,
-                dropout=config.model.transformer_dropout,
-                seq_len=config.model.temporal_seq_len,
-            )
-
+        # Model
         self.model = model.to(self.device)
 
-        # Wrap model in DDP if distributed
-        if self.is_distributed:
-            self.model = torch.nn.parallel.DistributedDataParallel(
-                self.model, device_ids=[rank]
-            )
+        # Data
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+
+        # Loss
+        if class_weights is not None:
+            class_weights = class_weights.to(self.device)
+        self.criterion = nn.CrossEntropyLoss(weight=class_weights)
 
         # Optimizer
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=config.training.learning_rate,
-            weight_decay=config.training.weight_decay,
+        self.optimizer = AdamW(
+            model.parameters(),
+            lr=config.lr,
+            weight_decay=config.weight_decay,
         )
 
-        # Learning rate scheduler with warmup
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=config.training.epochs - config.training.warmup_epochs,
-        )
-
-        # Loss function
-        self.criterion = nn.CrossEntropyLoss()
-
-        # Checkpoint directory
-        self.checkpoint_dir = Path(config.training.checkpoint_dir)
-        if self.is_main_process:
-            self.checkpoint_dir.mkdir(exist_ok=True)
-
-    def _create_dataloader(
-        self,
-        dataset,
-        shuffle: bool = True,
-        drop_last: bool = True,
-    ) -> DataLoader:
-        """Create dataloader with appropriate settings."""
-        sampler = None
-        if self.is_distributed:
-            sampler = DistributedSampler(
-                dataset,
-                num_replicas=self.world_size,
-                rank=self.rank,
-                shuffle=shuffle,
+        # Scheduler
+        if config.scheduler == 'cosine':
+            self.scheduler = CosineAnnealingLR(
+                self.optimizer,
+                T_max=config.epochs - config.warmup_epochs,
             )
-            shuffle = False  # Sampler handles shuffling
+        else:
+            self.scheduler = ReduceLROnPlateau(
+                self.optimizer,
+                mode='min',
+                factor=0.5,
+                patience=5,
+            )
 
-        return DataLoader(
-            dataset,
-            batch_size=self.config.training.batch_size,
-            shuffle=shuffle,
-            sampler=sampler,
-            num_workers=self.config.training.num_workers,
-            pin_memory=self.device.type == "cuda",
-            drop_last=drop_last,
-        )
+        # Tracking
+        self.best_val_loss = float('inf')
+        self.best_val_acc = 0.0
+        self.patience_counter = 0
+        self.epoch = 0
+        self.global_step = 0
 
-    def _move_batch(self, batch: dict) -> dict:
-        """Move batch to device."""
-        return {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
+        # History
+        self.history = {
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'lr': [],
+        }
 
-    def train_epoch(self, dataloader: DataLoader, epoch: int) -> float:
-        """Train for one epoch."""
+        # Create checkpoint dir
+        os.makedirs(config.checkpoint_dir, exist_ok=True)
+
+    def train_epoch(self) -> Tuple[float, float]:
+        """
+        Train for one epoch.
+
+        Returns:
+            (average_loss, accuracy)
+        """
         self.model.train()
+
         total_loss = 0.0
-        num_batches = 0
+        correct = 0
+        total = 0
+        num_batches = len(self.train_loader)
 
-        # Set epoch for distributed sampler
-        if hasattr(dataloader.sampler, "set_epoch"):
-            dataloader.sampler.set_epoch(epoch)
+        pbar = tqdm(self.train_loader, desc=f'Epoch {self.epoch + 1} [Train]')
 
-        pbar = tqdm(dataloader, desc="Training", disable=not self.is_main_process)
-        for batch in pbar:
-            batch = self._move_batch(batch)
+        for batch_idx, batch in enumerate(pbar):
+            batch = batch.to(self.device)
 
+            # Forward pass
             self.optimizer.zero_grad()
+            logits = self.model(batch)
+            loss = self.criterion(logits, batch.y)
 
-            output = self.model(batch)
-            loss = self.criterion(output["logits"], batch["label"])
-
+            # Backward pass
             loss.backward()
 
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.config.max_grad_norm
+            )
 
             self.optimizer.step()
 
-            total_loss += loss.item()
-            num_batches += 1
+            # Metrics
+            total_loss += loss.item() * batch.y.size(0)
+            pred = logits.argmax(dim=1)
+            correct += (pred == batch.y).sum().item()
+            total += batch.y.size(0)
 
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            self.global_step += 1
 
-        return total_loss / num_batches
+            # Update progress bar
+            if batch_idx % 10 == 0:
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'acc': f'{correct / total:.4f}',
+                })
+
+        avg_loss = total_loss / total
+        accuracy = correct / total
+
+        return avg_loss, accuracy
 
     @torch.no_grad()
-    def evaluate(self, dataloader: DataLoader) -> tuple[float, dict]:
-        """Evaluate model."""
-        self.model.eval()
-        total_loss = 0.0
-        num_batches = 0
+    def evaluate(
+        self,
+        loader: DataLoader,
+        desc: str = 'Eval'
+    ) -> Tuple[float, float, List[int], List[int], np.ndarray]:
+        """
+        Evaluate on a data loader.
 
-        all_preds = []
+        Returns:
+            (average_loss, accuracy, all_labels, all_preds, all_probs)
+        """
+        self.model.eval()
+
+        total_loss = 0.0
+        correct = 0
+        total = 0
         all_labels = []
+        all_preds = []
         all_probs = []
 
-        for batch in tqdm(dataloader, desc="Evaluating", disable=not self.is_main_process):
-            batch = self._move_batch(batch)
+        pbar = tqdm(loader, desc=desc)
 
-            output = self.model(batch)
-            loss = self.criterion(output["logits"], batch["label"])
+        for batch in pbar:
+            batch = batch.to(self.device)
 
-            total_loss += loss.item()
-            num_batches += 1
+            logits = self.model(batch)
+            loss = self.criterion(logits, batch.y)
 
-            all_preds.append(output["probs"].argmax(dim=-1).cpu())
-            all_labels.append(batch["label"].cpu())
-            all_probs.append(output["probs"].cpu())
+            probs = torch.softmax(logits, dim=-1)
+            pred = probs.argmax(dim=1)
 
-        avg_loss = total_loss / num_batches
+            total_loss += loss.item() * batch.y.size(0)
+            correct += (pred == batch.y).sum().item()
+            total += batch.y.size(0)
 
-        # Compute metrics
-        predictions = torch.cat(all_preds)
-        labels = torch.cat(all_labels)
-        probs = torch.cat(all_probs)
+            all_labels.extend(batch.y.cpu().tolist())
+            all_preds.extend(pred.cpu().tolist())
+            all_probs.append(probs.cpu().numpy())
 
-        metrics = compute_metrics(predictions, labels, probs)
+            pbar.set_postfix({
+                'loss': f'{total_loss / total:.4f}',
+                'acc': f'{correct / total:.4f}',
+            })
 
-        return avg_loss, metrics
+        avg_loss = total_loss / total
+        accuracy = correct / total
+        all_probs = np.concatenate(all_probs, axis=0)
 
-    def train(
-        self,
-        callback: Callable[[int, float, float], None] | None = None,
-    ) -> None:
-        """Full training loop."""
-        train_loader = self._create_dataloader(
-            self.train_dataset, shuffle=True, drop_last=True
-        )
-        val_loader = self._create_dataloader(
-            self.val_dataset, shuffle=False, drop_last=False
-        )
+        return avg_loss, accuracy, all_labels, all_preds, all_probs
 
-        best_val_loss = float("inf")
+    def train(self) -> Dict:
+        """
+        Run full training loop.
 
-        for epoch in range(self.config.training.epochs):
-            if self.is_main_process:
-                print(f"\nEpoch {epoch + 1}/{self.config.training.epochs}")
+        Returns:
+            Training history dict
+        """
+        print(f"Training on {self.device}")
+        print(f"Train batches: {len(self.train_loader)}")
+        print(f"Val batches: {len(self.val_loader)}")
+        print()
+
+        start_time = time.time()
+
+        for epoch in range(self.config.epochs):
+            self.epoch = epoch
 
             # Train
-            train_loss = self.train_epoch(train_loader, epoch)
+            train_loss, train_acc = self.train_epoch()
 
             # Validate
-            val_loss, val_metrics = self.evaluate(val_loader)
-
-            # Update scheduler (after warmup)
-            if epoch >= self.config.training.warmup_epochs:
-                self.scheduler.step()
-
-            if self.is_main_process:
-                print(f"Train Loss: {train_loss:.4f}")
-                print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_metrics.accuracy:.4f}")
-                print(f"LR: {self.optimizer.param_groups[0]['lr']:.6f}")
-
-            # Callback
-            if callback:
-                callback(epoch, train_loss, val_loss)
-
-            # Save best model (main process only)
-            if self.is_main_process:
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    self.save_checkpoint("best.pt")
-
-                # Periodic checkpoint
-                if (epoch + 1) % self.config.training.save_every == 0:
-                    self.save_checkpoint(f"epoch_{epoch + 1}.pt")
-
-        # Final evaluation on test set
-        if self.is_main_process:
-            print("\nFinal evaluation on test set:")
-            test_loader = self._create_dataloader(
-                self.test_dataset, shuffle=False, drop_last=False
+            val_loss, val_acc, val_labels, val_preds, val_probs = self.evaluate(
+                self.val_loader, f'Epoch {epoch + 1} [Val]'
             )
-            test_loss, test_metrics = self.evaluate(test_loader)
-            print_metrics(test_metrics)
 
-    def save_checkpoint(self, filename: str) -> None:
+            # Get current learning rate
+            current_lr = self.optimizer.param_groups[0]['lr']
+
+            # Update scheduler
+            if epoch >= self.config.warmup_epochs:
+                if self.config.scheduler == 'plateau':
+                    self.scheduler.step(val_loss)
+                else:
+                    self.scheduler.step()
+
+            # Record history
+            self.history['train_loss'].append(train_loss)
+            self.history['train_acc'].append(train_acc)
+            self.history['val_loss'].append(val_loss)
+            self.history['val_acc'].append(val_acc)
+            self.history['lr'].append(current_lr)
+
+            # Print epoch summary
+            print(f"\nEpoch {epoch + 1}/{self.config.epochs}")
+            print(f"  Train Loss: {train_loss:.4f}  Train Acc: {train_acc:.4f}")
+            print(f"  Val Loss:   {val_loss:.4f}  Val Acc:   {val_acc:.4f}")
+            print(f"  LR: {current_lr:.6f}")
+
+            # Check for improvement
+            improved = val_loss < self.best_val_loss - self.config.min_delta
+
+            if improved:
+                self.best_val_loss = val_loss
+                self.best_val_acc = val_acc
+                self.patience_counter = 0
+
+                # Save best model
+                self.save_checkpoint('best_model.pt')
+                print(f"  ✓ New best model saved (val_loss: {val_loss:.4f})")
+            else:
+                self.patience_counter += 1
+                print(f"  No improvement for {self.patience_counter} epochs")
+
+            # Save periodic checkpoint
+            if not self.config.save_best_only:
+                self.save_checkpoint(f'checkpoint_epoch_{epoch + 1}.pt')
+
+            # Early stopping
+            if self.patience_counter >= self.config.patience:
+                print(f"\n⚠ Early stopping triggered after {epoch + 1} epochs")
+                break
+
+        elapsed_time = time.time() - start_time
+        print(f"\nTraining completed in {elapsed_time / 60:.1f} minutes")
+        print(f"Best validation loss: {self.best_val_loss:.4f}")
+        print(f"Best validation accuracy: {self.best_val_acc:.4f}")
+
+        # Save training history
+        self._save_history()
+
+        return self.history
+
+    def save_checkpoint(self, filename: str):
         """Save model checkpoint."""
-        path = self.checkpoint_dir / filename
-
-        # Get model state dict (unwrap DDP if needed)
-        model_state = self.model.module.state_dict() if self.is_distributed else self.model.state_dict()
-
+        path = os.path.join(self.config.checkpoint_dir, filename)
         torch.save({
-            "model_state_dict": model_state,
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict(),
-            "config": self.config,
+            'epoch': self.epoch,
+            'global_step': self.global_step,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'best_val_loss': self.best_val_loss,
+            'best_val_acc': self.best_val_acc,
+            'config': asdict(self.config),
         }, path)
-        print(f"Saved checkpoint: {path}")
 
-    def load_checkpoint(self, filename: str) -> None:
+    def load_checkpoint(self, filename: str):
         """Load model checkpoint."""
-        path = self.checkpoint_dir / filename
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        path = os.path.join(self.config.checkpoint_dir, filename)
+        checkpoint = torch.load(path, map_location=self.device)
 
-        # Load model state (handle DDP wrapper)
-        if self.is_distributed:
-            self.model.module.load_state_dict(checkpoint["model_state_dict"])
-        else:
-            self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        self.epoch = checkpoint['epoch']
+        self.global_step = checkpoint['global_step']
+        self.best_val_loss = checkpoint['best_val_loss']
+        self.best_val_acc = checkpoint['best_val_acc']
 
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        print(f"Loaded checkpoint: {path}")
+        print(f"Loaded checkpoint from epoch {self.epoch + 1}")
+
+    def _save_history(self):
+        """Save training history to JSON."""
+        path = os.path.join(self.config.checkpoint_dir, 'history.json')
+        with open(path, 'w') as f:
+            json.dump(self.history, f, indent=2)
+
+    def test(self, test_loader: DataLoader) -> Dict:
+        """
+        Evaluate on test set with detailed metrics.
+
+        Args:
+            test_loader: Test data loader
+
+        Returns:
+            Dict with test metrics
+        """
+        print("\nEvaluating on test set...")
+
+        # Load best model
+        self.load_checkpoint('best_model.pt')
+
+        # Evaluate
+        test_loss, test_acc, labels, preds, probs = self.evaluate(
+            test_loader, 'Test'
+        )
+
+        # Compute detailed metrics
+        metrics = compute_metrics(labels, preds, probs)
+        metrics['loss'] = test_loss
+
+        # Print report
+        print(f"\nTest Loss: {test_loss:.4f}")
+        print(f"Test Accuracy: {test_acc:.4f}")
+        print_classification_report(labels, preds, probs)
+
+        return metrics
 
 
-def train_ddp(rank: int, world_size: int, config: Config) -> None:
-    """Training function for DDP."""
-    setup_ddp(rank, world_size)
+def create_trainer(
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    class_weights: Optional[torch.Tensor] = None,
+    **config_kwargs
+) -> Trainer:
+    """
+    Convenience function to create a trainer.
 
-    try:
-        trainer = Trainer(config, rank=rank, world_size=world_size)
-        trainer.train()
-    finally:
-        cleanup_ddp()
+    Args:
+        model: Model to train
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        class_weights: Optional class weights
+        **config_kwargs: Override default config values
+
+    Returns:
+        Configured Trainer
+    """
+    config = TrainingConfig(**config_kwargs)
+    return Trainer(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        config=config,
+        class_weights=class_weights,
+    )
