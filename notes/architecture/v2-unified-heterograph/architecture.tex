@@ -113,11 +113,11 @@ These nodes capture the current match situation. They change as the match progre
 \toprule
 Node Name & Features & What it Represents \\
 \midrule
-\texttt{score\_state} & 3 features & Current score, wickets, run rate \\
-\texttt{chase\_state} & 3 features & Target, required rate, balls remaining (2nd innings only) \\
-\texttt{phase\_state} & 5 features & Powerplay/middle/death phase, over progress, \textbf{is\_first\_ball} indicator \\
-\texttt{time\_pressure} & 3 features & Overs remaining, wickets remaining, urgency \\
-\texttt{wicket\_buffer} & 2 features & Partnership length, wickets in hand comfort \\
+\texttt{score\_state} & 4 features & Current score, wickets, balls, innings \\
+\texttt{chase\_state} & 3 features & Target, required rate, is\_chase (2nd innings only) \\
+\texttt{phase\_state} & 5 features & Powerplay/middle/death phase, over progress, \textbf{is\_first\_ball} cold-start indicator \\
+\texttt{time\_pressure} & 3 features & Balls remaining, urgency, is\_final\_over \\
+\texttt{wicket\_buffer} & 2 features & Wickets in hand, is\_tail indicator \\
 \bottomrule
 \end{tabular}
 \caption{State category: 5 nodes representing current match situation}
@@ -137,11 +137,11 @@ These nodes represent the current players on the field and their performance:
 \toprule
 Node Name & Features & What it Represents \\
 \midrule
-\texttt{striker\_identity} & 64-dim embedding & WHO is on strike (learned player embedding) \\
+\texttt{striker\_identity} & Hierarchical embedding & WHO is on strike (player$\to$team$\to$role fallback for unknown players) \\
 \texttt{striker\_state} & 7 features & HOW they're batting: runs, balls, SR, dot\%, boundaries, set indicator, \textbf{is\_debut\_ball} \\
-\texttt{nonstriker\_identity} & 64-dim embedding & WHO is at the non-striker's end \\
-\texttt{nonstriker\_state} & 7 features & HOW the non-striker has been batting \\
-\texttt{bowler\_identity} & 64-dim embedding & WHO is bowling \\
+\texttt{nonstriker\_identity} & Hierarchical embedding & WHO is at the non-striker's end (with cold-start fallback) \\
+\texttt{nonstriker\_state} & 7 features & HOW the non-striker has been batting (includes is\_debut\_ball) \\
+\texttt{bowler\_identity} & Hierarchical embedding & WHO is bowling (with cold-start fallback) \\
 \texttt{bowler\_state} & 6 features & HOW they're bowling: overs, runs, wickets, economy, dot\% \\
 \texttt{partnership} & 4 features & Partnership runs, balls, run rate, boundaries \\
 \bottomrule
@@ -184,15 +184,17 @@ Each historical ball in the innings becomes a node:
 \toprule
 Features & Description \\
 \midrule
-15 numeric features & runs, is\_wicket, over, ball\_in\_over, is\_boundary, extras (wide, noball, bye, legbye), wicket types (bowled, caught, lbw, run\_out, stumped, other) \\
+17 numeric features & runs, is\_wicket, over, ball\_in\_over, is\_boundary, extras (wide, noball, bye, legbye), wicket types (bowled, caught, lbw, run\_out, stumped, other), \textbf{striker\_run\_out}, \textbf{nonstriker\_run\_out} \\
 64-dim bowler ID & Embedding of who bowled this ball \\
 64-dim batsman ID & Embedding of who faced this ball \\
 \bottomrule
 \end{tabular}
-\caption{Ball nodes: one per historical delivery}
+\caption{Ball nodes: one per historical delivery (now with run-out attribution)}
 \end{table}
 
-\textbf{Total per ball:} 15 + 64 + 64 = 143 features $\to$ projected to 128-dim.
+\textbf{Run-out attribution:} The striker\_run\_out and nonstriker\_run\_out features disambiguate WHO was run out, enabling better risk assessment.
+
+\textbf{Total per ball:} 17 + 64 + 64 = 145 features $\to$ projected to 128-dim.
 
 \subsection{Category 6: Query (1 node)}
 
@@ -419,9 +421,9 @@ Edge Type & Connects & Neural Network \\
 \caption{Multi-scale temporal edges (distant not shown for clarity)}
 \end{figure}
 
-\subsubsection{Same-Bowler and Same-Batsman Edges}
+\subsubsection{Same-Bowler and Same-Batsman Edges (with Temporal Decay)}
 
-These edges connect balls by the same player, regardless of temporal distance:
+These edges connect balls by the same player, with \textbf{temporal decay edge attributes}:
 
 \begin{figure}[H]
 \centering
@@ -453,7 +455,15 @@ These edges connect balls by the same player, regardless of temporal distance:
 \caption{same\_bowler edges group a bowler's spell}
 \end{figure}
 
-\textbf{Why this matters:} The model can ask ``How has Bumrah been bowling?'' by looking at all his deliveries together, without needing to attend to balls by other bowlers.
+\textbf{Temporal decay edge attributes:}
+\begin{itemize}
+    \item \texttt{same\_bowler}: $1.0 - (\text{ball\_distance} / 24.0)$ (4-over spell window)
+    \item \texttt{same\_batsman}: $1.0 - (\text{ball\_distance} / 60.0)$ (10-over innings window)
+\end{itemize}
+
+Recent balls matter more than distant ones. The model uses \texttt{TransformerConv} with \texttt{edge\_dim=1} to learn attention patterns that respect this decay.
+
+\textbf{Why this matters:} The model can ask ``How has Bumrah been bowling \textit{recently}?'' by looking at his deliveries with recency weighting, without needing to attend equally to all balls.
 
 \subsubsection{Same-Matchup Edges (CAUSAL)}
 
@@ -574,14 +584,14 @@ Category & Edge Types & Purpose \\
 \midrule
 Hierarchical & 3 & Top-down context conditioning \\
 Intra-layer & 4 & Within-category interactions \\
-Temporal & 6 & Ball history structure (multi-scale + actor grouping) \\
+Temporal & 7 & Ball history (multi-scale + actor grouping + \textbf{same\_over}) \\
 Cross-domain & 4 & Connect history to context \\
 Query & 2 & Prediction aggregation + dynamics drive \\
 \midrule
-\textbf{Total} & \textbf{19} & \\
+\textbf{Total} & \textbf{20} & \\
 \bottomrule
 \end{tabular}
-\caption{19 edge types organized by purpose}
+\caption{20 edge types organized by purpose (now includes same\_over edges)}
 \end{table}
 
 \newpage
@@ -721,35 +731,36 @@ Query & 2 & Prediction aggregation + dynamics drive \\
     % Stage 1
     \node[stage, fill=blue!10] (s1) at (0, 6) {
         \textbf{Stage 1: Node Encoding}\\[0.2cm]
-        Entity embeddings (venue, teams, players: learned)\\
+        Entity embeddings (venue, teams: learned)\\
+        \textbf{Hierarchical player embeddings} (player$\to$team$\to$role fallback)\\
         Feature projections (state, dynamics: MLP)\\
-        Ball encoding (events + player embeddings)\\
+        Ball encoding (17 features + player embeddings)\\
         All nodes $\to$ hidden\_dim (128)
     };
 
     % Stage 2
     \node[stage, fill=green!10] (s2) at (0, 2.5) {
-        \textbf{Stage 2: Message Passing}\\[0.2cm]
-        HeteroConv layers ($\times$3)\\
-        Each layer: edge-type-specific convolution $\to$ residual $\to$ LayerNorm $\to$ dropout
+        \textbf{Stage 2: Message Passing (with Phase Modulation)}\\[0.2cm]
+        HeteroConv layers ($\times$3) with \textbf{FiLM conditioning}\\
+        Each layer: conv $\to$ FiLM($\gamma$, $\beta$ from phase\_state) $\to$ residual $\to$ LayerNorm
     };
 
     % Stage 3
     \node[stage, fill=red!10] (s3) at (0, -1) {
-        \textbf{Stage 3: Hybrid Readout \& Prediction}\\[0.2cm]
+        \textbf{Stage 3: Innings-Conditional Prediction}\\[0.2cm]
         Matchup MLP: concat(striker, bowler) $\to$ 128-dim\\
         Query projection: query $\to$ 128-dim\\
-        Combine: concat(matchup, query) $\to$ 128-dim $\to$ MLP $\to$ 7 classes
+        \textbf{1st innings head} OR \textbf{2nd innings head} (with chase state injection)
     };
 
     \draw[arrow] (s1) -- (s2);
     \draw[arrow] (s2) -- (s3);
 
     % Input/Output
-    \node[above=0.3cm of s1] {Input: HeteroData (nodes + edges)};
+    \node[above=0.3cm of s1] {Input: HeteroData (nodes + edges + is\_chase flag)};
     \node[below=0.3cm of s3] {Output: [P(dot), P(1), P(2), P(3), P(4), P(6), P(wicket)]};
 \end{tikzpicture}
-\caption{Three-stage model pipeline with hybrid readout}
+\caption{Three-stage model pipeline with FiLM modulation and innings-conditional heads}
 \end{figure}
 
 \subsection{Hybrid Readout: Why?}
@@ -777,15 +788,16 @@ Intra-layer (relates\_to) & GATv2Conv & Self-attention for interactions \\
 Actor matchup & GATv2Conv & Learn matchup dynamics \\
 recent/medium\_precedes & TransformerConv & Edge features for temporal distance \\
 distant\_precedes & SAGEConv & Simple mean for sparse history \\
-same\_bowler/batsman & GATv2Conv & Aggregate spell patterns \\
+\textbf{same\_bowler/batsman} & \textbf{TransformerConv} & \textbf{Temporal decay edge features (4/10-over)} \\
 same\_matchup (causal) & GATv2Conv & Historical matchup outcomes \\
+\textbf{same\_over (NEW)} & \textbf{GATv2Conv} & \textbf{Within-over context patterns} \\
 Cross-domain (faced/bowled/partnered) & GATv2Conv & Attention-weighted recency \\
 Dynamics (informs) & SAGEConv & Simple aggregation \\
 Dynamics (drives) & GATv2Conv & Weight momentum vs pressure \\
 Query (attends) & GATv2Conv & Learn what matters for prediction \\
 \bottomrule
 \end{tabular}
-\caption{Edge-type-specific convolution operators}
+\caption{Edge-type-specific convolution operators (updated with temporal decay and same\_over)}
 \end{table}
 
 \newpage
@@ -921,14 +933,19 @@ The V2 architecture represents cricket prediction as a heterogeneous graph where
 
 \begin{itemize}
     \item \textbf{21 context nodes} capture venue, teams, match state, players, and dynamics
-    \item \textbf{N ball nodes} capture full innings history
-    \item \textbf{19 edge types} encode cricket-specific relationships
+    \item \textbf{N ball nodes} capture full innings history (17 features including run-out attribution)
+    \item \textbf{20 edge types} encode cricket-specific relationships (now includes same\_over)
     \item \textbf{Multi-scale temporal edges} capture patterns at different time scales
+    \item \textbf{Temporal decay edge attributes} for same\_bowler (4-over) and same\_batsman (10-over)
+    \item \textbf{Same\_over edges} capture within-over context (bowler plans, batsman reading)
     \item \textbf{Causal same\_matchup edges} prevent train-test distribution shift
+    \item \textbf{Hierarchical player embeddings} handle cold-start (unknown players)
+    \item \textbf{FiLM phase modulation} enables phase-conditional message passing
+    \item \textbf{Innings-conditional prediction heads} separate 1st/2nd innings logic
     \item \textbf{Hybrid readout} combines matchup interaction with global context
     \item \textbf{Focal loss} handles class imbalance
 \end{itemize}
 
-This design follows Geometric Deep Learning principles: the inductive bias matches cricket's inherent structure, enabling efficient processing of full innings while respecting symmetries (player attribution, temporal causality).
+This design follows Geometric Deep Learning principles: the inductive bias matches cricket's inherent structure, enabling efficient processing of full innings while respecting symmetries (player attribution, temporal causality, phase dynamics).
 
 \end{document}

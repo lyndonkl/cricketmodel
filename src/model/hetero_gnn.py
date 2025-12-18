@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from .encoders import NodeEncoderDict
-from .conv_builder import build_conv_stack
+from .conv_builder import build_conv_stack, build_phase_modulated_conv_stack
 
 
 @dataclass
@@ -32,6 +32,10 @@ class ModelConfig:
     venue_embed_dim: int = 32
     team_embed_dim: int = 32
     player_embed_dim: int = 64
+    role_embed_dim: int = 16  # For hierarchical player encoder
+
+    # Number of player role categories (for hierarchical embeddings)
+    num_roles: int = 8  # unknown + 7 roles
 
     # Regularization
     dropout: float = 0.1
@@ -39,8 +43,14 @@ class ModelConfig:
     # Task
     num_classes: int = 7  # Dot, Single, Two, Three, Four, Six, Wicket
 
-    # Model variant
+    # Model variants
     use_hybrid_readout: bool = True  # Use matchup + query hybrid readout
+    use_innings_conditional: bool = True  # Use separate heads for 1st/2nd innings
+    use_hierarchical_player: bool = True  # Use hierarchical player embeddings
+    use_phase_modulation: bool = True  # Use FiLM phase-conditional message passing
+
+    # Phase conditioning dimension (matches phase_state features)
+    phase_dim: int = 5
 
 
 class CricketHeteroGNN(nn.Module):
@@ -72,10 +82,13 @@ class CricketHeteroGNN(nn.Module):
             num_venues=config.num_venues,
             num_teams=config.num_teams,
             num_players=config.num_players,
+            num_roles=config.num_roles,
             venue_embed_dim=config.venue_embed_dim,
             team_embed_dim=config.team_embed_dim,
             player_embed_dim=config.player_embed_dim,
+            role_embed_dim=config.role_embed_dim,
             dropout=config.dropout,
+            use_hierarchical_player=config.use_hierarchical_player,
         )
 
         # === Message Passing Layers ===
@@ -348,6 +361,428 @@ class CricketHeteroGNNHybrid(CricketHeteroGNN):
         logits = self.predictor(combined)
 
         return logits
+
+
+class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
+    """
+    Phase-modulated variant using FiLM conditioning.
+
+    Applies Feature-wise Linear Modulation (FiLM) to all node representations
+    after each message passing layer, conditioned on game phase. This allows
+    the model to learn phase-specific patterns:
+
+    - Powerplay (overs 0-5): Aggressive batting, fielding restrictions
+    - Middle overs (6-14): Rotation, building innings
+    - Death overs (15-19): High risk/reward, pressure situations
+
+    The same underlying graph structure is used, but the model can learn
+    to weight information differently based on phase context.
+    """
+
+    def __init__(self, config: ModelConfig):
+        # Call grandparent init to avoid double initialization
+        CricketHeteroGNN.__init__(self, config)
+
+        # Override conv_stack with phase-modulated version
+        self.conv_stack = build_phase_modulated_conv_stack(
+            num_layers=config.num_layers,
+            hidden_dim=config.hidden_dim,
+            phase_dim=config.phase_dim,
+            num_heads=config.num_heads,
+            dropout=config.dropout,
+        )
+
+        # Keep the hybrid readout components from parent
+        self.matchup_mlp = nn.Sequential(
+            nn.Linear(config.hidden_dim * 2, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+        )
+
+        self.query_proj = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+        )
+
+        self.combiner = nn.Sequential(
+            nn.Linear(config.hidden_dim * 2, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+        )
+
+    def forward(self, data) -> torch.Tensor:
+        """
+        Forward pass with phase-conditioned message passing.
+
+        Args:
+            data: HeteroData or batched HeteroData
+
+        Returns:
+            Logits [batch_size, num_classes]
+        """
+        # 1. Encode all nodes
+        x_dict = self.encoders.encode_nodes(data)
+
+        # 2. Get phase condition for FiLM modulation
+        phase_condition = data['phase_state'].x  # [batch_size, phase_dim]
+
+        # 3. Message passing with phase modulation
+        edge_index_dict = data.edge_index_dict
+
+        # Extract edge attributes if available
+        edge_attr_dict = {}
+        for edge_type in edge_index_dict.keys():
+            if hasattr(data[edge_type], 'edge_attr') and data[edge_type].edge_attr is not None:
+                edge_attr_dict[edge_type] = data[edge_type].edge_attr
+
+        for conv_block in self.conv_stack:
+            x_dict = conv_block(
+                x_dict, edge_index_dict, phase_condition,
+                edge_attr_dict if edge_attr_dict else None
+            )
+
+        # 4. Matchup interaction (edge-level)
+        striker = x_dict['striker_identity']
+        bowler = x_dict['bowler_identity']
+        matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+
+        # 5. Context aggregation (graph-level)
+        query = self.query_proj(x_dict['query'])
+
+        # 6. Combine matchup + context
+        combined = torch.cat([matchup, query], dim=-1)
+        combined = self.combiner(combined)
+
+        # 7. Predict
+        logits = self.predictor(combined)
+
+        return logits
+
+
+class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
+    """
+    Innings-conditional variant with separate prediction heads for 1st and 2nd innings.
+
+    The prediction task is fundamentally different between innings:
+    - 1st innings: No target, maximize score with wickets in hand
+    - 2nd innings: Known target, balance risk vs required rate
+
+    This variant uses:
+    1. Shared encoder and message passing (identical context understanding)
+    2. First innings head: Standard MLP from combined representation
+    3. Second innings head: MLP that also receives chase state features
+
+    The chase state injection allows the model to learn different decision boundaries
+    for chasing scenarios (e.g., higher risk tolerance when behind required rate).
+    """
+
+    def __init__(self, config: ModelConfig):
+        super().__init__(config)
+
+        # First innings head (standard)
+        self.first_innings_head = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+            nn.LayerNorm(config.hidden_dim // 2),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim // 2, config.num_classes),
+        )
+
+        # Second innings head (with chase state injection)
+        # Chase state has 3 features: runs_required, balls_remaining, required_run_rate
+        chase_state_dim = 3
+        self.second_innings_head = nn.Sequential(
+            nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+            nn.LayerNorm(config.hidden_dim // 2),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim // 2, config.num_classes),
+        )
+
+    def forward(self, data) -> torch.Tensor:
+        """
+        Forward pass with innings-conditional prediction heads.
+
+        Routes to first or second innings head based on is_chase flag.
+        Supports batched data with mixed innings (applies correct head per sample).
+
+        Args:
+            data: HeteroData or batched HeteroData
+
+        Returns:
+            Logits [batch_size, num_classes]
+        """
+        # 1. Encode all nodes
+        x_dict = self.encoders.encode_nodes(data)
+
+        # 2. Message passing with edge attributes
+        edge_index_dict = data.edge_index_dict
+
+        # Extract edge attributes if available
+        edge_attr_dict = {}
+        for edge_type in edge_index_dict.keys():
+            if hasattr(data[edge_type], 'edge_attr') and data[edge_type].edge_attr is not None:
+                edge_attr_dict[edge_type] = data[edge_type].edge_attr
+
+        for conv_block in self.conv_stack:
+            x_dict = conv_block(x_dict, edge_index_dict, edge_attr_dict if edge_attr_dict else None)
+
+        # 3. Matchup interaction (edge-level)
+        striker = x_dict['striker_identity']
+        bowler = x_dict['bowler_identity']
+        matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+
+        # 4. Context aggregation (graph-level)
+        query = self.query_proj(x_dict['query'])
+
+        # 5. Combine matchup + context
+        combined = torch.cat([matchup, query], dim=-1)
+        combined = self.combiner(combined)
+
+        # 6. Get chase state for second innings routing
+        chase_state = data['chase_state'].x  # [batch_size, 3]
+        is_chase = data.is_chase  # [batch_size] bool tensor
+
+        # Ensure is_chase is 1D
+        if is_chase.dim() > 1:
+            is_chase = is_chase.squeeze(-1)
+
+        # 7. Compute both predictions
+        first_innings_logits = self.first_innings_head(combined)
+
+        # Second innings: inject chase state
+        combined_with_chase = torch.cat([combined, chase_state], dim=-1)
+        second_innings_logits = self.second_innings_head(combined_with_chase)
+
+        # 8. Select appropriate logits based on innings
+        # Use is_chase as mask to select between heads
+        is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_logits)
+        logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
+
+        return logits
+
+    def forward_with_head_info(self, data) -> tuple:
+        """
+        Forward pass that also returns which head was used (for debugging/analysis).
+
+        Returns:
+            Tuple of (logits, is_chase_mask)
+        """
+        logits = self.forward(data)
+        is_chase = data.is_chase
+        if is_chase.dim() > 1:
+            is_chase = is_chase.squeeze(-1)
+        return logits, is_chase
+
+
+class CricketHeteroGNNFull(nn.Module):
+    """
+    Full-featured Cricket GNN combining all architectural enhancements:
+
+    1. Hierarchical player embeddings (cold-start handling)
+    2. Hybrid matchup + query readout
+    3. Phase-modulated message passing (FiLM)
+    4. Innings-conditional prediction heads
+
+    This is the recommended production model that incorporates all
+    GDL-informed architectural decisions.
+    """
+
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        self.config = config
+
+        # === Node Encoders (with hierarchical player embeddings) ===
+        self.encoders = NodeEncoderDict(
+            hidden_dim=config.hidden_dim,
+            num_venues=config.num_venues,
+            num_teams=config.num_teams,
+            num_players=config.num_players,
+            num_roles=config.num_roles,
+            venue_embed_dim=config.venue_embed_dim,
+            team_embed_dim=config.team_embed_dim,
+            player_embed_dim=config.player_embed_dim,
+            role_embed_dim=config.role_embed_dim,
+            dropout=config.dropout,
+            use_hierarchical_player=config.use_hierarchical_player,
+        )
+
+        # === Phase-Modulated Message Passing ===
+        if config.use_phase_modulation:
+            self.conv_stack = build_phase_modulated_conv_stack(
+                num_layers=config.num_layers,
+                hidden_dim=config.hidden_dim,
+                phase_dim=config.phase_dim,
+                num_heads=config.num_heads,
+                dropout=config.dropout,
+            )
+        else:
+            self.conv_stack = build_conv_stack(
+                num_layers=config.num_layers,
+                hidden_dim=config.hidden_dim,
+                num_heads=config.num_heads,
+                dropout=config.dropout,
+            )
+
+        # === Hybrid Readout (matchup + query) ===
+        self.matchup_mlp = nn.Sequential(
+            nn.Linear(config.hidden_dim * 2, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+        )
+
+        self.query_proj = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+        )
+
+        self.combiner = nn.Sequential(
+            nn.Linear(config.hidden_dim * 2, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+        )
+
+        # === Innings-Conditional Prediction Heads ===
+        if config.use_innings_conditional:
+            # First innings head (standard)
+            self.first_innings_head = nn.Sequential(
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+                nn.LayerNorm(config.hidden_dim),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+                nn.LayerNorm(config.hidden_dim // 2),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.hidden_dim // 2, config.num_classes),
+            )
+
+            # Second innings head (with chase state injection)
+            chase_state_dim = 3
+            self.second_innings_head = nn.Sequential(
+                nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
+                nn.LayerNorm(config.hidden_dim),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+                nn.LayerNorm(config.hidden_dim // 2),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.hidden_dim // 2, config.num_classes),
+            )
+        else:
+            # Single prediction head
+            self.predictor = nn.Sequential(
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+                nn.LayerNorm(config.hidden_dim),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+                nn.LayerNorm(config.hidden_dim // 2),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.hidden_dim // 2, config.num_classes),
+            )
+
+    def forward(self, data) -> torch.Tensor:
+        """
+        Forward pass with all enhancements.
+
+        Args:
+            data: HeteroData or batched HeteroData
+
+        Returns:
+            Logits [batch_size, num_classes]
+        """
+        # 1. Encode all nodes
+        x_dict = self.encoders.encode_nodes(data)
+
+        # 2. Message passing (with or without phase modulation)
+        edge_index_dict = data.edge_index_dict
+
+        # Extract edge attributes if available
+        edge_attr_dict = {}
+        for edge_type in edge_index_dict.keys():
+            if hasattr(data[edge_type], 'edge_attr') and data[edge_type].edge_attr is not None:
+                edge_attr_dict[edge_type] = data[edge_type].edge_attr
+
+        if self.config.use_phase_modulation:
+            phase_condition = data['phase_state'].x
+            for conv_block in self.conv_stack:
+                x_dict = conv_block(
+                    x_dict, edge_index_dict, phase_condition,
+                    edge_attr_dict if edge_attr_dict else None
+                )
+        else:
+            for conv_block in self.conv_stack:
+                x_dict = conv_block(
+                    x_dict, edge_index_dict,
+                    edge_attr_dict if edge_attr_dict else None
+                )
+
+        # 3. Hybrid readout (matchup + query)
+        striker = x_dict['striker_identity']
+        bowler = x_dict['bowler_identity']
+        matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+        query = self.query_proj(x_dict['query'])
+        combined = torch.cat([matchup, query], dim=-1)
+        combined = self.combiner(combined)
+
+        # 4. Prediction (innings-conditional or single head)
+        if self.config.use_innings_conditional:
+            chase_state = data['chase_state'].x
+            is_chase = data.is_chase
+            if is_chase.dim() > 1:
+                is_chase = is_chase.squeeze(-1)
+
+            first_innings_logits = self.first_innings_head(combined)
+            combined_with_chase = torch.cat([combined, chase_state], dim=-1)
+            second_innings_logits = self.second_innings_head(combined_with_chase)
+
+            is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_logits)
+            logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
+        else:
+            logits = self.predictor(combined)
+
+        return logits
+
+    @classmethod
+    def from_dataset_metadata(
+        cls,
+        metadata: dict,
+        **kwargs
+    ) -> 'CricketHeteroGNNFull':
+        """
+        Create model from dataset metadata.
+
+        Args:
+            metadata: Dict from CricketDataset.get_metadata()
+            **kwargs: Override default config values
+
+        Returns:
+            Initialized model
+        """
+        config = ModelConfig(
+            num_venues=metadata['num_venues'],
+            num_teams=metadata['num_teams'],
+            num_players=metadata['num_players'],
+            **kwargs
+        )
+        return cls(config)
 
 
 def count_parameters(model: nn.Module) -> int:

@@ -8,12 +8,12 @@ The unified graph uses **typed edges** to encode different relationships. Each e
 Edge Type Categories
 ├── Hierarchical (3 types)   - Top-down conditioning between layers
 ├── Intra-layer (4 types)    - Within-layer interactions
-├── Temporal (6 types)       - Ball history structure (multi-scale + matchup edges)
+├── Temporal (7 types)       - Ball history structure (multi-scale + matchup + same_over edges)
 ├── Cross-domain (4 types)   - Connecting balls to context (incl. partnered_by)
 └── Query (2 types)          - Prediction aggregation (attends + drives)
 ```
 
-**Total: 19 edge types**
+**Total: 20 edge types**
 
 ---
 
@@ -251,7 +251,7 @@ Ball N-5 ──► Ball N-4 ──► Ball N-3 ──► Ball N-2 ──► Ball
 
 ### 3.4 (ball, same_bowler, ball)
 
-**Semantics:** Balls delivered by the same bowler.
+**Semantics:** Balls delivered by the same bowler, with temporal decay edge attributes.
 
 ```
 Bumrah's balls:  B3 ◄──► B9 ◄──► B15 ◄──► B21 ◄──► ...
@@ -265,16 +265,20 @@ Starc's balls:   B1 ◄──► B7 ◄──► B13 ◄──► B19 ◄──�
 | Target type | ball |
 | Connectivity | Clique within bowler (sparse overall) |
 | Direction | Bidirectional |
+| **Edge features** | `1.0 - (ball_distance / 24.0)` (temporal decay, 4-over window) |
+| Convolution | TransformerConv with edge_dim=1 |
 
-**Construction:** For balls i, j where bowler(i) == bowler(j), create edge (i, same_bowler, j).
+**Construction:** For balls i, j where bowler(i) == bowler(j), create edge (i, same_bowler, j) with edge_attr encoding normalized temporal distance.
 
-**Intuition:** "All of Bumrah's deliveries form a pattern - his spell narrative."
+**Temporal Decay:** Recent balls from the same bowler matter more than distant ones. The 4-over (24 ball) window reflects a typical bowling spell. Balls beyond this window have edge_attr clamped to 0.
+
+**Intuition:** "All of Bumrah's deliveries form a pattern - his spell narrative - with recent deliveries weighted more heavily."
 
 **Efficiency:** If bowler A bowled 20 balls, that's 20×19/2 = 190 edges for that bowler. With ~6 bowlers, total ~600 edges. Much less than 120×120 = 14,400 for full attention!
 
 ### 3.5 (ball, same_batsman, ball)
 
-**Semantics:** Balls faced by the same batsman.
+**Semantics:** Balls faced by the same batsman, with temporal decay edge attributes.
 
 ```
 Rohit's balls:   B2 ◄──► B4 ◄──► B8 ◄──► B10 ◄──► ...
@@ -288,10 +292,14 @@ Kohli's balls:   B1 ◄──► B3 ◄──► B7 ◄──► B11 ◄──�
 | Target type | ball |
 | Connectivity | Clique within batsman (sparse overall) |
 | Direction | Bidirectional |
+| **Edge features** | `1.0 - (ball_distance / 60.0)` (temporal decay, 10-over window) |
+| Convolution | TransformerConv with edge_dim=1 |
 
-**Construction:** For balls i, j where batsman(i) == batsman(j), create edge (i, same_batsman, j).
+**Construction:** For balls i, j where batsman(i) == batsman(j), create edge (i, same_batsman, j) with edge_attr encoding normalized temporal distance.
 
-**Intuition:** "All balls Rohit faced form his innings narrative - building, accelerating, getting out."
+**Temporal Decay:** A batsman's innings develops over time. The 10-over (60 ball) window captures a typical innings progression. Recent form (just hit a six vs just faced 5 dots) matters more than what happened 50 balls ago.
+
+**Intuition:** "All balls Rohit faced form his innings narrative - building, accelerating, getting out - with recency weighting."
 
 ### 3.6 (ball, same_matchup, ball) - CAUSAL
 
@@ -324,6 +332,36 @@ Unlike same_bowler and same_batsman (bidirectional), same_matchup edges are **CA
 **Intuition:** "How has this specific bowler-batsman matchup played out SO FAR? Past matchup outcomes inform future predictions."
 
 **Efficiency:** Same_matchup is the intersection of same_bowler and same_batsman, so it's very sparse but highly informative.
+
+### 3.7 (ball, same_over, ball) - NEW
+
+**Semantics:** Balls within the same over form a bidirectional clique.
+
+```
+Over 3:  B12 ◄──► B13 ◄──► B14 ◄──► B15 ◄──► B16 ◄──► B17
+Over 4:  B18 ◄──► B19 ◄──► B20 ◄──► B21 ◄──► B22 ◄──► B23
+```
+
+| Property | Value |
+|----------|-------|
+| Source type | ball |
+| Edge type | same_over |
+| Target type | ball |
+| Connectivity | Bidirectional clique within each over (max 6 balls) |
+| Direction | Bidirectional |
+| Convolution | GATv2Conv (attention for within-over patterns) |
+
+**Construction:** Group balls by over number, create bidirectional edges between all pairs within each over.
+
+**Why over boundaries matter:** Over transitions are major discontinuities in cricket:
+- New bowler (different style, different end)
+- Batsmen swap ends after each over
+- Fresh field setting
+- Mental reset for both batsmen and bowler
+
+**Intuition:** "What happened earlier in THIS over directly affects this ball - the bowler's plan, the batsman's reading of the bowler, field placements."
+
+**Efficiency:** At most 6 balls per over → 6×5 = 30 edges per over. With ~20 overs, that's ~600 edges, but highly structured.
 
 ---
 
@@ -485,14 +523,15 @@ For a typical innings at ball 60:
 | - recent_precedes (≤6 balls) | ~6 × N (recent pairs) | ~360 |
 | - medium_precedes (7-18 balls) | ~12 × N (medium pairs) | ~720 |
 | - distant_precedes (>18, sparse) | ~N/6 (every 6 balls) | ~300 |
-| Same bowler | ~6 bowlers × C(10,2) | ~270 |
-| Same batsman | ~4 batsmen × C(15,2) | ~420 |
+| Same bowler (with temporal decay) | ~6 bowlers × C(10,2) | ~270 |
+| Same batsman (with temporal decay) | ~4 batsmen × C(15,2) | ~420 |
 | Same matchup (CAUSAL) | ~12 matchups × ~5 edges each | ~60 |
+| **Same over (NEW)** | ~10 overs × 30 edges each | ~300 |
 | Ball → actor (faced_by + bowled_by + partnered_by) | 3N | 180 |
 | Dynamics ← ball (informs) | 4 × 12 | 48 |
 | Query attends | 19 + N | 79 |
 | Dynamics drives query | 4 | 4 |
-| **Total** | | **~2,580** |
+| **Total** | | **~2,880** |
 
 Compare to V1 Transformer: 60 × 60 = 3,600 attention pairs (temporal only!)
 
@@ -502,8 +541,10 @@ Compare to V1 Transformer: 60 × 60 = 3,600 attention pairs (temporal only!)
 - Medium (7-18 balls) = 2-over momentum window
 - Distant (sparse) = historical patterns without quadratic blowup
 - Same_matchup is now CAUSAL (older→newer only), preventing train-test distribution shift
+- **Same_over edges** capture within-over context (new bowler, batsmen swap)
+- **Temporal decay edge attributes** for same_bowler (4-over window) and same_batsman (10-over window)
 
-**Efficiency gain: ~1.4x fewer computations, with MORE information (full context graph including non-striker, multi-scale temporal, causal matchup edges)**
+**Efficiency gain: ~1.25x fewer computations, with MORE information (full context graph including non-striker, multi-scale temporal, causal matchup edges, within-over structure, temporal decay)**
 
 ---
 

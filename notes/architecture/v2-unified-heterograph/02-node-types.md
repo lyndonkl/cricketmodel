@@ -114,7 +114,7 @@ These nodes represent the current match situation. Updated after each ball.
 |----------|-------|
 | Node type | `state` |
 | Node index | 2 |
-| Input dim | 4 |
+| Input dim | 5 |
 
 **Features:**
 | Feature | Description | Range |
@@ -123,6 +123,7 @@ These nodes represent the current match situation. Updated after each ball.
 | is_middle | Overs 7-15 | {0, 1} |
 | is_death | Overs 16-20 | {0, 1} |
 | over_progress | ball_in_over / 6 | [0, 1] |
+| is_first_ball | Cold-start indicator (first ball of innings) | {0, 1} |
 
 ### 2.4 time_pressure
 
@@ -171,12 +172,19 @@ These nodes represent the current players involved in the ball, including both b
 |----------|-------|
 | Node type | `actor` |
 | Node index | 0 |
-| Raw input | player_id (integer) |
-| Encoding | Learned embedding |
-| Embedding dim | 64 |
+| Raw input | player_id, team_id, role_id (integers) |
+| Encoding | Hierarchical embedding (player → team → role fallback) |
+| Embedding dim | 64 (player) + 32 (team) + 16 (role) |
 | Output dim | hidden_dim (128) |
 
-**Intuition:** Player's inherent characteristics - batting style, strengths against pace/spin, aggression level.
+**Hierarchical Cold-Start Handling:**
+For unknown players (player_id=0), the model uses team and role embeddings as fallback:
+- **Known player:** Full player embedding used directly
+- **Unknown player:** Team embedding + role embedding blended
+
+**Role Categories:** unknown, opener, top_order, middle_order, finisher, bowler, allrounder, keeper
+
+**Intuition:** Player's inherent characteristics - batting style, strengths against pace/spin, aggression level. Unknown players are distinguished by their team context and batting role.
 
 ### 3.2 striker_state
 
@@ -186,7 +194,7 @@ These nodes represent the current players involved in the ball, including both b
 |----------|-------|
 | Node type | `actor` |
 | Node index | 1 |
-| Input dim | 6 |
+| Input dim | 7 |
 
 **Features:**
 | Feature | Normalization | Description |
@@ -197,6 +205,7 @@ These nodes represent the current players involved in the ball, including both b
 | dots_faced | / balls_faced | Dot ball % |
 | is_set | balls_faced > 10 | Settled indicator |
 | boundaries | / 10 | 4s + 6s count |
+| is_debut_ball | boolean | Cold-start: first ball in match for this player |
 
 ### 3.3 nonstriker_identity
 
@@ -206,9 +215,9 @@ These nodes represent the current players involved in the ball, including both b
 |----------|-------|
 | Node type | `actor` |
 | Node index | 2 |
-| Raw input | player_id (integer) |
-| Encoding | Learned embedding |
-| Embedding dim | 64 |
+| Raw input | player_id, team_id, role_id (integers) |
+| Encoding | Hierarchical embedding (player → team → role fallback) |
+| Embedding dim | 64 (player) + 32 (team) + 16 (role) |
 | Output dim | hidden_dim (128) |
 
 **Intuition:** Non-striker's identity matters for:
@@ -225,7 +234,7 @@ These nodes represent the current players involved in the ball, including both b
 |----------|-------|
 | Node type | `actor` |
 | Node index | 3 |
-| Input dim | 6 |
+| Input dim | 7 |
 
 **Features:** (same as striker_state)
 | Feature | Normalization | Description |
@@ -236,6 +245,7 @@ These nodes represent the current players involved in the ball, including both b
 | dots_faced | / balls_faced | Dot ball % |
 | is_set | balls_faced > 10 | Settled indicator |
 | boundaries | / 10 | 4s + 6s count |
+| is_debut_ball | boolean | Cold-start: first ball in match for this player |
 
 **Intuition:** A well-set non-striker might encourage strike rotation, while a struggling non-striker might discourage singles.
 
@@ -247,9 +257,9 @@ These nodes represent the current players involved in the ball, including both b
 |----------|-------|
 | Node type | `actor` |
 | Node index | 4 |
-| Raw input | player_id (integer) |
-| Encoding | Learned embedding |
-| Embedding dim | 64 |
+| Raw input | player_id, team_id, role_id (integers) |
+| Encoding | Hierarchical embedding (player → team → role fallback) |
+| Embedding dim | 64 (player) + 32 (team) + 16 (role) |
 | Output dim | hidden_dim (128) |
 
 **Intuition:** Bowler's characteristics - pace/spin, variations, death bowling ability.
@@ -373,9 +383,9 @@ Each historical delivery is a node. N = number of balls bowled so far in innings
 |----------|-------|
 | Node type | `ball` |
 | Node index | 0 to N-1 |
-| Input dim | 15 + embeddings |
+| Input dim | 17 + embeddings |
 
-**Features (15 dimensions):**
+**Features (17 dimensions):**
 
 | Feature | Encoding | Description |
 |---------|----------|-------------|
@@ -394,6 +404,10 @@ Each historical delivery is a node. N = number of balls bowled so far in innings
 | wicket_run_out | boolean | Run out dismissal |
 | wicket_stumped | boolean | Stumped dismissal |
 | wicket_other | boolean | Other dismissals |
+| striker_run_out | boolean | Striker was run out (attribution) |
+| nonstriker_run_out | boolean | Non-striker was run out (attribution) |
+
+**Run-Out Attribution:** The last two features disambiguate WHO was run out when a run-out occurs. This matters for risk assessment - the striker being run out typically indicates aggressive running, while the non-striker being run out often indicates backing up issues or direct hits.
 
 **Player embeddings:**
 | Feature | Encoding | Description |
@@ -401,7 +415,7 @@ Each historical delivery is a node. N = number of balls bowled so far in innings
 | bowler_id | embedding (64d) | Who bowled |
 | batsman_id | embedding (64d) | Who faced |
 
-**Total input dim:** 15 + 64 + 64 = 143 → projected to hidden_dim (128)
+**Total input dim:** 17 + 64 + 64 = 145 → projected to hidden_dim (128)
 
 **Why extras matter:**
 - Wides/no-balls indicate bowler control issues
@@ -411,7 +425,7 @@ Each historical delivery is a node. N = number of balls bowled so far in innings
 **Why wicket types matter:**
 - Bowled/LBW: Bowler skill, good line and length
 - Caught: Risk-taking behavior by batsman
-- Run out: Partnership running decisions and risk
+- Run out: Partnership running decisions and risk (now with attribution)
 - Stumped: Batsman error against spin bowling
 
 ---
@@ -443,10 +457,10 @@ The prediction target node that aggregates information.
 | Node Type | Count | Input Dim | Role |
 |-----------|-------|-----------|------|
 | global | 3 | 32 (embed) | Match context |
-| state | 5 | 2-4 each | Current situation |
-| actor | 7 | 4-64 each | Players & matchup (incl. non-striker) |
+| state | 5 | 2-5 each | Current situation (phase_state now 5) |
+| actor | 7 | 4-64 each | Players & matchup (hierarchical embeddings) |
 | dynamics | 4 | 1-2 each | Momentum |
-| ball | N | 143 | History (15 features + 2×64 embeddings) |
+| ball | N | 145 | History (17 features + 2×64 embeddings) |
 | query | 1 | 128 | Prediction target |
 | **Total** | **21 + N** | - | - |
 
@@ -459,4 +473,13 @@ For a typical innings at ball 60: 21 + 60 = 81 nodes per prediction.
 | Basic | runs, is_wicket, over, ball_in_over, is_boundary | 5 |
 | Extras | is_wide, is_noball, is_bye, is_legbye | 4 |
 | Wicket Types | bowled, caught, lbw, run_out, stumped, other | 6 |
-| **Total** | | **15** |
+| Run-Out Attribution | striker_run_out, nonstriker_run_out | 2 |
+| **Total** | | **17** |
+
+### Cold-Start Handling
+
+The architecture includes several cold-start indicators:
+- **phase_state.is_first_ball:** Indicates the very first ball of an innings
+- **striker_state.is_debut_ball:** Player's first ball in this match
+- **nonstriker_state.is_debut_ball:** Player's first ball in this match
+- **Hierarchical player embeddings:** Unknown players use team+role fallback instead of zero vectors

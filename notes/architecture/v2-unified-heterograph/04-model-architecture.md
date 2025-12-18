@@ -20,7 +20,7 @@ Each node type has its own encoder to project features to `hidden_dim` (128).
 
 ### 1.1 Entity Encoders (Learned Embeddings)
 
-For nodes representing entities (venue, teams, players):
+For nodes representing entities (venue, teams):
 
 ```python
 class EntityEncoder(nn.Module):
@@ -38,8 +38,48 @@ class EntityEncoder(nn.Module):
 | venue | ~50 | 32 | 128 |
 | batting_team | ~20 | 32 | 128 |
 | bowling_team | ~20 | 32 | 128 |
-| striker_identity | ~500 | 64 | 128 |
-| bowler_identity | ~500 | 64 | 128 |
+
+### 1.1.1 Hierarchical Player Encoder (Cold-Start Handling)
+
+For player identity nodes (striker, non-striker, bowler), we use a hierarchical encoder that handles unknown players:
+
+```python
+class HierarchicalPlayerEncoder(nn.Module):
+    def __init__(self, num_players, num_teams, num_roles,
+                 player_embed_dim=64, team_embed_dim=32, role_embed_dim=16,
+                 hidden_dim=128, dropout=0.1):
+        self.player_embed = nn.Embedding(num_players + 1, player_embed_dim, padding_idx=0)
+        self.team_embed = nn.Embedding(num_teams + 1, team_embed_dim, padding_idx=0)
+        self.role_embed = nn.Embedding(num_roles + 1, role_embed_dim, padding_idx=0)
+
+        # Separate projections for known vs unknown players
+        self.known_proj = nn.Linear(player_embed_dim, hidden_dim)
+        self.fallback_proj = nn.Linear(team_embed_dim + role_embed_dim, hidden_dim)
+
+    def forward(self, player_ids, team_ids, role_ids):
+        player_emb = self.player_embed(player_ids)
+        team_emb = self.team_embed(team_ids)
+        role_emb = self.role_embed(role_ids)
+
+        known_output = self.known_proj(player_emb)
+        fallback_output = self.fallback_proj(torch.cat([team_emb, role_emb], dim=-1))
+
+        # Use player embedding for known, team+role for unknown (player_id=0)
+        is_unknown = (player_ids == 0).unsqueeze(-1)
+        return torch.where(is_unknown, fallback_output, known_output)
+```
+
+**Why Hierarchical?** Unknown players (debutants, obscure players) all map to player_id=0. Without hierarchical fallback, they're indistinguishable. With team+role embeddings:
+- "Unknown opener for India" differs from "Unknown finisher for Australia"
+- Model can leverage team batting style and role position
+
+**Role Categories:** unknown, opener, top_order, middle_order, finisher, bowler, allrounder, keeper
+
+| Node | Embedding Dims | Hidden Dim |
+|------|---------------|------------|
+| striker_identity | 64 (player) + 32 (team) + 16 (role) | 128 |
+| nonstriker_identity | 64 (player) + 32 (team) + 16 (role) | 128 |
+| bowler_identity | 64 (player) + 32 (team) + 16 (role) | 128 |
 
 ### 1.2 Feature Encoders (MLP Projection)
 
@@ -63,10 +103,11 @@ class FeatureEncoder(nn.Module):
 |------|-----------|------------|
 | score_state | 4 | 128 |
 | chase_state | 3 | 128 |
-| phase_state | 4 | 128 |
+| phase_state | 5 | 128 |
 | time_pressure | 3 | 128 |
 | wicket_buffer | 2 | 128 |
-| striker_state | 6 | 128 |
+| striker_state | 7 | 128 |
+| nonstriker_state | 7 | 128 |
 | bowler_state | 6 | 128 |
 | partnership | 4 | 128 |
 | batting_momentum | 1 | 128 |
@@ -76,11 +117,11 @@ class FeatureEncoder(nn.Module):
 
 ### 1.3 Ball Encoder (Hybrid)
 
-Balls have both embeddings (bowler, batsman) and features (runs, wicket):
+Balls have both embeddings (bowler, batsman) and features (17 dimensions including run-out attribution):
 
 ```python
 class BallEncoder(nn.Module):
-    def __init__(self, num_players, player_embed_dim, feature_dim, hidden_dim):
+    def __init__(self, num_players, player_embed_dim=32, feature_dim=17, hidden_dim=128):
         self.bowler_embed = nn.Embedding(num_players + 1, player_embed_dim)
         self.batsman_embed = nn.Embedding(num_players + 1, player_embed_dim)
         self.feature_proj = nn.Linear(feature_dim, hidden_dim - 2 * player_embed_dim)
@@ -93,6 +134,8 @@ class BallEncoder(nn.Module):
         combined = torch.cat([bowler_emb, batsman_emb, feat_proj], dim=-1)  # [N, 128]
         return self.final_proj(combined)
 ```
+
+**Ball features (17 dimensions):** runs, is_wicket, over, ball_in_over, is_boundary, is_wide, is_noball, is_bye, is_legbye, wicket_bowled, wicket_caught, wicket_lbw, wicket_run_out, wicket_stumped, wicket_other, **striker_run_out**, **nonstriker_run_out**
 
 ### 1.4 Query Encoder
 
@@ -153,12 +196,18 @@ def build_hetero_conv(hidden_dim, num_heads=4, edge_types=None):
         heads=num_heads, edge_dim=1  # temporal distance as edge feature
     )
 
-    # Same-actor edges: attention to aggregate spell/innings
-    convs[('ball', 'same_bowler', 'ball')] = GATv2Conv(
+    # Same-actor edges: TransformerConv with temporal decay edge features
+    convs[('ball', 'same_bowler', 'ball')] = TransformerConv(
         hidden_dim, hidden_dim // num_heads,
-        heads=num_heads, add_self_loops=False
+        heads=num_heads, edge_dim=1  # 4-over (24 ball) decay window
     )
-    convs[('ball', 'same_batsman', 'ball')] = GATv2Conv(
+    convs[('ball', 'same_batsman', 'ball')] = TransformerConv(
+        hidden_dim, hidden_dim // num_heads,
+        heads=num_heads, edge_dim=1  # 10-over (60 ball) decay window
+    )
+
+    # Same-over edges: within-over context (max 6 balls)
+    convs[('ball', 'same_over', 'ball')] = GATv2Conv(
         hidden_dim, hidden_dim // num_heads,
         heads=num_heads, add_self_loops=False
     )
@@ -289,9 +338,10 @@ class CricketHeteroGNN(nn.Module):
 | Hierarchical | GATv2Conv | Attention learns which context features matter |
 | Intra-layer | GATv2Conv | Self-attention for permutation equivariance |
 | Actor matchup | GATv2Conv | Learn matchup dynamics with attention |
-| Temporal | TransformerConv | Edge features for temporal distance |
-| Same-actor | GATv2Conv | Aggregate spell/innings with attention |
-| Cross-domain | SAGEConv | Simple aggregation, less parameters |
+| Temporal (precedes) | TransformerConv | Edge features for temporal distance |
+| Same-bowler/batsman | TransformerConv | Temporal decay edge features (4/10-over windows) |
+| Same-over | GATv2Conv | Within-over context patterns |
+| Cross-domain | GATv2Conv | Attention-weighted recency |
 | Query | GATv2Conv | Learn what to attend to for prediction |
 
 ### GATv2Conv vs GATConv
@@ -398,7 +448,72 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
 
 ---
 
-## 7. Interpretability
+## 7. Advanced Model Variants
+
+The implementation includes several model classes with different capabilities:
+
+### 7.1 Phase-Modulated Message Passing (FiLM)
+
+Different match phases (powerplay, middle, death) have fundamentally different dynamics. FiLM (Feature-wise Linear Modulation) conditions message passing on the current phase:
+
+```python
+class FiLMLayer(nn.Module):
+    """Feature-wise Linear Modulation for phase conditioning."""
+    def __init__(self, condition_dim, hidden_dim):
+        self.film_generator = nn.Sequential(
+            nn.Linear(condition_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim * 2),  # gamma and beta
+        )
+
+    def forward(self, x, condition):
+        film_params = self.film_generator(condition)
+        gamma, beta = film_params.chunk(2, dim=-1)
+        return gamma * x + beta  # Affine transformation
+```
+
+**PhaseModulatedConvBlock** wraps each HeteroConv layer with FiLM modulation:
+- Phase features (5-dim) are expanded to gamma/beta parameters
+- After each conv layer: `output = gamma * conv_output + beta`
+- This allows the model to learn phase-specific message passing patterns
+
+### 7.2 Innings-Conditional Prediction Heads
+
+First innings (setting a target) and second innings (chasing) are fundamentally different prediction tasks:
+
+```python
+class CricketHeteroGNNInningsConditional(CricketHeteroGNN):
+    def __init__(self, config):
+        super().__init__(config)
+        # Separate prediction heads
+        self.first_innings_head = nn.Sequential(...)  # Standard prediction
+        self.second_innings_head = nn.Sequential(...)  # Includes chase state injection
+
+    def forward(self, data):
+        x_dict = self.encode_and_propagate(data)
+
+        if data.is_chase:
+            # Inject chase state into prediction
+            chase_features = data['chase_state'].x
+            combined = torch.cat([matchup_repr, query_repr, chase_features], dim=-1)
+            return self.second_innings_head(combined)
+        else:
+            return self.first_innings_head(torch.cat([matchup_repr, query_repr], dim=-1))
+```
+
+### 7.3 CricketHeteroGNNFull (Production Model)
+
+Combines all enhancements:
+- Hierarchical player embeddings (cold-start handling)
+- Hybrid matchup + query readout
+- Phase-modulated message passing (FiLM)
+- Innings-conditional prediction heads
+
+Use `CricketHeteroGNNFull` with all config flags enabled for production.
+
+---
+
+## 8. Interpretability
 
 ### Attention Weights
 
@@ -417,5 +532,6 @@ For any prediction, we can see:
 - Which global nodes influenced state most
 - Which historical balls the query attended to
 - Which actor matchup edges had highest attention
+- How phase modulation (gamma/beta) varied across game phases
 
 This provides explainability that V1's separate streams lacked.

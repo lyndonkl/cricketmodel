@@ -98,14 +98,22 @@ def create_hetero_data(
     data['batting_team'].x = torch.tensor([[batting_team_id]], dtype=torch.long)
     data['bowling_team'].x = torch.tensor([[bowling_team_id]], dtype=torch.long)
 
-    # Player identities
-    striker_id = entity_mapper.get_player_id(striker)
-    nonstriker_id = entity_mapper.get_player_id(non_striker)
-    bowler_id = entity_mapper.get_player_id(bowler)
+    # Player identities with hierarchical fallback info (team_id, role_id)
+    striker_id, striker_team_id, striker_role_id = entity_mapper.get_player_hierarchy(striker)
+    nonstriker_id, nonstriker_team_id, nonstriker_role_id = entity_mapper.get_player_hierarchy(non_striker)
+    bowler_id, bowler_team_id, bowler_role_id = entity_mapper.get_player_hierarchy(bowler)
 
     data['striker_identity'].x = torch.tensor([[striker_id]], dtype=torch.long)
+    data['striker_identity'].team_id = torch.tensor([[striker_team_id]], dtype=torch.long)
+    data['striker_identity'].role_id = torch.tensor([[striker_role_id]], dtype=torch.long)
+
     data['nonstriker_identity'].x = torch.tensor([[nonstriker_id]], dtype=torch.long)
+    data['nonstriker_identity'].team_id = torch.tensor([[nonstriker_team_id]], dtype=torch.long)
+    data['nonstriker_identity'].role_id = torch.tensor([[nonstriker_role_id]], dtype=torch.long)
+
     data['bowler_identity'].x = torch.tensor([[bowler_id]], dtype=torch.long)
+    data['bowler_identity'].team_id = torch.tensor([[bowler_team_id]], dtype=torch.long)
+    data['bowler_identity'].role_id = torch.tensor([[bowler_role_id]], dtype=torch.long)
 
     # =========================================================================
     # 2. STATE NODES
@@ -211,15 +219,18 @@ def create_hetero_data(
     # 7. BUILD EDGES
     # =========================================================================
 
-    # Get ball player IDs for temporal and cross-domain edge building
+    # Get ball player IDs and over numbers for temporal and cross-domain edge building
     if num_balls > 0:
         bowler_ids_list = data['ball'].bowler_ids.tolist()
         batsman_ids_list = data['ball'].batsman_ids.tolist()
         nonstriker_ids_list = data['ball'].nonstriker_ids.tolist()
+        # Extract over numbers for same_over edges
+        ball_overs_list = [d['_over'] for d in history]
     else:
         bowler_ids_list = []
         batsman_ids_list = []
         nonstriker_ids_list = []
+        ball_overs_list = []
 
     # Build all edges with correct player attribution
     # This ensures cross-domain edges connect to the ACTUAL players
@@ -231,7 +242,8 @@ def create_hetero_data(
         nonstriker_ids=nonstriker_ids_list,
         current_striker_id=striker_id,
         current_bowler_id=bowler_id,
-        current_nonstriker_id=nonstriker_id
+        current_nonstriker_id=nonstriker_id,
+        ball_overs=ball_overs_list
     )
 
     # Add edges to HeteroData
@@ -248,11 +260,14 @@ def create_hetero_data(
 
     data.y = torch.tensor([outcome_to_class(target_ball)], dtype=torch.long)
 
-    # Store metadata for debugging
+    # Store metadata for debugging and conditional routing
     data.match_id = info.get('match_type_number', 0)
     data.innings_num = innings_num
     data.ball_idx = ball_idx
     data.num_balls = num_balls
+
+    # Is this a chase (2nd innings with target)? Used for innings-conditional prediction heads
+    data.is_chase = torch.tensor([innings_num == 2 and target_score is not None], dtype=torch.bool)
 
     return data
 
@@ -359,10 +374,11 @@ def get_node_feature_dims() -> Dict[str, int]:
         'bowling_momentum': 1,
         'pressure_index': 1,
         'dot_pressure': 2,
-        # Ball nodes (15 features + embeddings added in model):
+        # Ball nodes (17 features + embeddings added in model):
         # - 5 basic: runs, is_wicket, over, ball_in_over, is_boundary
         # - 4 extras: is_wide, is_noball, is_bye, is_legbye
         # - 6 wicket types: bowled, caught, lbw, run_out, stumped, other
+        # - 2 run-out attribution: striker_run_out, nonstriker_run_out
         'ball': BALL_FEATURE_DIM,
         # Query node (learned embedding)
         'query': 1,

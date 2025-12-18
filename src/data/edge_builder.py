@@ -188,10 +188,69 @@ def build_intra_layer_edges() -> Dict[EdgeType, torch.Tensor]:
     return edges
 
 
+def build_same_over_edges(
+    num_balls: int,
+    ball_overs: List[int]
+) -> Dict[EdgeType, torch.Tensor]:
+    """
+    Build edges connecting balls within the same over.
+
+    Over boundaries are significant discontinuities in cricket:
+    - New bowler starts
+    - Batsmen swap ends
+    - Fielding positions reset
+
+    Within an over, there's strong local coherence:
+    - Same bowler rhythm
+    - Same batsman facing
+    - Consistent field placement
+
+    This creates a bidirectional clique within each over (max 6 balls).
+
+    Args:
+        num_balls: Number of historical balls
+        ball_overs: List of over numbers for each ball (0-indexed)
+
+    Returns:
+        Dict mapping edge type to edge_index tensor [2, num_edges]
+    """
+    edges = {}
+
+    if num_balls == 0:
+        edges[('ball', 'same_over', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        return edges
+
+    # Group balls by over
+    over_to_balls = defaultdict(list)
+    for ball_idx, over_num in enumerate(ball_overs):
+        over_to_balls[over_num].append(ball_idx)
+
+    same_over_src = []
+    same_over_tgt = []
+
+    for balls in over_to_balls.values():
+        if len(balls) > 1:
+            # Create bidirectional clique within over
+            for i in range(len(balls)):
+                for j in range(i + 1, len(balls)):
+                    same_over_src.extend([balls[i], balls[j]])
+                    same_over_tgt.extend([balls[j], balls[i]])
+
+    if same_over_src:
+        edges[('ball', 'same_over', 'ball')] = torch.tensor(
+            [same_over_src, same_over_tgt], dtype=torch.long
+        )
+    else:
+        edges[('ball', 'same_over', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+
+    return edges
+
+
 def build_temporal_edges(
     num_balls: int,
     bowler_ids: List[int],
     batsman_ids: List[int],
+    ball_overs: Optional[List[int]] = None,
     max_temporal_distance: int = 120
 ) -> Tuple[Dict[EdgeType, torch.Tensor], Dict[EdgeType, torch.Tensor]]:
     """
@@ -234,10 +293,13 @@ def build_temporal_edges(
         edges[('ball', 'same_bowler', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         edges[('ball', 'same_batsman', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         edges[('ball', 'same_matchup', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edges[('ball', 'same_over', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         # Empty edge attributes
         edge_attrs[('ball', 'recent_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
         edge_attrs[('ball', 'medium_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
         edge_attrs[('ball', 'distant_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+        edge_attrs[('ball', 'same_bowler', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+        edge_attrs[('ball', 'same_batsman', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
         return edges, edge_attrs
 
     # 1. Multi-scale precedes edges
@@ -295,49 +357,80 @@ def build_temporal_edges(
         edges[('ball', 'distant_precedes', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
         edge_attrs[('ball', 'distant_precedes', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
 
-    # 2. Same bowler edges: connect balls by same bowler
+    # 2. Same bowler edges: connect balls by same bowler WITH TEMPORAL DECAY
+    # Edge attribute encodes temporal distance (normalized) for attention weighting
+    # This allows the model to learn that recent balls in a spell matter more
     bowler_to_balls = defaultdict(list)
     for ball_idx, bowler_id in enumerate(bowler_ids):
         bowler_to_balls[bowler_id].append(ball_idx)
 
     same_bowler_src = []
     same_bowler_tgt = []
+    same_bowler_dist = []  # Temporal distance for decay
+    spell_window = 24.0  # ~4 overs - typical spell window for normalization
+
     for balls in bowler_to_balls.values():
         if len(balls) > 1:
-            # Create clique edges (bidirectional)
+            # Create clique edges (bidirectional) with temporal distance
             for i in range(len(balls)):
                 for j in range(i + 1, len(balls)):
-                    same_bowler_src.extend([balls[i], balls[j]])
-                    same_bowler_tgt.extend([balls[j], balls[i]])
+                    temporal_dist = abs(balls[j] - balls[i]) / spell_window
+                    # Forward edge
+                    same_bowler_src.append(balls[i])
+                    same_bowler_tgt.append(balls[j])
+                    same_bowler_dist.append(temporal_dist)
+                    # Backward edge (same distance)
+                    same_bowler_src.append(balls[j])
+                    same_bowler_tgt.append(balls[i])
+                    same_bowler_dist.append(temporal_dist)
 
     if same_bowler_src:
         edges[('ball', 'same_bowler', 'ball')] = torch.tensor(
             [same_bowler_src, same_bowler_tgt], dtype=torch.long
         )
+        edge_attrs[('ball', 'same_bowler', 'ball')] = torch.tensor(
+            [[d] for d in same_bowler_dist], dtype=torch.float
+        )
     else:
         edges[('ball', 'same_bowler', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edge_attrs[('ball', 'same_bowler', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
 
-    # 3. Same batsman edges: connect balls faced by same batsman
+    # 3. Same batsman edges: connect balls faced by same batsman WITH TEMPORAL DECAY
+    # Similar decay for batsman form - recent balls reflect current form
     batsman_to_balls = defaultdict(list)
     for ball_idx, batsman_id in enumerate(batsman_ids):
         batsman_to_balls[batsman_id].append(ball_idx)
 
     same_batsman_src = []
     same_batsman_tgt = []
+    same_batsman_dist = []  # Temporal distance for decay
+    innings_window = 60.0  # ~10 overs - batsman form window
+
     for balls in batsman_to_balls.values():
         if len(balls) > 1:
-            # Create clique edges (bidirectional)
+            # Create clique edges (bidirectional) with temporal distance
             for i in range(len(balls)):
                 for j in range(i + 1, len(balls)):
-                    same_batsman_src.extend([balls[i], balls[j]])
-                    same_batsman_tgt.extend([balls[j], balls[i]])
+                    temporal_dist = abs(balls[j] - balls[i]) / innings_window
+                    # Forward edge
+                    same_batsman_src.append(balls[i])
+                    same_batsman_tgt.append(balls[j])
+                    same_batsman_dist.append(temporal_dist)
+                    # Backward edge (same distance)
+                    same_batsman_src.append(balls[j])
+                    same_batsman_tgt.append(balls[i])
+                    same_batsman_dist.append(temporal_dist)
 
     if same_batsman_src:
         edges[('ball', 'same_batsman', 'ball')] = torch.tensor(
             [same_batsman_src, same_batsman_tgt], dtype=torch.long
         )
+        edge_attrs[('ball', 'same_batsman', 'ball')] = torch.tensor(
+            [[d] for d in same_batsman_dist], dtype=torch.float
+        )
     else:
         edges[('ball', 'same_batsman', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edge_attrs[('ball', 'same_batsman', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
 
     # 4. Same matchup edges: connect balls with same bowler-batsman pair
     # This is THE key predictor - specific matchup history
@@ -367,6 +460,14 @@ def build_temporal_edges(
         )
     else:
         edges[('ball', 'same_matchup', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+
+    # 5. Same over edges: connect balls within the same over
+    # Over boundaries are significant discontinuities (new bowler, batsmen swap)
+    if ball_overs is not None:
+        same_over_edges = build_same_over_edges(num_balls, ball_overs)
+        edges.update(same_over_edges)
+    else:
+        edges[('ball', 'same_over', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
 
     return edges, edge_attrs
 
@@ -532,6 +633,7 @@ def build_all_edges(
     current_striker_id: int,
     current_bowler_id: int,
     current_nonstriker_id: int,
+    ball_overs: Optional[List[int]] = None,
     recent_k: int = 12
 ) -> Tuple[Dict[EdgeType, torch.Tensor], Dict[EdgeType, torch.Tensor]]:
     """
@@ -541,6 +643,7 @@ def build_all_edges(
     - Hierarchical conditioning edges
     - Intra-layer interaction edges
     - Temporal ball edges (with edge attributes for temporal distance)
+    - Same-over edges (structural over boundary encoding)
     - Cross-domain edges (with correct player attribution)
     - Query aggregation edges
 
@@ -552,6 +655,7 @@ def build_all_edges(
         current_striker_id: ID of current striker (for cross-domain edges)
         current_bowler_id: ID of current bowler (for cross-domain edges)
         current_nonstriker_id: ID of current non-striker (for cross-domain edges)
+        ball_overs: Over number for each historical ball (for same_over edges)
         recent_k: Number of recent balls for dynamics
 
     Returns:
@@ -568,7 +672,10 @@ def build_all_edges(
 
     # Dynamic edges (depend on ball history)
     # Temporal edges now return both edge_index and edge_attr
-    temporal_edges, temporal_edge_attrs = build_temporal_edges(num_balls, bowler_ids, batsman_ids)
+    # Includes same_over edges if ball_overs is provided
+    temporal_edges, temporal_edge_attrs = build_temporal_edges(
+        num_balls, bowler_ids, batsman_ids, ball_overs
+    )
     all_edges.update(temporal_edges)
     all_edge_attrs.update(temporal_edge_attrs)
 
@@ -627,6 +734,7 @@ def get_all_edge_types() -> List[EdgeType]:
     edge_types.add(('ball', 'same_bowler', 'ball'))
     edge_types.add(('ball', 'same_batsman', 'ball'))
     edge_types.add(('ball', 'same_matchup', 'ball'))
+    edge_types.add(('ball', 'same_over', 'ball'))  # Within-over structural edges
 
     # Cross-domain
     edge_types.add(('ball', 'faced_by', 'striker_identity'))

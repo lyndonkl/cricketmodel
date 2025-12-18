@@ -489,9 +489,11 @@ def compute_ball_features(delivery: Dict) -> List[float]:
         delivery: Single delivery dict with _over and _ball_in_over added
 
     Returns:
+        List of 17 features:
         [runs/6, is_wicket, over/20, ball_in_over/6, is_boundary,
          is_wide, is_noball, is_bye, is_legbye,
-         wicket_bowled, wicket_caught, wicket_lbw, wicket_run_out, wicket_stumped, wicket_other]
+         wicket_bowled, wicket_caught, wicket_lbw, wicket_run_out, wicket_stumped, wicket_other,
+         striker_run_out, nonstriker_run_out]
     """
     runs = delivery['runs']['total']
     is_wicket = 1.0 if 'wickets' in delivery else 0.0
@@ -519,6 +521,17 @@ def compute_ball_features(delivery: Dict) -> List[float]:
     wicket_stumped = 0.0
     wicket_other = 0.0
 
+    # Run-out attribution: WHO was run out (striker vs non-striker)
+    # This matters because:
+    # - Striker run out: misjudged single, hesitation
+    # - Non-striker run out: backing up too far, miscommunication
+    striker_run_out = 0.0
+    nonstriker_run_out = 0.0
+
+    # Get striker and non-striker names for run-out attribution
+    striker_name = delivery.get('batter', '')
+    nonstriker_name = delivery.get('non_striker', '')
+
     if 'wickets' in delivery and len(delivery['wickets']) > 0:
         wicket_kind = delivery['wickets'][0].get('kind', 'other').lower()
         if wicket_kind == 'bowled':
@@ -529,6 +542,14 @@ def compute_ball_features(delivery: Dict) -> List[float]:
             wicket_lbw = 1.0
         elif wicket_kind == 'run out':
             wicket_run_out = 1.0
+            # Determine WHO was run out for attribution
+            player_out = delivery['wickets'][0].get('player_out', '')
+            if player_out == striker_name:
+                striker_run_out = 1.0
+            elif player_out == nonstriker_name:
+                nonstriker_run_out = 1.0
+            # If player_out doesn't match either, leave both as 0
+            # (data quality issue - rare)
         elif wicket_kind == 'stumped':
             wicket_stumped = 1.0
         else:
@@ -548,15 +569,17 @@ def compute_ball_features(delivery: Dict) -> List[float]:
         wicket_bowled,        # bowled dismissal
         wicket_caught,        # caught dismissal
         wicket_lbw,           # LBW dismissal
-        wicket_run_out,       # run out dismissal
+        wicket_run_out,       # run out dismissal (any)
         wicket_stumped,       # stumped dismissal
-        wicket_other          # other dismissal types
+        wicket_other,         # other dismissal types
+        striker_run_out,      # NEW: striker was run out
+        nonstriker_run_out    # NEW: non-striker was run out
     ]
 
 
 # Number of features per ball node (for validation)
-# 9 original + 6 wicket type one-hot = 15 features
-BALL_FEATURE_DIM = 15
+# 9 original + 6 wicket type one-hot + 2 run-out attribution = 17 features
+BALL_FEATURE_DIM = 17
 
 
 def outcome_to_class(delivery: Dict) -> int:
