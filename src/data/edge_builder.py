@@ -193,7 +193,7 @@ def build_same_over_edges(
     ball_overs: List[int]
 ) -> Dict[EdgeType, torch.Tensor]:
     """
-    Build edges connecting balls within the same over.
+    Build CAUSAL edges connecting balls within the same over.
 
     Over boundaries are significant discontinuities in cricket:
     - New bowler starts
@@ -205,7 +205,10 @@ def build_same_over_edges(
     - Same batsman facing
     - Consistent field placement
 
-    This creates a bidirectional clique within each over (max 6 balls).
+    IMPORTANT: Edges are CAUSAL (older -> newer only) to prevent train-test
+    distribution shift. During training, bidirectional edges would allow
+    future-to-past information flow, but at inference only historical balls
+    exist. Causal edges ensure consistent behavior.
 
     Args:
         num_balls: Number of historical balls
@@ -230,11 +233,14 @@ def build_same_over_edges(
 
     for balls in over_to_balls.values():
         if len(balls) > 1:
-            # Create bidirectional clique within over
-            for i in range(len(balls)):
-                for j in range(i + 1, len(balls)):
-                    same_over_src.extend([balls[i], balls[j]])
-                    same_over_tgt.extend([balls[j], balls[i]])
+            # Sort to ensure temporal order within over
+            sorted_balls = sorted(balls)
+            # Create CAUSAL edges only (older -> newer)
+            for i in range(len(sorted_balls)):
+                for j in range(i + 1, len(sorted_balls)):
+                    # Only older -> newer direction (causal)
+                    same_over_src.append(sorted_balls[i])
+                    same_over_tgt.append(sorted_balls[j])
 
     if same_over_src:
         edges[('ball', 'same_over', 'ball')] = torch.tensor(

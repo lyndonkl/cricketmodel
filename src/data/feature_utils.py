@@ -242,6 +242,45 @@ def compute_batsman_state(
     ]
 
 
+def compute_balls_since_on_strike(
+    deliveries: List[Dict],
+    striker_name: str
+) -> float:
+    """
+    Compute how many balls have passed since the striker last faced a delivery.
+
+    This captures the "cold restart" effect where a batsman who just came on strike
+    (after being non-striker for several balls) is less "in rhythm" than one who
+    has been continuously facing.
+
+    Args:
+        deliveries: All deliveries in this innings so far
+        striker_name: Name of the current striker
+
+    Returns:
+        Normalized balls since last facing (0 = faced last ball, 1 = 12+ balls ago)
+    """
+    if len(deliveries) == 0:
+        return 1.0  # No history, maximum "cold" state
+
+    # Find the most recent ball this striker faced
+    last_faced_idx = -1
+    for i, d in enumerate(deliveries):
+        if d['batter'] == striker_name:
+            last_faced_idx = i
+
+    if last_faced_idx == -1:
+        # Striker hasn't faced any balls yet (debut)
+        return 1.0
+
+    # Calculate balls since last faced
+    balls_since = len(deliveries) - last_faced_idx - 1
+
+    # Normalize: 0 = just faced, 1 = 12+ balls since facing
+    # 12 balls = 2 overs is the maximum "cold" window
+    return min(balls_since / 12.0, 1.0)
+
+
 def compute_striker_state(
     deliveries: List[Dict],
     striker_name: str
@@ -254,9 +293,12 @@ def compute_striker_state(
         striker_name: Name of the current striker
 
     Returns:
-        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10, is_debut_ball]
+        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10, is_debut_ball,
+         balls_since_on_strike]
     """
-    return compute_batsman_state(deliveries, striker_name)
+    base_features = compute_batsman_state(deliveries, striker_name)
+    balls_since = compute_balls_since_on_strike(deliveries, striker_name)
+    return base_features + [balls_since]
 
 
 def compute_nonstriker_state(

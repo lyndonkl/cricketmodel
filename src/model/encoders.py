@@ -415,14 +415,15 @@ class NodeEncoderDict(nn.Module):
         # Feature encoders (one per feature node type)
         # Feature dimensions:
         # - phase_state: 5 (is_powerplay, is_middle, is_death, over_progress, is_first_ball)
-        # - striker_state/nonstriker_state: 7 (runs, balls, sr, dots_pct, is_set, boundaries, is_debut_ball)
+        # - striker_state: 8 (runs, balls, sr, dots_pct, is_set, boundaries, is_debut_ball, balls_since_on_strike)
+        # - nonstriker_state: 7 (runs, balls, sr, dots_pct, is_set, boundaries, is_debut_ball)
         self.feature_encoders = nn.ModuleDict({
             'score_state': FeatureEncoder(4, hidden_dim, dropout),
             'chase_state': FeatureEncoder(3, hidden_dim, dropout),
             'phase_state': FeatureEncoder(5, hidden_dim, dropout),  # +1 for is_first_ball
             'time_pressure': FeatureEncoder(3, hidden_dim, dropout),
             'wicket_buffer': FeatureEncoder(2, hidden_dim, dropout),
-            'striker_state': FeatureEncoder(7, hidden_dim, dropout),  # +1 for is_debut_ball
+            'striker_state': FeatureEncoder(8, hidden_dim, dropout),  # +1 is_debut_ball, +1 balls_since_on_strike
             'nonstriker_state': FeatureEncoder(7, hidden_dim, dropout),  # +1 for is_debut_ball
             'bowler_state': FeatureEncoder(6, hidden_dim, dropout),
             'partnership': FeatureEncoder(4, hidden_dim, dropout),

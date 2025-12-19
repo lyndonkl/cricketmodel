@@ -138,7 +138,7 @@ These nodes represent the current players on the field and their performance:
 Node Name & Features & What it Represents \\
 \midrule
 \texttt{striker\_identity} & Hierarchical embedding & WHO is on strike (player$\to$team$\to$role fallback for unknown players) \\
-\texttt{striker\_state} & 7 features & HOW they're batting: runs, balls, SR, dot\%, boundaries, set indicator, \textbf{is\_debut\_ball} \\
+\texttt{striker\_state} & 8 features & HOW they're batting: runs, balls, SR, dot\%, boundaries, set indicator, \textbf{is\_debut\_ball}, \textbf{balls\_since\_on\_strike} \\
 \texttt{nonstriker\_identity} & Hierarchical embedding & WHO is at the non-striker's end (with cold-start fallback) \\
 \texttt{nonstriker\_state} & 7 features & HOW the non-striker has been batting (includes is\_debut\_ball) \\
 \texttt{bowler\_identity} & Hierarchical embedding & WHO is bowling (with cold-start fallback) \\
@@ -152,6 +152,8 @@ Node Name & Features & What it Represents \\
 \textbf{Key insight:} Separating identity from state allows the model to learn ``Bumrah is generally accurate'' (identity) independently from ``Bumrah is bowling well today'' (state).
 
 \textbf{Note:} \texttt{is\_debut\_ball} in striker/nonstriker state is 1.0 if this is the player's first ball of the match (cold-start handling).
+
+\textbf{Note:} \texttt{balls\_since\_on\_strike} in striker\_state captures the ``cold restart'' effect: 0.0 if the striker faced the previous ball, increasing toward 1.0 if they've been at non-striker end for 12+ balls (2 overs). This helps the model understand that a batsman coming back on strike after a period at non-striker is less ``in rhythm'' than one continuously facing.
 
 \subsection{Category 4: Dynamics (4 nodes)}
 
@@ -465,11 +467,22 @@ Recent balls matter more than distant ones. The model uses \texttt{TransformerCo
 
 \textbf{Why this matters:} The model can ask ``How has Bumrah been bowling \textit{recently}?'' by looking at his deliveries with recency weighting, without needing to attend equally to all balls.
 
+\subsubsection{Same-Over Edges (CAUSAL)}
+
+\texttt{same\_over} connects balls within the same over. This captures within-over context:
+\begin{itemize}
+    \item Same bowler rhythm and plan for the over
+    \item Field placement context
+    \item Batsman reading the bowler
+\end{itemize}
+
+\textbf{Critical:} Like same\_matchup, same\_over edges are \textbf{CAUSAL (older $\to$ newer only)} to prevent train-test distribution shift.
+
 \subsubsection{Same-Matchup Edges (CAUSAL)}
 
 \texttt{same\_matchup} connects balls with the same bowler-batsman combination:
 
-\textbf{Critical:} Unlike same\_bowler/same\_batsman (bidirectional), same\_matchup edges are \textbf{UNIDIRECTIONAL (older $\to$ newer)}. This prevents ``future information leakage'':
+\textbf{Critical:} Both same\_over and same\_matchup edges are \textbf{UNIDIRECTIONAL (older $\to$ newer)}. This prevents ``future information leakage'':
 
 \begin{itemize}
     \item During training, the graph contains future balls
@@ -790,7 +803,7 @@ recent/medium\_precedes & TransformerConv & Edge features for temporal distance 
 distant\_precedes & SAGEConv & Simple mean for sparse history \\
 \textbf{same\_bowler/batsman} & \textbf{TransformerConv} & \textbf{Temporal decay edge features (4/10-over)} \\
 same\_matchup (causal) & GATv2Conv & Historical matchup outcomes \\
-\textbf{same\_over (NEW)} & \textbf{GATv2Conv} & \textbf{Within-over context patterns} \\
+\textbf{same\_over (CAUSAL)} & \textbf{GATv2Conv} & \textbf{Within-over context (older$\to$newer only)} \\
 Cross-domain (faced/bowled/partnered) & GATv2Conv & Attention-weighted recency \\
 Dynamics (informs) & SAGEConv & Simple aggregation \\
 Dynamics (drives) & GATv2Conv & Weight momentum vs pressure \\
@@ -937,8 +950,9 @@ The V2 architecture represents cricket prediction as a heterogeneous graph where
     \item \textbf{20 edge types} encode cricket-specific relationships (now includes same\_over)
     \item \textbf{Multi-scale temporal edges} capture patterns at different time scales
     \item \textbf{Temporal decay edge attributes} for same\_bowler (4-over) and same\_batsman (10-over)
-    \item \textbf{Same\_over edges} capture within-over context (bowler plans, batsman reading)
+    \item \textbf{Causal same\_over edges} capture within-over context (bowler plans, batsman reading)
     \item \textbf{Causal same\_matchup edges} prevent train-test distribution shift
+    \item \textbf{balls\_since\_on\_strike} feature captures striker ``cold restart'' after non-striker period
     \item \textbf{Hierarchical player embeddings} handle cold-start (unknown players)
     \item \textbf{FiLM phase modulation} enables phase-conditional message passing
     \item \textbf{Innings-conditional prediction heads} separate 1st/2nd innings logic
