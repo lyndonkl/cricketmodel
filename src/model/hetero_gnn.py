@@ -50,11 +50,11 @@ class ModelConfig:
     use_phase_modulation: bool = True  # Use FiLM situation-conditional message passing
 
     # Conditioning dimensions for FiLM modulation
-    # Enhanced conditioning: phase(5) + chase(7) + wicket_buffer(2) = 14
-    phase_dim: int = 5        # phase_state features
+    # Enhanced conditioning: phase(6) + chase(7) + wicket_buffer(2) = 15
+    phase_dim: int = 6        # phase_state features (includes is_super_over)
     chase_dim: int = 7        # enhanced chase_state features
     resource_dim: int = 2     # wicket_buffer features
-    condition_dim: int = 14   # Total: phase + chase + resource
+    condition_dim: int = 15   # Total: phase + chase + resource
 
 
 class CricketHeteroGNN(nn.Module):

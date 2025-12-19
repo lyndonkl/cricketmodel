@@ -45,24 +45,33 @@ def _count_runs_wickets(deliveries: List[Dict]) -> Tuple[int, int, int]:
     return total_runs, wickets, legal_balls
 
 
-def compute_score_state(deliveries: List[Dict], innings_num: int) -> List[float]:
+def compute_score_state(
+    deliveries: List[Dict],
+    innings_num: int,
+    is_womens: bool = False
+) -> List[float]:
     """
     Compute score state features.
 
     Args:
         deliveries: List of deliveries so far in this innings
         innings_num: 1 or 2
+        is_womens: Whether this is women's cricket (different scoring distributions)
 
     Returns:
-        [runs/250, wickets/10, balls/120, innings_indicator]
+        [runs/250, wickets/10, balls/120, innings_indicator, is_womens_cricket]
     """
     runs, wickets, balls = _count_runs_wickets(deliveries)
+
+    # Women's cricket indicator: different scoring patterns and distributions
+    is_womens_flag = 1.0 if is_womens else 0.0
 
     return [
         min(runs / 250.0, 1.0),           # runs normalized
         wickets / 10.0,                    # wickets normalized
         min(balls / 120.0, 1.0),          # balls normalized (T20 = 120 balls)
-        1.0 if innings_num == 2 else 0.0  # innings indicator
+        1.0 if innings_num == 2 else 0.0, # innings indicator
+        is_womens_flag                     # women's cricket indicator
     ]
 
 
@@ -121,15 +130,16 @@ def compute_chase_state(
     ]
 
 
-def compute_phase_state(balls_bowled: int) -> List[float]:
+def compute_phase_state(balls_bowled: int, is_super_over: bool = False) -> List[float]:
     """
     Compute match phase features.
 
     Args:
         balls_bowled: Number of balls bowled in innings
+        is_super_over: Whether this is a super over (tie-breaker)
 
     Returns:
-        [is_powerplay, is_middle, is_death, over_progress, is_first_ball]
+        [is_powerplay, is_middle, is_death, over_progress, is_first_ball, is_super_over]
     """
     over = balls_bowled // 6
     ball_in_over = balls_bowled % 6
@@ -150,7 +160,11 @@ def compute_phase_state(balls_bowled: int) -> List[float]:
     # This helps the model learn first-ball-specific behavior
     is_first_ball = 1.0 if balls_bowled == 0 else 0.0
 
-    return [is_powerplay, is_middle, is_death, over_progress, is_first_ball]
+    # Super over indicator: tie-breaker has unique dynamics
+    # Only 6 balls, extreme pressure, different player selection
+    is_super_over_flag = 1.0 if is_super_over else 0.0
+
+    return [is_powerplay, is_middle, is_death, over_progress, is_first_ball, is_super_over_flag]
 
 
 def compute_time_pressure(
@@ -303,6 +317,45 @@ def compute_balls_since_on_strike(
     return min(balls_since / 12.0, 1.0)
 
 
+def compute_balls_since_as_nonstriker(
+    deliveries: List[Dict],
+    nonstriker_name: str
+) -> float:
+    """
+    Compute how many balls have passed since the non-striker last faced a delivery.
+
+    This is the Z2 symmetric counterpart to balls_since_on_strike for the striker.
+    Captures the "cold restart" effect for the non-striker - if they haven't faced
+    for a while, they may be "cold" when they next come on strike.
+
+    Args:
+        deliveries: All deliveries in this innings so far
+        nonstriker_name: Name of the current non-striker
+
+    Returns:
+        Normalized balls since last facing (0 = faced last ball, 1 = 12+ balls ago)
+    """
+    if len(deliveries) == 0:
+        return 1.0  # No history, maximum "cold" state
+
+    # Find the most recent ball this non-striker faced (when they were striker)
+    last_faced_idx = -1
+    for i, d in enumerate(deliveries):
+        if d['batter'] == nonstriker_name:
+            last_faced_idx = i
+
+    if last_faced_idx == -1:
+        # Non-striker hasn't faced any balls yet (debut)
+        return 1.0
+
+    # Calculate balls since last faced
+    balls_since = len(deliveries) - last_faced_idx - 1
+
+    # Normalize: 0 = just faced, 1 = 12+ balls since facing
+    # 12 balls = 2 overs is the maximum "cold" window
+    return min(balls_since / 12.0, 1.0)
+
+
 def compute_striker_state(
     deliveries: List[Dict],
     striker_name: str
@@ -330,14 +383,19 @@ def compute_nonstriker_state(
     """
     Compute non-striker performance features for current innings.
 
+    Now Z2 symmetric with striker_state (both have 8 features).
+
     Args:
         deliveries: All deliveries in this innings so far
         nonstriker_name: Name of the current non-striker
 
     Returns:
-        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10, is_debut_ball]
+        [runs/100, balls/60, sr/200, dots_pct, is_set, boundaries/10, is_debut_ball,
+         balls_since_as_nonstriker]
     """
-    return compute_batsman_state(deliveries, nonstriker_name)
+    base_features = compute_batsman_state(deliveries, nonstriker_name)
+    balls_since = compute_balls_since_as_nonstriker(deliveries, nonstriker_name)
+    return base_features + [balls_since]
 
 
 def compute_bowler_state(
@@ -460,7 +518,7 @@ def compute_dynamics(
         lookback: Number of recent balls to consider
 
     Returns:
-        Dict with batting_momentum, bowling_momentum, pressure_index, dot_pressure
+        Dict with batting_momentum, bowling_momentum, pressure_index, dot_pressure (3 features)
     """
     # Get recent deliveries
     recent = deliveries[-lookback:] if len(deliveries) >= lookback else deliveries
@@ -470,7 +528,7 @@ def compute_dynamics(
             'batting_momentum': [0.0],
             'bowling_momentum': [0.0],
             'pressure_index': [0.0],
-            'dot_pressure': [0.0, 0.0]
+            'dot_pressure': [0.0, 0.0, 1.0]  # No wicket yet = max "balls since"
         }
 
     # Calculate recent run rate
@@ -534,13 +592,24 @@ def compute_dynamics(
             break
         balls_since_boundary += 1
 
+    # Balls since last wicket (bowler momentum indicator - R4 feedback loop)
+    # After taking a wicket, bowlers often have increased confidence
+    balls_since_wicket = len(deliveries)  # Default: no wicket yet
+    for i, d in enumerate(deliveries):
+        if 'wickets' in d:
+            balls_since_wicket = len(deliveries) - i - 1
+
+    # Normalize: 0 = just fell, 1 = 30+ balls since wicket (partnership established)
+    balls_since_wicket_norm = min(balls_since_wicket / 30.0, 1.0)
+
     return {
         'batting_momentum': [batting_momentum],
         'bowling_momentum': [bowling_momentum],
         'pressure_index': [min(pressure, 1.0)],
         'dot_pressure': [
             min(consecutive_dots / 6.0, 1.0),
-            min(balls_since_boundary / 12.0, 1.0)
+            min(balls_since_boundary / 12.0, 1.0),
+            balls_since_wicket_norm  # NEW: bowler momentum indicator
         ]
     }
 
@@ -553,17 +622,21 @@ def compute_ball_features(delivery: Dict) -> List[float]:
         delivery: Single delivery dict with _over and _ball_in_over added
 
     Returns:
-        List of 17 features:
+        List of 18 features:
         [runs/6, is_wicket, over/20, ball_in_over/6, is_boundary,
          is_wide, is_noball, is_bye, is_legbye,
          wicket_bowled, wicket_caught, wicket_lbw, wicket_run_out, wicket_stumped, wicket_other,
-         striker_run_out, nonstriker_run_out]
+         striker_run_out, nonstriker_run_out, bowling_end]
     """
     runs = delivery['runs']['total']
     is_wicket = 1.0 if 'wickets' in delivery else 0.0
     over = delivery.get('_over', 0)
     ball_in_over = delivery.get('_ball_in_over', 0)
     is_boundary = 1.0 if delivery['runs']['batter'] in [4, 6] else 0.0
+
+    # Bowling end: which end of the pitch (alternates by over)
+    # This captures end-specific patterns (footmarks, pitch wear)
+    bowling_end = float(over % 2)
 
     # Extract extras information
     extras = delivery.get('extras', {})
@@ -636,14 +709,15 @@ def compute_ball_features(delivery: Dict) -> List[float]:
         wicket_run_out,       # run out dismissal (any)
         wicket_stumped,       # stumped dismissal
         wicket_other,         # other dismissal types
-        striker_run_out,      # NEW: striker was run out
-        nonstriker_run_out    # NEW: non-striker was run out
+        striker_run_out,      # striker was run out
+        nonstriker_run_out,   # non-striker was run out
+        bowling_end           # which end of pitch (0 or 1)
     ]
 
 
 # Number of features per ball node (for validation)
-# 9 original + 6 wicket type one-hot + 2 run-out attribution = 17 features
-BALL_FEATURE_DIM = 17
+# 9 original + 6 wicket type one-hot + 2 run-out attribution + 1 bowling_end = 18 features
+BALL_FEATURE_DIM = 18
 
 
 def outcome_to_class(delivery: Dict) -> int:

@@ -414,31 +414,31 @@ class NodeEncoderDict(nn.Module):
 
         # Feature encoders (one per feature node type)
         # Feature dimensions:
-        # - phase_state: 5 (is_powerplay, is_middle, is_death, over_progress, is_first_ball)
+        # - phase_state: 6 (is_powerplay, is_middle, is_death, over_progress, is_first_ball, is_super_over)
         # - striker_state: 8 (runs, balls, sr, dots_pct, is_set, boundaries, is_debut_ball, balls_since_on_strike)
-        # - nonstriker_state: 7 (runs, balls, sr, dots_pct, is_set, boundaries, is_debut_ball)
+        # - nonstriker_state: 8 (Z2 symmetric with striker: runs, balls, sr, dots_pct, is_set, boundaries, is_debut_ball, balls_since_as_nonstriker)
         self.feature_encoders = nn.ModuleDict({
-            'score_state': FeatureEncoder(4, hidden_dim, dropout),
+            'score_state': FeatureEncoder(5, hidden_dim, dropout),  # +1 for is_womens_cricket
             'chase_state': FeatureEncoder(7, hidden_dim, dropout),  # Enhanced: runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
-            'phase_state': FeatureEncoder(5, hidden_dim, dropout),  # +1 for is_first_ball
+            'phase_state': FeatureEncoder(6, hidden_dim, dropout),  # +1 for is_first_ball, +1 for is_super_over
             'time_pressure': FeatureEncoder(3, hidden_dim, dropout),
             'wicket_buffer': FeatureEncoder(2, hidden_dim, dropout),
             'striker_state': FeatureEncoder(8, hidden_dim, dropout),  # +1 is_debut_ball, +1 balls_since_on_strike
-            'nonstriker_state': FeatureEncoder(7, hidden_dim, dropout),  # +1 for is_debut_ball
+            'nonstriker_state': FeatureEncoder(8, hidden_dim, dropout),  # Z2 symmetric: +1 balls_since_as_nonstriker
             'bowler_state': FeatureEncoder(6, hidden_dim, dropout),
             'partnership': FeatureEncoder(4, hidden_dim, dropout),
             'batting_momentum': FeatureEncoder(1, hidden_dim, dropout),
             'bowling_momentum': FeatureEncoder(1, hidden_dim, dropout),
             'pressure_index': FeatureEncoder(1, hidden_dim, dropout),
-            'dot_pressure': FeatureEncoder(2, hidden_dim, dropout),
+            'dot_pressure': FeatureEncoder(3, hidden_dim, dropout),  # +1 for balls_since_wicket
         })
 
-        # Ball encoder (17 features: runs, is_wicket, over, ball_in_over, is_boundary,
+        # Ball encoder (18 features: runs, is_wicket, over, ball_in_over, is_boundary,
         # is_wide, is_noball, is_bye, is_legbye,
         # wicket_bowled, wicket_caught, wicket_lbw, wicket_run_out, wicket_stumped, wicket_other,
-        # striker_run_out, nonstriker_run_out)
+        # striker_run_out, nonstriker_run_out, bowling_end)
         self.ball_encoder = BallEncoder(
-            num_players, player_embed_dim, 17, hidden_dim, dropout
+            num_players, player_embed_dim, 18, hidden_dim, dropout
         )
 
         # Query encoder

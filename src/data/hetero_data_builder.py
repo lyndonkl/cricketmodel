@@ -56,6 +56,13 @@ def create_hetero_data(
     innings = match_data['innings'][innings_idx]
     innings_num = innings_idx + 1
 
+    # Extract super over flag (tie-breaker has unique dynamics)
+    is_super_over = innings.get('super_over', False)
+
+    # Extract gender for women's cricket indicator
+    gender = info.get('gender', 'male')
+    is_womens = gender == 'female'
+
     # Flatten deliveries
     all_deliveries = prepare_deliveries(innings)
 
@@ -119,16 +126,16 @@ def create_hetero_data(
     # 2. STATE NODES
     # =========================================================================
 
-    # Score state
-    score_features = compute_score_state(history, innings_num)
+    # Score state (includes women's cricket indicator)
+    score_features = compute_score_state(history, innings_num, is_womens)
     data['score_state'].x = torch.tensor([score_features], dtype=torch.float)
 
     # Chase state
     chase_features = compute_chase_state(history, target_score, innings_num)
     data['chase_state'].x = torch.tensor([chase_features], dtype=torch.float)
 
-    # Phase state
-    phase_features = compute_phase_state(total_balls)
+    # Phase state (includes super over flag)
+    phase_features = compute_phase_state(total_balls, is_super_over)
     data['phase_state'].x = torch.tensor([phase_features], dtype=torch.float)
 
     # Time pressure
@@ -358,24 +365,24 @@ def get_node_feature_dims() -> Dict[str, int]:
         'striker_identity': 1,
         'nonstriker_identity': 1,
         'bowler_identity': 1,
-        # State nodes (phase_state has 5 features including is_first_ball cold start indicator)
-        'score_state': 4,
+        # State nodes
+        'score_state': 5,  # runs, wickets, balls, innings_indicator, is_womens_cricket
         'chase_state': 7,  # Enhanced with RRR details: runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
-        'phase_state': 5,  # +1 for is_first_ball cold start indicator
+        'phase_state': 6,  # is_powerplay, is_middle, is_death, over_progress, is_first_ball, is_super_over
         'time_pressure': 3,
         'wicket_buffer': 2,
         # Actor state nodes
         # striker_state: 8 features (7 base + balls_since_on_strike for cold restart)
-        # nonstriker_state: 7 features (base batsman features)
+        # nonstriker_state: 8 features (7 base + balls_since_as_nonstriker for Z2 symmetry)
         'striker_state': 8,  # +1 for is_debut_ball, +1 for balls_since_on_strike
-        'nonstriker_state': 7,  # +1 for is_debut_ball cold start indicator
+        'nonstriker_state': 8,  # Z2 symmetric with striker: +1 for balls_since_as_nonstriker
         'bowler_state': 6,
         'partnership': 4,
         # Dynamics nodes
         'batting_momentum': 1,
         'bowling_momentum': 1,
         'pressure_index': 1,
-        'dot_pressure': 2,
+        'dot_pressure': 3,  # consecutive_dots, balls_since_boundary, balls_since_wicket
         # Ball nodes (17 features + embeddings added in model):
         # - 5 basic: runs, is_wicket, over, ball_in_over, is_boundary
         # - 4 extras: is_wide, is_noball, is_bye, is_legbye

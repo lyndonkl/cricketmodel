@@ -113,9 +113,9 @@ These nodes capture the current match situation. They change as the match progre
 \toprule
 Node Name & Features & What it Represents \\
 \midrule
-\texttt{score\_state} & 4 features & Current score, wickets, balls, innings \\
+\texttt{score\_state} & 5 features & Current score, wickets, balls, innings, \textbf{is\_womens\_cricket} \\
 \texttt{chase\_state} & 7 features & Runs needed, RRR, is\_chase, RRR normalized, chase difficulty, balls remaining, wickets remaining (2nd innings) \\
-\texttt{phase\_state} & 5 features & Powerplay/middle/death phase, over progress, \textbf{is\_first\_ball} cold-start indicator \\
+\texttt{phase\_state} & 6 features & Powerplay/middle/death phase, over progress, \textbf{is\_first\_ball}, \textbf{is\_super\_over} \\
 \texttt{time\_pressure} & 3 features & Balls remaining, urgency, is\_final\_over \\
 \texttt{wicket\_buffer} & 2 features & Wickets in hand, is\_tail indicator \\
 \bottomrule
@@ -140,7 +140,7 @@ Node Name & Features & What it Represents \\
 \texttt{striker\_identity} & Hierarchical embedding & WHO is on strike (player$\to$team$\to$role fallback for unknown players) \\
 \texttt{striker\_state} & 8 features & HOW they're batting: runs, balls, SR, dot\%, boundaries, set indicator, \textbf{is\_debut\_ball}, \textbf{balls\_since\_on\_strike} \\
 \texttt{nonstriker\_identity} & Hierarchical embedding & WHO is at the non-striker's end (with cold-start fallback) \\
-\texttt{nonstriker\_state} & 7 features & HOW the non-striker has been batting (includes is\_debut\_ball) \\
+\texttt{nonstriker\_state} & 8 features & Z2 symmetric with striker: runs, balls, SR, dot\%, boundaries, set, is\_debut\_ball, \textbf{balls\_since\_as\_nonstriker} \\
 \texttt{bowler\_identity} & Hierarchical embedding & WHO is bowling (with cold-start fallback) \\
 \texttt{bowler\_state} & 6 features & HOW they're bowling: overs, runs, wickets, economy, dot\% \\
 \texttt{partnership} & 4 features & Partnership runs, balls, run rate, boundaries \\
@@ -153,7 +153,7 @@ Node Name & Features & What it Represents \\
 
 \textbf{Note:} \texttt{is\_debut\_ball} in striker/nonstriker state is 1.0 if this is the player's first ball of the match (cold-start handling).
 
-\textbf{Note:} \texttt{balls\_since\_on\_strike} in striker\_state captures the ``cold restart'' effect: 0.0 if the striker faced the previous ball, increasing toward 1.0 if they've been at non-striker end for 12+ balls (2 overs). This helps the model understand that a batsman coming back on strike after a period at non-striker is less ``in rhythm'' than one continuously facing.
+\textbf{Z2 Symmetry:} Striker and non-striker states are now symmetric (both 8 features). The \texttt{balls\_since\_on\_strike} and \texttt{balls\_since\_as\_nonstriker} features capture the ``cold restart'' effect symmetrically: a batsman who hasn't faced for 12+ balls may be less ``in rhythm''.
 
 \subsection{Category 4: Dynamics (4 nodes)}
 
@@ -165,10 +165,10 @@ These nodes capture recent momentum and pressure patterns:
 \toprule
 Node Name & Features & What it Represents \\
 \midrule
-\texttt{batting\_momentum} & 4 features & Recent scoring rate, boundary\%, acceleration \\
-\texttt{bowling\_momentum} & 4 features & Recent economy, dot\%, control \\
-\texttt{pressure} & 3 features & Required rate vs actual rate, mounting pressure \\
-\texttt{dot\_pressure} & 3 features & Consecutive dots, dot ball spiral indicator \\
+\texttt{batting\_momentum} & 1 feature & Recent scoring rate vs expectation \\
+\texttt{bowling\_momentum} & 1 feature & Recent economy vs expectation \\
+\texttt{pressure\_index} & 1 feature & Combined RRR, wicket, and time pressure \\
+\texttt{dot\_pressure} & 3 features & Consecutive dots, balls since boundary, \textbf{balls\_since\_wicket} \\
 \bottomrule
 \end{tabular}
 \caption{Dynamics category: 4 nodes representing momentum and pressure}
@@ -186,17 +186,19 @@ Each historical ball in the innings becomes a node:
 \toprule
 Features & Description \\
 \midrule
-17 numeric features & runs, is\_wicket, over, ball\_in\_over, is\_boundary, extras (wide, noball, bye, legbye), wicket types (bowled, caught, lbw, run\_out, stumped, other), \textbf{striker\_run\_out}, \textbf{nonstriker\_run\_out} \\
+18 numeric features & runs, is\_wicket, over, ball\_in\_over, is\_boundary, extras (wide, noball, bye, legbye), wicket types (bowled, caught, lbw, run\_out, stumped, other), striker\_run\_out, nonstriker\_run\_out, \textbf{bowling\_end} \\
 64-dim bowler ID & Embedding of who bowled this ball \\
 64-dim batsman ID & Embedding of who faced this ball \\
 \bottomrule
 \end{tabular}
-\caption{Ball nodes: one per historical delivery (now with run-out attribution)}
+\caption{Ball nodes: one per historical delivery (with run-out attribution and bowling end)}
 \end{table}
 
 \textbf{Run-out attribution:} The striker\_run\_out and nonstriker\_run\_out features disambiguate WHO was run out, enabling better risk assessment.
 
-\textbf{Total per ball:} 17 + 64 + 64 = 145 features $\to$ projected to 128-dim.
+\textbf{Bowling end:} The bowling\_end feature (0 or 1) captures which end of the pitch the bowler is bowling from, as this can affect pitch behavior (footmarks, wear patterns).
+
+\textbf{Total per ball:} 18 + 64 + 64 = 146 features $\to$ projected to 128-dim.
 
 \subsection{Category 6: Query (1 node)}
 
@@ -755,7 +757,7 @@ Query & 2 & Prediction aggregation + dynamics drive \\
     \node[stage, fill=green!10] (s2) at (0, 2.5) {
         \textbf{Stage 2: Message Passing (with Enhanced FiLM Modulation)}\\[0.2cm]
         HeteroConv layers ($\times$3) with \textbf{FiLM conditioning}\\
-        FiLM($\gamma$, $\beta$) from: phase\_state + chase\_state + wicket\_buffer (14 features)
+        FiLM($\gamma$, $\beta$) from: phase\_state + chase\_state + wicket\_buffer (15 features)
     };
 
     % Stage 3
@@ -946,16 +948,18 @@ The V2 architecture represents cricket prediction as a heterogeneous graph where
 
 \begin{itemize}
     \item \textbf{21 context nodes} capture venue, teams, match state, players, and dynamics
-    \item \textbf{N ball nodes} capture full innings history (17 features including run-out attribution)
+    \item \textbf{N ball nodes} capture full innings history (18 features including run-out attribution, bowling end)
     \item \textbf{20 edge types} encode cricket-specific relationships (now includes same\_over)
     \item \textbf{Multi-scale temporal edges} capture patterns at different time scales (6/24/25+ balls)
     \item \textbf{Temporal decay edge attributes} for same\_bowler (4-over) and same\_batsman (10-over)
     \item \textbf{Causal same\_over edges} with \textbf{ball-in-over position features} via TransformerConv
     \item \textbf{Causal same\_matchup edges} prevent train-test distribution shift
-    \item \textbf{balls\_since\_on\_strike} feature captures striker ``cold restart'' after non-striker period
+    \item \textbf{Z2 symmetric striker/nonstriker states} with matching \texttt{balls\_since\_on\_strike} / \texttt{balls\_since\_as\_nonstriker}
     \item \textbf{Hierarchical player embeddings} handle cold-start (unknown players)
-    \item \textbf{Enhanced FiLM modulation} conditioned on phase + chase + resource state (14 features)
+    \item \textbf{Enhanced FiLM modulation} conditioned on phase + chase + resource state (15 features)
     \item \textbf{Enhanced chase\_state} with 7 features (RRR, difficulty, resources)
+    \item \textbf{is\_super\_over} and \textbf{is\_womens\_cricket} features for match context
+    \item \textbf{balls\_since\_wicket} in dot\_pressure captures bowler momentum (R4 feedback loop)
     \item \textbf{GATv2Conv for informs edges} allows attention-weighted momentum aggregation
     \item \textbf{Innings-conditional prediction heads} separate 1st/2nd innings logic (7-dim chase injection)
     \item \textbf{Hybrid readout} combines matchup interaction with global context
