@@ -47,10 +47,14 @@ class ModelConfig:
     use_hybrid_readout: bool = True  # Use matchup + query hybrid readout
     use_innings_conditional: bool = True  # Use separate heads for 1st/2nd innings
     use_hierarchical_player: bool = True  # Use hierarchical player embeddings
-    use_phase_modulation: bool = True  # Use FiLM phase-conditional message passing
+    use_phase_modulation: bool = True  # Use FiLM situation-conditional message passing
 
-    # Phase conditioning dimension (matches phase_state features)
-    phase_dim: int = 5
+    # Conditioning dimensions for FiLM modulation
+    # Enhanced conditioning: phase(5) + chase(7) + wicket_buffer(2) = 14
+    phase_dim: int = 5        # phase_state features
+    chase_dim: int = 7        # enhanced chase_state features
+    resource_dim: int = 2     # wicket_buffer features
+    condition_dim: int = 14   # Total: phase + chase + resource
 
 
 class CricketHeteroGNN(nn.Module):
@@ -495,9 +499,9 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
             nn.Linear(config.hidden_dim // 2, config.num_classes),
         )
 
-        # Second innings head (with chase state injection)
-        # Chase state has 3 features: runs_required, balls_remaining, required_run_rate
-        chase_state_dim = 3
+        # Second innings head (with enhanced chase state injection)
+        # Chase state has 7 features: runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
+        chase_state_dim = 7
         self.second_innings_head = nn.Sequential(
             nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
             nn.LayerNorm(config.hidden_dim),
@@ -618,12 +622,12 @@ class CricketHeteroGNNFull(nn.Module):
             use_hierarchical_player=config.use_hierarchical_player,
         )
 
-        # === Phase-Modulated Message Passing ===
+        # === Phase-Modulated Message Passing with Enhanced Conditioning ===
         if config.use_phase_modulation:
             self.conv_stack = build_phase_modulated_conv_stack(
                 num_layers=config.num_layers,
                 hidden_dim=config.hidden_dim,
-                phase_dim=config.phase_dim,
+                condition_dim=config.condition_dim,  # phase + chase + resource
                 num_heads=config.num_heads,
                 dropout=config.dropout,
             )
@@ -671,8 +675,9 @@ class CricketHeteroGNNFull(nn.Module):
                 nn.Linear(config.hidden_dim // 2, config.num_classes),
             )
 
-            # Second innings head (with chase state injection)
-            chase_state_dim = 3
+            # Second innings head (with enhanced chase state injection)
+            # Chase state has 7 features: runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
+            chase_state_dim = 7
             self.second_innings_head = nn.Sequential(
                 nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
                 nn.LayerNorm(config.hidden_dim),
@@ -721,10 +726,15 @@ class CricketHeteroGNNFull(nn.Module):
                 edge_attr_dict[edge_type] = data[edge_type].edge_attr
 
         if self.config.use_phase_modulation:
-            phase_condition = data['phase_state'].x
+            # Construct enhanced conditioning signal: phase + chase + resource
+            phase_state = data['phase_state'].x      # [batch, 5]
+            chase_state = data['chase_state'].x      # [batch, 7]
+            wicket_buffer = data['wicket_buffer'].x  # [batch, 2]
+            condition = torch.cat([phase_state, chase_state, wicket_buffer], dim=-1)  # [batch, 14]
+
             for conv_block in self.conv_stack:
                 x_dict = conv_block(
-                    x_dict, edge_index_dict, phase_condition,
+                    x_dict, edge_index_dict, condition,
                     edge_attr_dict if edge_attr_dict else None
                 )
         else:

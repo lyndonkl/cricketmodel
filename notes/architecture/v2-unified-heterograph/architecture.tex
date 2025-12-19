@@ -114,7 +114,7 @@ These nodes capture the current match situation. They change as the match progre
 Node Name & Features & What it Represents \\
 \midrule
 \texttt{score\_state} & 4 features & Current score, wickets, balls, innings \\
-\texttt{chase\_state} & 3 features & Target, required rate, is\_chase (2nd innings only) \\
+\texttt{chase\_state} & 7 features & Runs needed, RRR, is\_chase, RRR normalized, chase difficulty, balls remaining, wickets remaining (2nd innings) \\
 \texttt{phase\_state} & 5 features & Powerplay/middle/death phase, over progress, \textbf{is\_first\_ball} cold-start indicator \\
 \texttt{time\_pressure} & 3 features & Balls remaining, urgency, is\_final\_over \\
 \texttt{wicket\_buffer} & 2 features & Wickets in hand, is\_tail indicator \\
@@ -373,8 +373,8 @@ These edges encode the \textbf{structure of ball-by-ball history}. This is where
 Cricket patterns occur at different time scales:
 \begin{itemize}
     \item \textbf{Within-over (1-6 balls):} Immediate pressure, bowler's current plan
-    \item \textbf{2-over window (7-18 balls):} Momentum shifts, scoring patterns
-    \item \textbf{Historical (19+ balls):} Phase patterns, earlier wickets' impact
+    \item \textbf{Spell window (7-24 balls):} 4-over spell momentum, bowler fatigue patterns
+    \item \textbf{Historical (25+ balls):} Phase patterns, earlier wickets' impact
 \end{itemize}
 
 We use \textbf{three separate edge types} for these scales:
@@ -386,8 +386,8 @@ We use \textbf{three separate edge types} for these scales:
 Edge Type & Connects & Neural Network \\
 \midrule
 \texttt{recent\_precedes} & Balls within 6 deliveries & TransformerConv (fast decay, attention to recency) \\
-\texttt{medium\_precedes} & Balls 7-18 apart & TransformerConv (medium decay) \\
-\texttt{distant\_precedes} & Balls 19+ apart (sparse) & SAGEConv (simple mean, sparse connections) \\
+\texttt{medium\_precedes} & Balls 7-24 apart & TransformerConv (spell-length window) \\
+\texttt{distant\_precedes} & Balls 25+ apart (sparse) & SAGEConv (simple mean, sparse connections) \\
 \bottomrule
 \end{tabular}
 \caption{Multi-scale temporal edges}
@@ -418,7 +418,7 @@ Edge Type & Connects & Neural Network \\
 
     % Labels
     \node[below=0.8cm of b3, align=center, font=\small, purple!70] {\texttt{recent\_precedes}\\(dense, within 6 balls)};
-    \node[above=0.5cm of b6, align=center, font=\small, blue!60] {\texttt{medium\_precedes}\\(7-18 balls apart)};
+    \node[above=0.5cm of b6, align=center, font=\small, blue!60] {\texttt{medium\_precedes}\\(7-24 balls, spell window)};
 \end{tikzpicture}
 \caption{Multi-scale temporal edges (distant not shown for clarity)}
 \end{figure}
@@ -753,9 +753,9 @@ Query & 2 & Prediction aggregation + dynamics drive \\
 
     % Stage 2
     \node[stage, fill=green!10] (s2) at (0, 2.5) {
-        \textbf{Stage 2: Message Passing (with Phase Modulation)}\\[0.2cm]
+        \textbf{Stage 2: Message Passing (with Enhanced FiLM Modulation)}\\[0.2cm]
         HeteroConv layers ($\times$3) with \textbf{FiLM conditioning}\\
-        Each layer: conv $\to$ FiLM($\gamma$, $\beta$ from phase\_state) $\to$ residual $\to$ LayerNorm
+        FiLM($\gamma$, $\beta$) from: phase\_state + chase\_state + wicket\_buffer (14 features)
     };
 
     % Stage 3
@@ -803,9 +803,9 @@ recent/medium\_precedes & TransformerConv & Edge features for temporal distance 
 distant\_precedes & SAGEConv & Simple mean for sparse history \\
 \textbf{same\_bowler/batsman} & \textbf{TransformerConv} & \textbf{Temporal decay edge features (4/10-over)} \\
 same\_matchup (causal) & GATv2Conv & Historical matchup outcomes \\
-\textbf{same\_over (CAUSAL)} & \textbf{GATv2Conv} & \textbf{Within-over context (older$\to$newer only)} \\
+\textbf{same\_over (CAUSAL)} & \textbf{TransformerConv} & \textbf{Ball-in-over position edge features} \\
 Cross-domain (faced/bowled/partnered) & GATv2Conv & Attention-weighted recency \\
-Dynamics (informs) & SAGEConv & Simple aggregation \\
+Dynamics (informs) & \textbf{GATv2Conv} & \textbf{Attention for important balls} \\
 Dynamics (drives) & GATv2Conv & Weight momentum vs pressure \\
 Query (attends) & GATv2Conv & Learn what matters for prediction \\
 \bottomrule
@@ -948,14 +948,16 @@ The V2 architecture represents cricket prediction as a heterogeneous graph where
     \item \textbf{21 context nodes} capture venue, teams, match state, players, and dynamics
     \item \textbf{N ball nodes} capture full innings history (17 features including run-out attribution)
     \item \textbf{20 edge types} encode cricket-specific relationships (now includes same\_over)
-    \item \textbf{Multi-scale temporal edges} capture patterns at different time scales
+    \item \textbf{Multi-scale temporal edges} capture patterns at different time scales (6/24/25+ balls)
     \item \textbf{Temporal decay edge attributes} for same\_bowler (4-over) and same\_batsman (10-over)
-    \item \textbf{Causal same\_over edges} capture within-over context (bowler plans, batsman reading)
+    \item \textbf{Causal same\_over edges} with \textbf{ball-in-over position features} via TransformerConv
     \item \textbf{Causal same\_matchup edges} prevent train-test distribution shift
     \item \textbf{balls\_since\_on\_strike} feature captures striker ``cold restart'' after non-striker period
     \item \textbf{Hierarchical player embeddings} handle cold-start (unknown players)
-    \item \textbf{FiLM phase modulation} enables phase-conditional message passing
-    \item \textbf{Innings-conditional prediction heads} separate 1st/2nd innings logic
+    \item \textbf{Enhanced FiLM modulation} conditioned on phase + chase + resource state (14 features)
+    \item \textbf{Enhanced chase\_state} with 7 features (RRR, difficulty, resources)
+    \item \textbf{GATv2Conv for informs edges} allows attention-weighted momentum aggregation
+    \item \textbf{Innings-conditional prediction heads} separate 1st/2nd innings logic (7-dim chase injection)
     \item \textbf{Hybrid readout} combines matchup interaction with global context
     \item \textbf{Focal loss} handles class imbalance
 \end{itemize}

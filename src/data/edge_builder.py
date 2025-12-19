@@ -190,8 +190,9 @@ def build_intra_layer_edges() -> Dict[EdgeType, torch.Tensor]:
 
 def build_same_over_edges(
     num_balls: int,
-    ball_overs: List[int]
-) -> Dict[EdgeType, torch.Tensor]:
+    ball_overs: List[int],
+    ball_in_over_positions: Optional[List[int]] = None
+) -> Tuple[Dict[EdgeType, torch.Tensor], Dict[EdgeType, torch.Tensor]]:
     """
     Build CAUSAL edges connecting balls within the same over.
 
@@ -210,18 +211,26 @@ def build_same_over_edges(
     future-to-past information flow, but at inference only historical balls
     exist. Causal edges ensure consistent behavior.
 
+    Ball-in-over position is included as edge attribute to help the model
+    learn position-specific patterns (ball 1 vs ball 6 have different dynamics).
+
     Args:
         num_balls: Number of historical balls
         ball_overs: List of over numbers for each ball (0-indexed)
+        ball_in_over_positions: List of ball positions within over (0-5) for each ball
 
     Returns:
-        Dict mapping edge type to edge_index tensor [2, num_edges]
+        Tuple of:
+        - Dict mapping edge type to edge_index tensor [2, num_edges]
+        - Dict mapping edge type to edge_attr tensor [num_edges, 1]
     """
     edges = {}
+    edge_attrs = {}
 
     if num_balls == 0:
         edges[('ball', 'same_over', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
-        return edges
+        edge_attrs[('ball', 'same_over', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
+        return edges, edge_attrs
 
     # Group balls by over
     over_to_balls = defaultdict(list)
@@ -230,6 +239,7 @@ def build_same_over_edges(
 
     same_over_src = []
     same_over_tgt = []
+    same_over_position = []  # Target ball's position in over (normalized)
 
     for balls in over_to_balls.values():
         if len(balls) > 1:
@@ -241,15 +251,26 @@ def build_same_over_edges(
                     # Only older -> newer direction (causal)
                     same_over_src.append(sorted_balls[i])
                     same_over_tgt.append(sorted_balls[j])
+                    # Add target ball's position in over as edge attribute
+                    if ball_in_over_positions is not None:
+                        tgt_position = ball_in_over_positions[sorted_balls[j]] / 5.0  # Normalize 0-5 to 0-1
+                    else:
+                        # Fallback: estimate position from ball index within over
+                        tgt_position = (j % 6) / 5.0
+                    same_over_position.append(tgt_position)
 
     if same_over_src:
         edges[('ball', 'same_over', 'ball')] = torch.tensor(
             [same_over_src, same_over_tgt], dtype=torch.long
         )
+        edge_attrs[('ball', 'same_over', 'ball')] = torch.tensor(
+            [[pos] for pos in same_over_position], dtype=torch.float
+        )
     else:
         edges[('ball', 'same_over', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edge_attrs[('ball', 'same_over', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
 
-    return edges
+    return edges, edge_attrs
 
 
 def build_temporal_edges(
@@ -311,8 +332,8 @@ def build_temporal_edges(
     # 1. Multi-scale precedes edges
     # Each scale captures different temporal patterns in cricket:
     # - Recent (6 balls): Current over context, immediate pressure
-    # - Medium (12 balls): 2-over momentum window
-    # - Distant (18+ balls): Historical patterns, phase transitions
+    # - Medium (24 balls): 4-over spell window (typical bowler spell length)
+    # - Distant (24+ balls): Historical patterns, phase transitions
 
     recent_src, recent_tgt, recent_dist = [], [], []
     medium_src, medium_tgt, medium_dist = [], [], []
@@ -327,17 +348,17 @@ def build_temporal_edges(
                 recent_src.append(i)
                 recent_tgt.append(j)
                 recent_dist.append(gap / 6.0)
-            elif gap <= 18:
-                # Medium: 2-over momentum window
+            elif gap <= 24:
+                # Medium: 4-over spell window (matches typical spell length)
                 medium_src.append(i)
                 medium_tgt.append(j)
-                medium_dist.append((gap - 6) / 12.0)
+                medium_dist.append((gap - 6) / 18.0)  # Normalize to 18-ball window
             else:
                 # Distant: sparse connections every 6 balls for efficiency
                 if gap % 6 == 0:
                     distant_src.append(i)
                     distant_tgt.append(j)
-                    distant_dist.append((gap - 18) / max_temporal_distance)
+                    distant_dist.append((gap - 24) / max_temporal_distance)
 
     # Recent precedes
     if recent_src:
@@ -469,11 +490,29 @@ def build_temporal_edges(
 
     # 5. Same over edges: connect balls within the same over
     # Over boundaries are significant discontinuities (new bowler, batsmen swap)
+    # Now includes ball-in-over position as edge attribute
     if ball_overs is not None:
-        same_over_edges = build_same_over_edges(num_balls, ball_overs)
+        # Extract ball-in-over positions from delivery data if available
+        # ball_overs contains over numbers, we derive positions as ball_idx % 6 within each over
+        ball_in_over_positions = None
+        # We need to track position within each over
+        over_ball_counts = {}
+        ball_positions = []
+        for ball_idx, over_num in enumerate(ball_overs):
+            if over_num not in over_ball_counts:
+                over_ball_counts[over_num] = 0
+            ball_positions.append(over_ball_counts[over_num])
+            over_ball_counts[over_num] += 1
+        ball_in_over_positions = ball_positions
+
+        same_over_edges, same_over_attrs = build_same_over_edges(
+            num_balls, ball_overs, ball_in_over_positions
+        )
         edges.update(same_over_edges)
+        edge_attrs.update(same_over_attrs)
     else:
         edges[('ball', 'same_over', 'ball')] = torch.zeros((2, 0), dtype=torch.long)
+        edge_attrs[('ball', 'same_over', 'ball')] = torch.zeros((0, 1), dtype=torch.float)
 
     return edges, edge_attrs
 

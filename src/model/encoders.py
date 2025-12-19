@@ -419,7 +419,7 @@ class NodeEncoderDict(nn.Module):
         # - nonstriker_state: 7 (runs, balls, sr, dots_pct, is_set, boundaries, is_debut_ball)
         self.feature_encoders = nn.ModuleDict({
             'score_state': FeatureEncoder(4, hidden_dim, dropout),
-            'chase_state': FeatureEncoder(3, hidden_dim, dropout),
+            'chase_state': FeatureEncoder(7, hidden_dim, dropout),  # Enhanced: runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
             'phase_state': FeatureEncoder(5, hidden_dim, dropout),  # +1 for is_first_ball
             'time_pressure': FeatureEncoder(3, hidden_dim, dropout),
             'wicket_buffer': FeatureEncoder(2, hidden_dim, dropout),

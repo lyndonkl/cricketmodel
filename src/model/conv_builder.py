@@ -27,10 +27,10 @@ class FiLMLayer(nn.Module):
 
     where gamma and beta are learned functions of the conditioning signal.
 
-    In cricket context, this allows phase-specific behavior:
-    - Powerplay: More aggressive/boundary-focused modulation
-    - Middle overs: More rotation/accumulation-focused
-    - Death overs: More risk/reward focused
+    In cricket context, this allows situation-specific behavior:
+    - Phase (powerplay/middle/death): Tactical mode adaptation
+    - Chase pressure (RRR): Risk tolerance modulation
+    - Resource state (wickets/balls): Strategic urgency
 
     Reference: Perez et al., "FiLM: Visual Reasoning with a General
     Conditioning Layer", AAAI 2018
@@ -39,7 +39,7 @@ class FiLMLayer(nn.Module):
     def __init__(self, condition_dim: int, hidden_dim: int):
         """
         Args:
-            condition_dim: Dimension of conditioning signal (e.g., phase features)
+            condition_dim: Dimension of conditioning signal (e.g., phase + chase + resource)
             hidden_dim: Dimension of features to modulate
         """
         super().__init__()
@@ -218,14 +218,15 @@ def build_hetero_conv(
         elif rel == 'same_over':
             # Within-over structural edges: tight local coherence
             # Same bowler rhythm, batsmen haven't swapped, consistent field
-            # Use attention to weight ball positions within over
-            convs[edge_type] = GATv2Conv(
+            # Use TransformerConv with ball-in-over position as edge attribute
+            # Position in over is semantically meaningful (ball 1 vs ball 6 differ)
+            convs[edge_type] = TransformerConv(
                 hidden_dim,
                 head_dim,
                 heads=num_heads,
-                add_self_loops=False,
                 concat=True,
                 dropout=dropout,
+                edge_dim=1,  # Ball-in-over position
             )
 
         elif rel in ['faced_by', 'bowled_by', 'partnered_by']:
@@ -242,12 +243,16 @@ def build_hetero_conv(
             )
 
         elif rel == 'informs':
-            # Dynamics aggregation: simple mean is appropriate
-            # as all recent balls contribute equally to momentum/pressure
-            convs[edge_type] = SAGEConv(
+            # Dynamics aggregation: attention-weighted for importance
+            # Boundaries and wickets contribute more to momentum/pressure than dots
+            # GATv2Conv allows learning which recent balls matter most
+            convs[edge_type] = GATv2Conv(
                 hidden_dim,
-                hidden_dim,
-                aggr='mean',
+                head_dim,
+                heads=num_heads,
+                add_self_loops=False,
+                concat=True,
+                dropout=dropout,
             )
 
         elif rel == 'attends':
@@ -290,16 +295,19 @@ def build_hetero_conv(
 
 class PhaseModulatedConvBlock(nn.Module):
     """
-    Heterogeneous convolution block with FiLM phase modulation.
+    Heterogeneous convolution block with enhanced FiLM modulation.
 
     Wraps a standard HeteroConvBlock and applies FiLM modulation
     to all node representations after message passing. The modulation
-    is conditioned on the current game phase.
+    is conditioned on the current game situation including:
+    - Phase state (powerplay/middle/death)
+    - Chase state (RRR, difficulty - 2nd innings only)
+    - Resource state (wickets/balls remaining)
 
-    This allows the model to learn phase-specific message passing patterns:
+    This allows the model to learn situation-specific message passing patterns:
     - Different attention patterns during powerplay vs death overs
-    - Phase-appropriate weighting of historical context
-    - Adaptive aggregation based on game situation
+    - Chase-pressure-appropriate weighting of historical context
+    - Adaptive aggregation based on game resources
 
     Structure:
     1. HeteroConv message passing
@@ -312,7 +320,7 @@ class PhaseModulatedConvBlock(nn.Module):
     def __init__(
         self,
         hidden_dim: int,
-        phase_dim: int = 5,  # phase_state has 5 features
+        condition_dim: int = 14,  # phase(5) + chase(7) + wicket_buffer(2) = 14
         num_heads: int = 4,
         dropout: float = 0.1,
         edge_types: Optional[List[EdgeType]] = None,
@@ -321,7 +329,7 @@ class PhaseModulatedConvBlock(nn.Module):
         """
         Args:
             hidden_dim: Hidden dimension
-            phase_dim: Dimension of phase conditioning signal
+            condition_dim: Total dimension of conditioning signals (phase + chase + resource)
             num_heads: Number of attention heads
             dropout: Dropout rate
             edge_types: List of edge types for convolution
@@ -349,9 +357,9 @@ class PhaseModulatedConvBlock(nn.Module):
             for node_type in node_types
         })
 
-        # FiLM modulation per node type
+        # FiLM modulation per node type with enhanced conditioning
         self.film_layers = nn.ModuleDict({
-            node_type: FiLMLayer(phase_dim, hidden_dim)
+            node_type: FiLMLayer(condition_dim, hidden_dim)
             for node_type in node_types
         })
 
@@ -361,16 +369,17 @@ class PhaseModulatedConvBlock(nn.Module):
         self,
         x_dict: Dict[str, 'torch.Tensor'],
         edge_index_dict: Dict[EdgeType, 'torch.Tensor'],
-        phase_condition: 'torch.Tensor',
+        condition: 'torch.Tensor',
         edge_attr_dict: Optional[Dict[EdgeType, 'torch.Tensor']] = None,
     ) -> Dict[str, 'torch.Tensor']:
         """
-        Forward pass with phase-conditioned FiLM modulation.
+        Forward pass with enhanced situation-conditioned FiLM modulation.
 
         Args:
             x_dict: Dict of node features {node_type: [num_nodes, hidden_dim]}
             edge_index_dict: Dict of edge indices {edge_type: [2, num_edges]}
-            phase_condition: Phase features [1, phase_dim] or [batch, phase_dim]
+            condition: Concatenated situation features [1, condition_dim] or [batch, condition_dim]
+                       (phase_state + chase_state + wicket_buffer)
             edge_attr_dict: Optional dict of edge attributes
 
         Returns:
@@ -397,7 +406,7 @@ class PhaseModulatedConvBlock(nn.Module):
 
             # FiLM modulation
             if node_type in self.film_layers:
-                h = self.film_layers[node_type](h, phase_condition)
+                h = self.film_layers[node_type](h, condition)
 
             # Dropout
             h = self.dropout(h)
@@ -541,20 +550,25 @@ def build_conv_stack(
 def build_phase_modulated_conv_stack(
     num_layers: int,
     hidden_dim: int,
-    phase_dim: int = 5,
+    condition_dim: int = 14,  # phase(5) + chase(7) + wicket_buffer(2) = 14
     num_heads: int = 4,
     dropout: float = 0.1,
 ) -> nn.ModuleList:
     """
-    Build a stack of PhaseModulatedConvBlocks.
+    Build a stack of PhaseModulatedConvBlocks with enhanced conditioning.
 
-    Each layer applies FiLM modulation conditioned on game phase,
-    allowing phase-specific message passing patterns.
+    Each layer applies FiLM modulation conditioned on game situation:
+    - Phase state (5 features): powerplay/middle/death, over_progress, is_first_ball
+    - Chase state (7 features): runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
+    - Wicket buffer (2 features): wickets_remaining, is_tail
+
+    This allows situation-specific message passing patterns for
+    different game states.
 
     Args:
         num_layers: Number of message passing layers
         hidden_dim: Hidden dimension
-        phase_dim: Dimension of phase conditioning (default 5 for phase_state)
+        condition_dim: Total dimension of conditioning signals (default 14)
         num_heads: Number of attention heads
         dropout: Dropout rate
 
@@ -564,7 +578,7 @@ def build_phase_modulated_conv_stack(
     return nn.ModuleList([
         PhaseModulatedConvBlock(
             hidden_dim=hidden_dim,
-            phase_dim=phase_dim,
+            condition_dim=condition_dim,
             num_heads=num_heads,
             dropout=dropout,
         )

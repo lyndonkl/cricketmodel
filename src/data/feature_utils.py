@@ -74,28 +74,50 @@ def compute_chase_state(
     """
     Compute chase state features (2nd innings only).
 
+    Enhanced to include detailed RRR and chase difficulty features
+    for better 2nd innings modeling.
+
     Args:
         deliveries: List of deliveries so far
         target: Target score (None for 1st innings)
         innings_num: 1 or 2
 
     Returns:
-        [runs_needed/250, required_rate/20, is_chase]
+        [runs_needed/250, required_rate/20, is_chase, rrr_normalized,
+         chase_difficulty, balls_remaining_norm, wickets_remaining_norm]
     """
     if innings_num == 1 or target is None:
-        return [0.0, 0.0, 0.0]  # Not a chase
+        return [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]  # Not a chase
 
     runs, wickets, balls = _count_runs_wickets(deliveries)
     runs_needed = max(target - runs, 0)
     balls_remaining = max(120 - balls, 1)  # Avoid division by zero
     overs_remaining = balls_remaining / 6.0
+    wickets_remaining = 10 - wickets
 
     required_rate = runs_needed / overs_remaining if overs_remaining > 0 else 0.0
 
+    # Chase difficulty: categorize based on RRR and resources
+    # comfortable (<6), gettable (6-8), challenging (8-10), difficult (10-12), improbable (>12)
+    if required_rate < 6:
+        chase_difficulty = 0.0  # comfortable
+    elif required_rate < 8:
+        chase_difficulty = 0.25  # gettable
+    elif required_rate < 10:
+        chase_difficulty = 0.5  # challenging
+    elif required_rate < 12:
+        chase_difficulty = 0.75  # difficult
+    else:
+        chase_difficulty = 1.0  # improbable
+
     return [
-        min(runs_needed / 250.0, 1.0),   # runs needed normalized
-        min(required_rate / 20.0, 1.0),   # RRR normalized (20 is extreme)
-        1.0                                # is_chase flag
+        min(runs_needed / 250.0, 1.0),       # runs needed normalized
+        min(required_rate / 20.0, 1.0),       # RRR normalized (20 is extreme)
+        1.0,                                   # is_chase flag
+        min(required_rate / 12.0, 1.0),       # RRR normalized to par (12 is very high)
+        chase_difficulty,                      # categorical difficulty
+        balls_remaining / 120.0,               # balls remaining normalized
+        wickets_remaining / 10.0,              # wickets remaining normalized
     ]
 
 

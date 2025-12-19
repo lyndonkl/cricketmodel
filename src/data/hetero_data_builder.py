@@ -360,7 +360,7 @@ def get_node_feature_dims() -> Dict[str, int]:
         'bowler_identity': 1,
         # State nodes (phase_state has 5 features including is_first_ball cold start indicator)
         'score_state': 4,
-        'chase_state': 3,
+        'chase_state': 7,  # Enhanced with RRR details: runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
         'phase_state': 5,  # +1 for is_first_ball cold start indicator
         'time_pressure': 3,
         'wicket_buffer': 2,
