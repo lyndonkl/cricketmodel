@@ -142,7 +142,7 @@ Node Name & Features & What it Represents \\
 \texttt{nonstriker\_identity} & Hierarchical embedding & WHO is at the non-striker's end (with cold-start fallback) \\
 \texttt{nonstriker\_state} & 8 features & Z2 symmetric with striker: runs, balls, SR, dot\%, boundaries, set, is\_debut\_ball, \textbf{balls\_since\_as\_nonstriker} \\
 \texttt{bowler\_identity} & Hierarchical embedding & WHO is bowling (with cold-start fallback) \\
-\texttt{bowler\_state} & 6 features & HOW they're bowling: overs, runs, wickets, economy, dot\% \\
+\texttt{bowler\_state} & 8 features & HOW they're bowling: overs, runs, wickets, economy, dot\%, \textbf{is\_pace}, \textbf{is\_spin} \\
 \texttt{partnership} & 4 features & Partnership runs, balls, run rate, boundaries \\
 \bottomrule
 \end{tabular}
@@ -168,7 +168,7 @@ Node Name & Features & What it Represents \\
 \texttt{batting\_momentum} & 1 feature & Recent scoring rate vs expectation \\
 \texttt{bowling\_momentum} & 1 feature & Recent economy vs expectation \\
 \texttt{pressure\_index} & 1 feature & Combined RRR, wicket, and time pressure \\
-\texttt{dot\_pressure} & 3 features & Consecutive dots, balls since boundary, \textbf{balls\_since\_wicket} \\
+\texttt{dot\_pressure} & 5 features & Consecutive dots, balls since boundary, \textbf{balls\_since\_wicket}, \textbf{pressure\_accumulated}, \textbf{pressure\_trend} \\
 \bottomrule
 \end{tabular}
 \caption{Dynamics category: 4 nodes representing momentum and pressure}
@@ -785,10 +785,11 @@ Cricket ball prediction is fundamentally an \textbf{edge-level task}: the outcom
 The hybrid readout combines:
 \begin{enumerate}
     \item \textbf{Matchup interaction:} Direct combination of striker and bowler representations after message passing
+    \item \textbf{Non-striker gated modulation (P1.1):} For running outcomes (singles, twos, threes, run-outs), the non-striker's attributes matter. A learnable gate modulates the matchup: $\text{matchup} = \text{base\_matchup} \times (1 + 0.1 \times \sigma(\text{MLP}(\text{nonstriker})))$
     \item \textbf{Query aggregation:} Global context (venue, phase, momentum) aggregated by the query node
 \end{enumerate}
 
-This respects the geometric structure: prediction is at the matchup level, influenced by graph-level context.
+This respects the geometric structure: prediction is at the matchup level, influenced by graph-level context and the non-striker's running ability.
 
 \subsection{Convolution Choices per Edge Type}
 
@@ -963,6 +964,9 @@ The V2 architecture represents cricket prediction as a heterogeneous graph where
     \item \textbf{GATv2Conv for informs edges} allows attention-weighted momentum aggregation
     \item \textbf{Innings-conditional prediction heads} separate 1st/2nd innings logic (7-dim chase injection)
     \item \textbf{Hybrid readout} combines matchup interaction with global context
+    \item \textbf{Non-striker gated modulation (P1.1)} for running outcomes---gate modulates matchup based on non-striker's representation
+    \item \textbf{Bowling type inference (P1.2)} from phase-specific economy patterns (pace performs better in powerplay, spin in death)
+    \item \textbf{Pressure accumulation and trend (P1.3)} in dot\_pressure---exponentially weighted history and first-half vs second-half comparison
     \item \textbf{Focal loss} handles class imbalance
 \end{itemize}
 

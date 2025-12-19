@@ -400,7 +400,8 @@ def compute_nonstriker_state(
 
 def compute_bowler_state(
     deliveries: List[Dict],
-    bowler_name: str
+    bowler_name: str,
+    bowling_type: str = 'unknown'
 ) -> List[float]:
     """
     Compute bowler performance features for current innings.
@@ -408,9 +409,10 @@ def compute_bowler_state(
     Args:
         deliveries: All deliveries in this innings so far
         bowler_name: Name of the current bowler
+        bowling_type: Inferred bowling type ('pace', 'spin', 'unknown') - P1.2
 
     Returns:
-        [balls/24, runs/50, wickets/5, econ/15, dots_pct, threat]
+        [balls/24, runs/50, wickets/5, econ/15, dots_pct, threat, is_pace, is_spin]
     """
     runs_conceded = 0
     balls_bowled = 0
@@ -439,13 +441,19 @@ def compute_bowler_state(
         economy_factor = max(1.0 - economy / 10.0, 0.0)  # lower economy = higher threat
         threat = min((wicket_rate * 0.5 + economy_factor * 0.5), 1.0)
 
+    # Bowling type features (P1.2): one-hot encoding
+    is_pace = 1.0 if bowling_type == 'pace' else 0.0
+    is_spin = 1.0 if bowling_type == 'spin' else 0.0
+
     return [
         min(balls_bowled / 24.0, 1.0),   # balls (4 overs max)
         min(runs_conceded / 50.0, 1.0),   # runs conceded
         min(wickets / 5.0, 1.0),          # wickets
         min(economy / 15.0, 1.0),         # economy
         dots_pct,                          # dot ball percentage
-        threat                             # threat level
+        threat,                            # threat level
+        is_pace,                           # NEW: bowling type - pace indicator
+        is_spin                            # NEW: bowling type - spin indicator
     ]
 
 
@@ -518,7 +526,7 @@ def compute_dynamics(
         lookback: Number of recent balls to consider
 
     Returns:
-        Dict with batting_momentum, bowling_momentum, pressure_index, dot_pressure (3 features)
+        Dict with batting_momentum, bowling_momentum, pressure_index, dot_pressure (5 features)
     """
     # Get recent deliveries
     recent = deliveries[-lookback:] if len(deliveries) >= lookback else deliveries
@@ -528,7 +536,7 @@ def compute_dynamics(
             'batting_momentum': [0.0],
             'bowling_momentum': [0.0],
             'pressure_index': [0.0],
-            'dot_pressure': [0.0, 0.0, 1.0]  # No wicket yet = max "balls since"
+            'dot_pressure': [0.0, 0.0, 1.0, 0.0, 0.0]  # 5 features: +accumulated, +trend
         }
 
     # Calculate recent run rate
@@ -602,14 +610,48 @@ def compute_dynamics(
     # Normalize: 0 = just fell, 1 = 30+ balls since wicket (partnership established)
     balls_since_wicket_norm = min(balls_since_wicket / 30.0, 1.0)
 
+    # === NEW: Pressure accumulation and trend (P1.3 GDL improvement) ===
+    # Compute per-ball pressure scores for recent deliveries
+    if len(recent) >= 6:
+        pressures = []
+        for d in recent:
+            ball_runs = d.get('runs', {}).get('total', 0)
+            ball_wicket = 'wickets' in d
+            # Pressure scoring: dots = high pressure, runs = low pressure, wickets = bonus
+            ball_pressure = (1.0 if ball_runs == 0 else 0.5 if ball_runs == 1 else 0.0)
+            if ball_wicket:
+                ball_pressure = min(ball_pressure + 0.5, 1.0)
+            pressures.append(ball_pressure)
+
+        # Exponentially weighted accumulation (recent balls matter more)
+        # Decay factor 0.7 means each older ball has 70% the weight of the next newer one
+        weights = [0.7 ** (len(pressures) - i - 1) for i in range(len(pressures))]
+        pressure_accumulated = sum(p * w for p, w in zip(pressures, weights)) / sum(weights)
+
+        # Pressure trend: compare first half vs second half of recent window
+        # Positive = pressure increasing, Negative = pressure decreasing
+        mid = len(pressures) // 2
+        if mid > 0:
+            early_pressure = sum(pressures[:mid]) / mid
+            late_pressure = sum(pressures[mid:]) / (len(pressures) - mid)
+            pressure_trend = late_pressure - early_pressure
+            pressure_trend = max(min(pressure_trend, 1.0), -1.0)  # Clamp to [-1, 1]
+        else:
+            pressure_trend = 0.0
+    else:
+        pressure_accumulated = 0.0
+        pressure_trend = 0.0
+
     return {
         'batting_momentum': [batting_momentum],
         'bowling_momentum': [bowling_momentum],
         'pressure_index': [min(pressure, 1.0)],
         'dot_pressure': [
-            min(consecutive_dots / 6.0, 1.0),
-            min(balls_since_boundary / 12.0, 1.0),
-            balls_since_wicket_norm  # NEW: bowler momentum indicator
+            min(consecutive_dots / 6.0, 1.0),      # consecutive dots normalized
+            min(balls_since_boundary / 12.0, 1.0), # balls since boundary normalized
+            balls_since_wicket_norm,               # bowler momentum indicator
+            pressure_accumulated,                  # NEW: exp-weighted pressure accumulation
+            pressure_trend                         # NEW: pressure trend (increasing/decreasing)
         ]
     }
 

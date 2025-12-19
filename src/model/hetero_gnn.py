@@ -321,6 +321,15 @@ class CricketHeteroGNNHybrid(CricketHeteroGNN):
             nn.Dropout(config.dropout),
         )
 
+        # Non-striker gate (P1.1): modulates matchup for running outcomes
+        # The non-striker's attributes matter for Singles, Twos, Threes, Run-outs
+        self.nonstriker_gate = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim // 4),
+            nn.GELU(),
+            nn.Linear(config.hidden_dim // 4, config.hidden_dim),
+            nn.Sigmoid(),
+        )
+
     def forward(self, data) -> torch.Tensor:
         """
         Forward pass with hybrid matchup + query readout.
@@ -350,7 +359,15 @@ class CricketHeteroGNNHybrid(CricketHeteroGNN):
         # The core prediction depends on striker-bowler interaction
         striker = x_dict['striker_identity']  # [batch_size, hidden_dim]
         bowler = x_dict['bowler_identity']    # [batch_size, hidden_dim]
-        matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))  # [batch_size, hidden_dim]
+        nonstriker = x_dict['nonstriker_identity']  # [batch_size, hidden_dim] (P1.1)
+
+        # Base matchup from striker-bowler interaction
+        base_matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))  # [batch_size, hidden_dim]
+
+        # P1.1: Non-striker gate modulates matchup for running outcomes
+        # Gate output is [0,1], so (1 + 0.1*gate) gives small multiplicative modulation
+        ns_gate = self.nonstriker_gate(nonstriker)  # [batch_size, hidden_dim]
+        matchup = base_matchup * (1.0 + 0.1 * ns_gate)
 
         # 4. Context aggregation (graph-level)
         # Query has aggregated global context: venue, phase, momentum, etc.
@@ -417,6 +434,14 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
             nn.Dropout(config.dropout),
         )
 
+        # Non-striker gate (P1.1): modulates matchup for running outcomes
+        self.nonstriker_gate = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim // 4),
+            nn.GELU(),
+            nn.Linear(config.hidden_dim // 4, config.hidden_dim),
+            nn.Sigmoid(),
+        )
+
     def forward(self, data) -> torch.Tensor:
         """
         Forward pass with phase-conditioned message passing.
@@ -451,7 +476,14 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
         # 4. Matchup interaction (edge-level)
         striker = x_dict['striker_identity']
         bowler = x_dict['bowler_identity']
-        matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+        nonstriker = x_dict['nonstriker_identity']  # P1.1
+
+        # Base matchup from striker-bowler interaction
+        base_matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+
+        # P1.1: Non-striker gate modulates matchup for running outcomes
+        ns_gate = self.nonstriker_gate(nonstriker)
+        matchup = base_matchup * (1.0 + 0.1 * ns_gate)
 
         # 5. Context aggregation (graph-level)
         query = self.query_proj(x_dict['query'])
@@ -545,7 +577,14 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
         # 3. Matchup interaction (edge-level)
         striker = x_dict['striker_identity']
         bowler = x_dict['bowler_identity']
-        matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+        nonstriker = x_dict['nonstriker_identity']  # P1.1
+
+        # Base matchup from striker-bowler interaction
+        base_matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+
+        # P1.1: Non-striker gate modulates matchup for running outcomes
+        ns_gate = self.nonstriker_gate(nonstriker)
+        matchup = base_matchup * (1.0 + 0.1 * ns_gate)
 
         # 4. Context aggregation (graph-level)
         query = self.query_proj(x_dict['query'])
@@ -660,6 +699,14 @@ class CricketHeteroGNNFull(nn.Module):
             nn.Dropout(config.dropout),
         )
 
+        # Non-striker gate (P1.1): modulates matchup for running outcomes
+        self.nonstriker_gate = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim // 4),
+            nn.GELU(),
+            nn.Linear(config.hidden_dim // 4, config.hidden_dim),
+            nn.Sigmoid(),
+        )
+
         # === Innings-Conditional Prediction Heads ===
         if config.use_innings_conditional:
             # First innings head (standard)
@@ -747,7 +794,15 @@ class CricketHeteroGNNFull(nn.Module):
         # 3. Hybrid readout (matchup + query)
         striker = x_dict['striker_identity']
         bowler = x_dict['bowler_identity']
-        matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+        nonstriker = x_dict['nonstriker_identity']  # P1.1
+
+        # Base matchup from striker-bowler interaction
+        base_matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
+
+        # P1.1: Non-striker gate modulates matchup for running outcomes
+        ns_gate = self.nonstriker_gate(nonstriker)
+        matchup = base_matchup * (1.0 + 0.1 * ns_gate)
+
         query = self.query_proj(x_dict['query'])
         combined = torch.cat([matchup, query], dim=-1)
         combined = self.combiner(combined)

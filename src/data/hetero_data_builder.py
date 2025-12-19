@@ -158,8 +158,9 @@ def create_hetero_data(
     nonstriker_features = compute_nonstriker_state(history, non_striker)
     data['nonstriker_state'].x = torch.tensor([nonstriker_features], dtype=torch.float)
 
-    # Bowler state
-    bowler_features = compute_bowler_state(history, bowler)
+    # Bowler state (with bowling type from P1.2)
+    bowling_type = entity_mapper.get_player_bowling_type(bowler)
+    bowler_features = compute_bowler_state(history, bowler, bowling_type)
     data['bowler_state'].x = torch.tensor([bowler_features], dtype=torch.float)
 
     # Partnership
@@ -376,13 +377,13 @@ def get_node_feature_dims() -> Dict[str, int]:
         # nonstriker_state: 8 features (7 base + balls_since_as_nonstriker for Z2 symmetry)
         'striker_state': 8,  # +1 for is_debut_ball, +1 for balls_since_on_strike
         'nonstriker_state': 8,  # Z2 symmetric with striker: +1 for balls_since_as_nonstriker
-        'bowler_state': 6,
+        'bowler_state': 8,  # +2 for is_pace, is_spin bowling type indicators (P1.2)
         'partnership': 4,
         # Dynamics nodes
         'batting_momentum': 1,
         'bowling_momentum': 1,
         'pressure_index': 1,
-        'dot_pressure': 3,  # consecutive_dots, balls_since_boundary, balls_since_wicket
+        'dot_pressure': 5,  # consecutive_dots, balls_since_boundary, balls_since_wicket, pressure_accumulated, pressure_trend
         # Ball nodes (17 features + embeddings added in model):
         # - 5 basic: runs, is_wicket, over, ball_in_over, is_boundary
         # - 4 extras: is_wide, is_noball, is_bye, is_legbye

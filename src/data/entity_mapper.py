@@ -55,6 +55,8 @@ class EntityMapper:
         self.player_to_team: Dict[str, str] = {}
         # Maps player name to their inferred role
         self.player_to_role: Dict[str, str] = {}
+        # Maps player name to their bowling type (pace/spin/unknown) - P1.2
+        self.player_to_bowling_type: Dict[str, str] = {}
         # Track player statistics for role inference
         self._player_stats: Dict[str, Dict] = {}
 
@@ -271,6 +273,9 @@ class EntityMapper:
         # Infer player roles from accumulated statistics
         self._infer_player_roles()
 
+        # Infer bowling types from phase-specific economy patterns (P1.2)
+        self._infer_bowling_types()
+
     def _track_player_team(
         self,
         player: str,
@@ -306,6 +311,13 @@ class EntityMapper:
                 'balls_bowled': 0,
                 'wickets': 0,
                 'first_batting_over': None,
+                # Phase-specific bowling stats for bowling type inference (P1.2)
+                'powerplay_balls': 0,     # Balls bowled in overs 0-5
+                'powerplay_runs': 0,      # Runs conceded in powerplay
+                'middle_balls': 0,        # Balls bowled in overs 6-15
+                'middle_runs': 0,         # Runs conceded in middle overs
+                'death_balls': 0,         # Balls bowled in overs 16-19
+                'death_runs': 0,          # Runs conceded in death overs
             }
 
         stats = self._player_stats[player]
@@ -325,6 +337,18 @@ class EntityMapper:
             stats['balls_bowled'] += 1
             if 'wickets' in delivery:
                 stats['wickets'] += len(delivery['wickets'])
+
+            # Track phase-specific bowling stats (P1.2)
+            runs_conceded = delivery.get('runs', {}).get('total', 0)
+            if over_num < 6:  # Powerplay (overs 0-5)
+                stats['powerplay_balls'] += 1
+                stats['powerplay_runs'] += runs_conceded
+            elif over_num < 16:  # Middle overs (6-15)
+                stats['middle_balls'] += 1
+                stats['middle_runs'] += runs_conceded
+            else:  # Death overs (16-19)
+                stats['death_balls'] += 1
+                stats['death_runs'] += runs_conceded
 
     def _infer_player_roles(self) -> None:
         """
@@ -384,6 +408,64 @@ class EntityMapper:
 
             self.player_to_role[player] = role
 
+    def _infer_bowling_types(self) -> None:
+        """
+        Infer bowling type (pace/spin/unknown) from phase-specific economy patterns.
+
+        P1.2 GDL improvement: Pace vs spin bowlers have different effectiveness by phase:
+        - Pace bowlers: Better in powerplay (new ball, bounce) than death overs
+        - Spin bowlers: Better in middle/death overs (grip, turn) than powerplay
+
+        Logic:
+        - Compare powerplay economy to death economy
+        - If powerplay_econ < death_econ * 0.85: likely pace
+        - If death_econ < powerplay_econ * 0.85: likely spin
+        - Otherwise: unknown (medium pacer or all-rounder)
+
+        Requires minimum 60 balls bowled for reliable inference.
+        """
+        for player, stats in self._player_stats.items():
+            # Default to unknown
+            bowling_type = 'unknown'
+
+            # Only infer for players with significant bowling sample
+            if stats['balls_bowled'] < 60:
+                self.player_to_bowling_type[player] = bowling_type
+                continue
+
+            # Calculate phase-specific economies (runs per over)
+            pp_balls = stats['powerplay_balls']
+            pp_runs = stats['powerplay_runs']
+            death_balls = stats['death_balls']
+            death_runs = stats['death_runs']
+
+            # Need samples in both phases for comparison
+            if pp_balls >= 12 and death_balls >= 12:  # At least 2 overs in each
+                pp_economy = pp_runs / (pp_balls / 6.0)
+                death_economy = death_runs / (death_balls / 6.0)
+
+                # Pace bowlers: better (lower economy) in powerplay
+                if pp_economy < death_economy * 0.85:
+                    bowling_type = 'pace'
+                # Spin bowlers: better (lower economy) in death
+                elif death_economy < pp_economy * 0.85:
+                    bowling_type = 'spin'
+                # Otherwise: medium pacer or mixed - leave as unknown
+
+            self.player_to_bowling_type[player] = bowling_type
+
+    def get_player_bowling_type(self, player: str) -> str:
+        """
+        Get bowling type for a player.
+
+        Args:
+            player: Player name
+
+        Returns:
+            Bowling type: 'pace', 'spin', or 'unknown'
+        """
+        return self.player_to_bowling_type.get(player, 'unknown')
+
     def save(self, path: str) -> None:
         """Save mappings to a pickle file."""
         data = {
@@ -395,6 +477,7 @@ class EntityMapper:
             'id_to_player': self.id_to_player,
             'player_to_team': self.player_to_team,
             'player_to_role': self.player_to_role,
+            'player_to_bowling_type': self.player_to_bowling_type,  # P1.2
             '_next_venue_id': self._next_venue_id,
             '_next_team_id': self._next_team_id,
             '_next_player_id': self._next_player_id,
@@ -417,6 +500,7 @@ class EntityMapper:
         mapper.id_to_player = data['id_to_player']
         mapper.player_to_team = data.get('player_to_team', {})
         mapper.player_to_role = data.get('player_to_role', {})
+        mapper.player_to_bowling_type = data.get('player_to_bowling_type', {})  # P1.2
         mapper._next_venue_id = data['_next_venue_id']
         mapper._next_team_id = data['_next_team_id']
         mapper._next_player_id = data['_next_player_id']

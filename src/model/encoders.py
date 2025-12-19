@@ -425,12 +425,12 @@ class NodeEncoderDict(nn.Module):
             'wicket_buffer': FeatureEncoder(2, hidden_dim, dropout),
             'striker_state': FeatureEncoder(8, hidden_dim, dropout),  # +1 is_debut_ball, +1 balls_since_on_strike
             'nonstriker_state': FeatureEncoder(8, hidden_dim, dropout),  # Z2 symmetric: +1 balls_since_as_nonstriker
-            'bowler_state': FeatureEncoder(6, hidden_dim, dropout),
+            'bowler_state': FeatureEncoder(8, hidden_dim, dropout),  # +2 for bowling type (P1.2)
             'partnership': FeatureEncoder(4, hidden_dim, dropout),
             'batting_momentum': FeatureEncoder(1, hidden_dim, dropout),
             'bowling_momentum': FeatureEncoder(1, hidden_dim, dropout),
             'pressure_index': FeatureEncoder(1, hidden_dim, dropout),
-            'dot_pressure': FeatureEncoder(3, hidden_dim, dropout),  # +1 for balls_since_wicket
+            'dot_pressure': FeatureEncoder(5, hidden_dim, dropout),  # +2 for pressure_accumulated, pressure_trend
         })
 
         # Ball encoder (18 features: runs, is_wicket, over, ball_in_over, is_boundary,
