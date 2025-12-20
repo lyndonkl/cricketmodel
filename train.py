@@ -336,7 +336,7 @@ def main():
     )
 
     # Train
-    history = trainer.train()
+    _history = trainer.train()
 
     # Test
     print("\n" + "=" * 60)
