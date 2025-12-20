@@ -18,11 +18,9 @@ import torch
 
 from src.config import Config, get_device, set_seed
 from src.data import (
-    CricketDataset,
     create_dataloaders,
     compute_class_weights,
     get_class_distribution,
-    EntityMapper,
 )
 from src.model import (
     CricketHeteroGNN,
@@ -213,25 +211,23 @@ def main():
     data_root = setup_data_directory(args.data_dir, args.processed_dir)
     print(f"Data root: {data_root}")
 
-    # Create datasets
+    # Create dataloaders
     print("\n" + "=" * 60)
-    print("Creating datasets...")
+    print("Creating datasets and dataloaders...")
     print("=" * 60)
 
-    train_dataset = CricketDataset(
+    train_loader, val_loader, test_loader = create_dataloaders(
         root=data_root,
-        split="train",
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
         min_history=1,
         seed=args.seed,
     )
-    val_dataset = CricketDataset(
-        root=data_root,
-        split="val",
-    )
-    test_dataset = CricketDataset(
-        root=data_root,
-        split="test",
-    )
+
+    # Access datasets for metadata and stats
+    train_dataset = train_loader.dataset
+    val_dataset = val_loader.dataset
+    test_dataset = test_loader.dataset
 
     print(f"Train samples: {len(train_dataset)}")
     print(f"Val samples: {len(val_dataset)}")
@@ -242,29 +238,6 @@ def main():
     dist = get_class_distribution(train_dataset)
     for name, info in dist.items():
         print(f"  {name}: {info['count']} ({info['percentage']:.1f}%)")
-
-    # Create dataloaders
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True,
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
-    )
 
     # Get entity counts from metadata
     metadata = train_dataset.get_metadata()
