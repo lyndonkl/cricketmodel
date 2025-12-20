@@ -25,7 +25,6 @@ from src.data import (
 from src.model import (
     CricketHeteroGNN,
     ModelConfig,
-    count_parameters,
     get_model_summary,
 )
 from src.training import Trainer, TrainingConfig
