@@ -11,12 +11,10 @@ Usage:
 import argparse
 import json
 import os
-import shutil
-from pathlib import Path
 
 import torch
 
-from src.config import Config, get_device, set_seed
+from src.config import get_device, set_seed
 from src.data import (
     create_dataloaders,
     compute_class_weights,
@@ -28,49 +26,6 @@ from src.model import (
     get_model_summary,
 )
 from src.training import Trainer, TrainingConfig
-
-
-def setup_data_directory(raw_dir: str, processed_dir: str):
-    """
-    Setup the data directory structure expected by CricketDataset.
-
-    CricketDataset expects:
-    - {root}/raw/matches/*.json
-
-    Args:
-        raw_dir: Directory containing raw JSON match files
-        processed_dir: Directory for processed dataset
-    """
-    root = os.path.dirname(processed_dir)
-    raw_matches_dir = os.path.join(root, "raw", "matches")
-
-    # Create directory structure
-    os.makedirs(raw_matches_dir, exist_ok=True)
-    os.makedirs(processed_dir, exist_ok=True)
-
-    # Check if matches already linked/copied
-    existing = list(Path(raw_matches_dir).glob("*.json"))
-    if len(existing) > 0:
-        print(f"Found {len(existing)} match files in {raw_matches_dir}")
-        return root
-
-    # Link or copy match files from raw_dir
-    source_files = list(Path(raw_dir).glob("*.json"))
-    if len(source_files) == 0:
-        raise RuntimeError(f"No JSON files found in {raw_dir}")
-
-    print(f"Setting up data: linking {len(source_files)} match files...")
-
-    for src_file in source_files:
-        dst_file = os.path.join(raw_matches_dir, src_file.name)
-        if not os.path.exists(dst_file):
-            # Create symlink (or copy on Windows)
-            try:
-                os.symlink(src_file.absolute(), dst_file)
-            except OSError:
-                shutil.copy(str(src_file), dst_file)
-
-    return root
 
 
 def parse_args():
@@ -202,21 +157,17 @@ def main():
     device = get_device(args.device)
     print(f"Using device: {device}")
 
-    # Setup data directory
-    print("\n" + "=" * 60)
-    print("Setting up data...")
-    print("=" * 60)
-
-    data_root = setup_data_directory(args.data_dir, args.processed_dir)
-    print(f"Data root: {data_root}")
-
     # Create dataloaders
     print("\n" + "=" * 60)
     print("Creating datasets and dataloaders...")
     print("=" * 60)
 
+    print(f"Raw data: {args.data_dir}")
+    print(f"Processed cache: {args.processed_dir}")
+
     train_loader, val_loader, test_loader = create_dataloaders(
-        root=data_root,
+        root=args.processed_dir,
+        raw_data_dir=args.data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         min_history=1,

@@ -33,8 +33,10 @@ class CricketDataset(InMemoryDataset):
     IMPORTANT: Split by MATCH, not by ball, to avoid data leakage.
 
     Args:
-        root: Root directory containing raw and processed data
+        root: Root directory for processed data cache
         split: One of 'train', 'val', 'test', or 'all'
+        raw_data_dir: Directory containing raw JSON match files (optional).
+                      If not provided, defaults to {root}/raw/matches/
         transform: Optional transform to apply to samples
         pre_transform: Optional pre-transform to apply during processing
         min_history: Minimum balls of history required for prediction
@@ -47,6 +49,7 @@ class CricketDataset(InMemoryDataset):
         self,
         root: str,
         split: str = 'train',
+        raw_data_dir: Optional[str] = None,
         transform: Optional[Callable] = None,
         pre_transform: Optional[Callable] = None,
         min_history: int = 1,
@@ -55,6 +58,7 @@ class CricketDataset(InMemoryDataset):
         seed: int = 42,
     ):
         self.split = split
+        self._raw_data_dir = raw_data_dir
         self.min_history = min_history
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
@@ -68,7 +72,10 @@ class CricketDataset(InMemoryDataset):
 
     @property
     def raw_dir(self) -> str:
-        return os.path.join(self.root, 'raw')
+        """Return custom raw data directory if provided, else default."""
+        if self._raw_data_dir is not None:
+            return self._raw_data_dir
+        return os.path.join(self.root, 'raw', 'matches')
 
     @property
     def processed_dir(self) -> str:
@@ -76,8 +83,10 @@ class CricketDataset(InMemoryDataset):
 
     @property
     def raw_file_names(self) -> List[str]:
-        """Expected raw files."""
-        return ['matches']  # Directory containing .json files
+        """Expected raw files - any .json files in raw_dir."""
+        # Return empty list to skip download check when using custom raw_data_dir
+        # The actual file existence is checked in process()
+        return []
 
     @property
     def processed_file_names(self) -> List[str]:
@@ -100,15 +109,14 @@ class CricketDataset(InMemoryDataset):
 
     def process(self):
         """Process raw match files into HeteroData samples."""
-        # Find all match JSON files
-        matches_dir = os.path.join(self.raw_dir, 'matches')
-        if not os.path.exists(matches_dir):
+        # Find all match JSON files in raw_dir
+        if not os.path.exists(self.raw_dir):
             raise RuntimeError(
-                f"Matches directory not found at {matches_dir}. "
-                "Please provide match JSON files."
+                f"Raw data directory not found at {self.raw_dir}. "
+                "Please provide match JSON files or set raw_data_dir parameter."
             )
 
-        match_files = sorted(Path(matches_dir).glob('*.json'))
+        match_files = sorted(Path(self.raw_dir).glob('*.json'))
         print(f"Found {len(match_files)} match files")
 
         if len(match_files) == 0:
@@ -217,23 +225,27 @@ def create_dataloaders(
     root: str,
     batch_size: int = 64,
     num_workers: int = 4,
+    raw_data_dir: Optional[str] = None,
     **dataset_kwargs
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create train, validation, and test dataloaders.
 
     Args:
-        root: Root directory for dataset
+        root: Root directory for processed data cache
         batch_size: Batch size for dataloaders
         num_workers: Number of worker processes
+        raw_data_dir: Directory containing raw JSON match files (optional).
+                      If not provided, defaults to {root}/raw/matches/
         **dataset_kwargs: Additional arguments for CricketDataset
+                         (min_history, train_ratio, val_ratio, seed, etc.)
 
     Returns:
         Tuple of (train_loader, val_loader, test_loader)
     """
-    train_dataset = CricketDataset(root, split='train', **dataset_kwargs)
-    val_dataset = CricketDataset(root, split='val', **dataset_kwargs)
-    test_dataset = CricketDataset(root, split='test', **dataset_kwargs)
+    train_dataset = CricketDataset(root, split='train', raw_data_dir=raw_data_dir, **dataset_kwargs)
+    val_dataset = CricketDataset(root, split='val', raw_data_dir=raw_data_dir, **dataset_kwargs)
+    test_dataset = CricketDataset(root, split='test', raw_data_dir=raw_data_dir, **dataset_kwargs)
 
     train_loader = DataLoader(
         train_dataset,
