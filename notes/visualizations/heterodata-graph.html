@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cricket HeteroData Sample Structure</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        h1 {
+            margin-bottom: 10px;
+            font-weight: 300;
+            font-size: 24px;
+        }
+        .subtitle {
+            color: #888;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        #container {
+            display: flex;
+            gap: 20px;
+            width: 100%;
+            max-width: 1600px;
+        }
+        #graph-container {
+            flex: 1;
+            background: #16213e;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        #legend {
+            width: 320px;
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            max-height: 800px;
+            overflow-y: auto;
+        }
+        .legend-section {
+            margin-bottom: 20px;
+        }
+        .legend-title {
+            font-weight: 600;
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+        .legend-line {
+            width: 30px;
+            height: 3px;
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+        .legend-line.dashed {
+            background: repeating-linear-gradient(
+                90deg,
+                currentColor 0px,
+                currentColor 5px,
+                transparent 5px,
+                transparent 10px
+            );
+            height: 2px;
+        }
+        .legend-line.curved {
+            border-radius: 50%;
+            border: 2px solid currentColor;
+            background: transparent;
+            height: 15px;
+            width: 30px;
+        }
+        .tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.95);
+            color: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            pointer-events: none;
+            z-index: 1000;
+            max-width: 300px;
+            border: 1px solid #333;
+        }
+        .tooltip .node-name {
+            font-weight: 600;
+            margin-bottom: 4px;
+            font-size: 14px;
+        }
+        .tooltip .node-layer {
+            color: #888;
+            font-size: 11px;
+            margin-bottom: 6px;
+        }
+        .tooltip .node-features {
+            font-size: 11px;
+            color: #aaa;
+            line-height: 1.4;
+        }
+        .instructions {
+            color: #666;
+            font-size: 11px;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #333;
+            line-height: 1.5;
+        }
+        svg {
+            display: block;
+        }
+        .node {
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .node text {
+            pointer-events: none;
+            font-size: 9px;
+            fill: white;
+            text-anchor: middle;
+        }
+        .link {
+            fill: none;
+            transition: opacity 0.2s, stroke-width 0.2s;
+        }
+        .dimmed {
+            opacity: 0.08;
+        }
+        .highlighted {
+            opacity: 1;
+        }
+        .link.highlighted {
+            stroke-width: 3px !important;
+        }
+        .ball-label {
+            font-size: 8px;
+            fill: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>Cricket HeteroData Sample Structure</h1>
+    <p class="subtitle">Interactive visualization of the heterogeneous graph (V2 architecture with full temporal structure)</p>
+
+    <div id="container">
+        <div id="graph-container">
+            <svg id="graph"></svg>
+        </div>
+        <div id="legend">
+            <div class="legend-section">
+                <div class="legend-title">Node Layers (21 + N balls)</div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #4facfe;"></div>
+                    <span>Global: venue, batting_team, bowling_team</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #43e97b;"></div>
+                    <span>State: score, chase, phase, time, wicket</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #fa709a;"></div>
+                    <span>Actor: striker/bowler/nonstriker ID+state, partnership</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #a855f7;"></div>
+                    <span>Dynamics: batting/bowling momentum, pressure</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #64748b;"></div>
+                    <span>Ball: historical deliveries (N nodes)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #ef4444;"></div>
+                    <span>Query: prediction aggregation</span>
+                </div>
+            </div>
+
+            <div class="legend-section">
+                <div class="legend-title">Hierarchical Edges</div>
+                <div class="legend-item">
+                    <div class="legend-line dashed" style="color: #666;"></div>
+                    <span>conditions: Global→State→Actor→Dynamics</span>
+                </div>
+            </div>
+
+            <div class="legend-section">
+                <div class="legend-title">Intra-Layer Edges</div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #4facfe;"></div>
+                    <span>relates_to (within layer)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #fa709a; height: 4px;"></div>
+                    <span>matchup: striker↔bowler (KEY)</span>
+                </div>
+            </div>
+
+            <div class="legend-section">
+                <div class="legend-title">Temporal Ball Edges (7 types)</div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #8b5cf6;"></div>
+                    <span>recent_precedes (1-6 balls)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #3b82f6;"></div>
+                    <span>medium_precedes (7-24 balls)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line dashed" style="color: #64748b;"></div>
+                    <span>distant_precedes (25+ balls, sparse)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line curved" style="color: #22c55e;"></div>
+                    <span>same_bowler (with temporal decay)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line curved" style="color: #f97316;"></div>
+                    <span>same_batsman (with temporal decay)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #ef4444; height: 4px;"></div>
+                    <span>same_matchup (CAUSAL: older→newer)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #06b6d4;"></div>
+                    <span>same_over (CAUSAL, position attr)</span>
+                </div>
+            </div>
+
+            <div class="legend-section">
+                <div class="legend-title">Cross-Domain Edges</div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #ec4899;"></div>
+                    <span>faced_by: ball→striker_identity</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #f97316;"></div>
+                    <span>partnered_by: ball→nonstriker_identity</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #3b82f6;"></div>
+                    <span>bowled_by: ball→bowler_identity</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #10b981;"></div>
+                    <span>informs: recent balls→dynamics</span>
+                </div>
+            </div>
+
+            <div class="legend-section">
+                <div class="legend-title">Query Edges</div>
+                <div class="legend-item">
+                    <div class="legend-line dashed" style="color: #fbbf24;"></div>
+                    <span>attends: all nodes→query</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: #ef4444;"></div>
+                    <span>drives: dynamics→query</span>
+                </div>
+            </div>
+
+            <div class="instructions">
+                <strong>Interactions:</strong><br>
+                • Click a node to highlight its connections<br>
+                • Drag nodes to reposition<br>
+                • Hover for feature details<br><br>
+                <strong>Ball Node Labels:</strong><br>
+                Format: bowler/batsman (e.g., Bu/Ro = Bumrah→Rohit)
+            </div>
+        </div>
+    </div>
+
+    <div class="tooltip" style="visibility: hidden;"></div>
+
+    <script>
+        // =====================================================================
+        // DATA DEFINITION - Accurate to LaTeX architecture
+        // =====================================================================
+
+        const layerColors = {
+            'global': '#4facfe',
+            'state': '#43e97b',
+            'actor': '#fa709a',
+            'dynamics': '#a855f7',
+            'ball': '#64748b',
+            'query': '#ef4444'
+        };
+
+        const layerYPositions = {
+            'global': 0.08,
+            'state': 0.20,
+            'actor': 0.38,
+            'dynamics': 0.55,
+            'ball': 0.75,
+            'query': 0.93
+        };
+
+        const nodeFeatures = {
+            'venue': '32-dim learned embedding (pitch behavior, boundaries, historical patterns)',
+            'batting_team': '32-dim learned embedding (team tendencies)',
+            'bowling_team': '32-dim learned embedding (team tendencies)',
+            'score_state': '5 features: runs, wickets, balls, innings_indicator, is_womens_cricket',
+            'chase_state': '7 features: runs_needed, RRR, is_chase, RRR_norm, difficulty, balls_rem, wickets_rem',
+            'phase_state': '6 features: is_powerplay, is_middle, is_death, over_progress, is_first_ball, is_super_over',
+            'time_pressure': '3 features: balls_remaining, urgency, is_final_over',
+            'wicket_buffer': '2 features: wickets_in_hand, is_tail',
+            'striker_identity': 'Hierarchical embedding: player→team→role fallback for unknown players',
+            'striker_state': '8 features: runs, balls, SR, dot%, boundaries, set, is_debut_ball, balls_since_on_strike',
+            'nonstriker_identity': 'Hierarchical embedding: player→team→role fallback (Z2 symmetric)',
+            'nonstriker_state': '8 features: runs, balls, SR, dot%, boundaries, set, is_debut_ball, balls_since_as_nonstriker',
+            'bowler_identity': 'Hierarchical embedding: player→team→role fallback',
+            'bowler_state': '8 features: overs, runs, wickets, economy, dot%, is_pace, is_spin',
+            'partnership': '4 features: partnership runs, balls, run_rate, boundaries',
+            'batting_momentum': '1 feature: recent scoring rate vs expectation',
+            'bowling_momentum': '1 feature: recent economy vs expectation',
+            'pressure_index': '1 feature: combined RRR, wicket, time pressure',
+            'dot_pressure': '5 features: consecutive_dots, balls_since_boundary, balls_since_wicket, pressure_accumulated, pressure_trend',
+            'query': 'Initialized zeros, aggregates all information for prediction'
+        };
+
+        // Ball node metadata (simulating a real match scenario)
+        const ballData = [
+            { id: 'ball_0', bowler: 'Bu', batsman: 'Ro', over: 0 },  // Bumrah to Rohit
+            { id: 'ball_1', bowler: 'Bu', batsman: 'Ro', over: 0 },
+            { id: 'ball_2', bowler: 'Bu', batsman: 'KL', over: 0 },  // Strike rotated
+            { id: 'ball_3', bowler: 'Bu', batsman: 'KL', over: 0 },
+            { id: 'ball_4', bowler: 'Bu', batsman: 'Ro', over: 0 },
+            { id: 'ball_5', bowler: 'Bu', batsman: 'Ro', over: 0 },
+            { id: 'ball_6', bowler: 'St', batsman: 'KL', over: 1 },  // New over, new bowler (Starc)
+            { id: 'ball_7', bowler: 'St', batsman: 'KL', over: 1 },
+            { id: 'ball_8', bowler: 'St', batsman: 'Ro', over: 1 },  // Strike rotated
+            { id: 'ball_9', bowler: 'St', batsman: 'Ro', over: 1 },
+        ];
+
+        // Current players (for cross-domain edge attribution)
+        const currentStriker = 'Ro';  // Rohit is on strike
+        const currentNonstriker = 'KL';  // KL Rahul at non-striker
+        const currentBowler = 'St';  // Starc is bowling
+
+        // Define nodes
+        const nodes = [
+            // Global layer
+            { id: 'venue', layer: 'global', label: 'Venue' },
+            { id: 'batting_team', layer: 'global', label: 'Bat Team' },
+            { id: 'bowling_team', layer: 'global', label: 'Bowl Team' },
+
+            // State layer
+            { id: 'score_state', layer: 'state', label: 'Score' },
+            { id: 'chase_state', layer: 'state', label: 'Chase' },
+            { id: 'phase_state', layer: 'state', label: 'Phase' },
+            { id: 'time_pressure', layer: 'state', label: 'Time' },
+            { id: 'wicket_buffer', layer: 'state', label: 'Wickets' },
+
+            // Actor layer
+            { id: 'striker_identity', layer: 'actor', label: 'Striker ID' },
+            { id: 'striker_state', layer: 'actor', label: 'Striker St' },
+            { id: 'nonstriker_identity', layer: 'actor', label: 'NonStr ID' },
+            { id: 'nonstriker_state', layer: 'actor', label: 'NonStr St' },
+            { id: 'bowler_identity', layer: 'actor', label: 'Bowler ID' },
+            { id: 'bowler_state', layer: 'actor', label: 'Bowler St' },
+            { id: 'partnership', layer: 'actor', label: 'Partner' },
+
+            // Dynamics layer
+            { id: 'batting_momentum', layer: 'dynamics', label: 'Bat Mom' },
+            { id: 'bowling_momentum', layer: 'dynamics', label: 'Bowl Mom' },
+            { id: 'pressure_index', layer: 'dynamics', label: 'Pressure' },
+            { id: 'dot_pressure', layer: 'dynamics', label: 'Dot Pres' },
+
+            // Ball nodes
+            ...ballData.map((b, i) => ({
+                id: b.id,
+                layer: 'ball',
+                label: `${b.bowler}→${b.batsman}`,
+                bowler: b.bowler,
+                batsman: b.batsman,
+                over: b.over,
+                ballIndex: i
+            })),
+
+            // Query node
+            { id: 'query', layer: 'query', label: 'Query' }
+        ];
+
+        // Add features to nodes
+        nodes.forEach(n => {
+            if (n.layer === 'ball') {
+                n.features = `Ball ${n.ballIndex}: ${n.bowler} bowling to ${n.batsman} (Over ${n.over})\n18 features: runs, wicket, extras, wicket types, bowling_end`;
+            } else {
+                n.features = nodeFeatures[n.id] || '';
+            }
+        });
+
+        // Define links
+        const links = [];
+
+        function addLink(source, target, type, style = 'solid', label = '') {
+            links.push({ source, target, type, style, label });
+        }
+
+        // =====================================================================
+        // HIERARCHICAL EDGES: Global -> State -> Actor -> Dynamics
+        // =====================================================================
+        const globalNodes = ['venue', 'batting_team', 'bowling_team'];
+        const stateNodes = ['score_state', 'chase_state', 'phase_state', 'time_pressure', 'wicket_buffer'];
+        const actorNodes = ['striker_identity', 'striker_state', 'nonstriker_identity', 'nonstriker_state',
+                           'bowler_identity', 'bowler_state', 'partnership'];
+        const dynamicsNodes = ['batting_momentum', 'bowling_momentum', 'pressure_index', 'dot_pressure'];
+        const ballNodes = ballData.map(b => b.id);
+
+        // Sample hierarchical edges (not all-to-all to reduce clutter)
+        globalNodes.forEach(g => {
+            addLink(g, stateNodes[0], 'hierarchical', 'dashed');
+            addLink(g, stateNodes[2], 'hierarchical', 'dashed');
+        });
+        stateNodes.slice(0, 3).forEach(s => {
+            addLink(s, 'striker_identity', 'hierarchical', 'dashed');
+            addLink(s, 'bowler_identity', 'hierarchical', 'dashed');
+        });
+        ['striker_state', 'bowler_state', 'partnership'].forEach(a => {
+            dynamicsNodes.slice(0, 2).forEach(d => addLink(a, d, 'hierarchical', 'dashed'));
+        });
+
+        // =====================================================================
+        // INTRA-LAYER EDGES
+        // =====================================================================
+
+        // Global: relates_to
+        addLink('venue', 'batting_team', 'intra-global', 'solid');
+        addLink('venue', 'bowling_team', 'intra-global', 'solid');
+        addLink('batting_team', 'bowling_team', 'intra-global', 'solid');
+
+        // State: relates_to
+        addLink('score_state', 'chase_state', 'intra-state', 'solid');
+        addLink('score_state', 'phase_state', 'intra-state', 'solid');
+        addLink('chase_state', 'time_pressure', 'intra-state', 'solid');
+        addLink('phase_state', 'time_pressure', 'intra-state', 'solid');
+        addLink('time_pressure', 'wicket_buffer', 'intra-state', 'solid');
+
+        // Actor: matchup (THE KEY EDGES)
+        addLink('striker_identity', 'striker_state', 'matchup', 'solid');
+        addLink('nonstriker_identity', 'nonstriker_state', 'matchup', 'solid');
+        addLink('bowler_identity', 'bowler_state', 'matchup', 'solid');
+        addLink('striker_identity', 'bowler_identity', 'matchup-key', 'solid');  // PRIMARY MATCHUP
+        addLink('striker_identity', 'nonstriker_identity', 'matchup', 'solid');
+        addLink('nonstriker_identity', 'bowler_identity', 'matchup', 'solid');  // Run-out risk
+        addLink('striker_state', 'partnership', 'matchup', 'solid');
+        addLink('nonstriker_state', 'partnership', 'matchup', 'solid');
+        addLink('bowler_state', 'partnership', 'matchup', 'solid');
+
+        // Dynamics: relates_to
+        addLink('batting_momentum', 'bowling_momentum', 'intra-dynamics', 'solid');
+        addLink('batting_momentum', 'pressure_index', 'intra-dynamics', 'solid');
+        addLink('bowling_momentum', 'pressure_index', 'intra-dynamics', 'solid');
+        addLink('pressure_index', 'dot_pressure', 'intra-dynamics', 'solid');
+
+        // =====================================================================
+        // TEMPORAL BALL EDGES (7 types)
+        // =====================================================================
+
+        // 1. recent_precedes: consecutive balls (within 6)
+        for (let i = 0; i < ballNodes.length - 1; i++) {
+            addLink(ballNodes[i], ballNodes[i + 1], 'recent-precedes', 'solid');
+        }
+
+        // 2. medium_precedes: 7-24 balls apart (show one example)
+        // Not applicable with only 10 balls, but would exist in full match
+
+        // 3. same_bowler: Bumrah's balls (0,1,2,3,4,5) and Starc's balls (6,7,8,9)
+        // Bumrah bowled balls 0-5
+        addLink('ball_0', 'ball_2', 'same-bowler', 'curved');
+        addLink('ball_2', 'ball_4', 'same-bowler', 'curved');
+        addLink('ball_0', 'ball_5', 'same-bowler', 'curved');
+        // Starc bowled balls 6-9
+        addLink('ball_6', 'ball_7', 'same-bowler', 'curved');
+        addLink('ball_7', 'ball_9', 'same-bowler', 'curved');
+
+        // 4. same_batsman: Rohit faced balls 0,1,4,5,8,9; KL faced 2,3,6,7
+        // Rohit's balls
+        addLink('ball_0', 'ball_4', 'same-batsman', 'curved');
+        addLink('ball_4', 'ball_8', 'same-batsman', 'curved');
+        addLink('ball_5', 'ball_9', 'same-batsman', 'curved');
+        // KL's balls
+        addLink('ball_2', 'ball_6', 'same-batsman', 'curved');
+        addLink('ball_3', 'ball_7', 'same-batsman', 'curved');
+
+        // 5. same_matchup: Bumrah→Rohit (0,1,4,5), Bumrah→KL (2,3), Starc→KL (6,7), Starc→Rohit (8,9)
+        // CAUSAL: older → newer only
+        addLink('ball_0', 'ball_1', 'same-matchup', 'solid');  // Bu→Ro
+        addLink('ball_1', 'ball_4', 'same-matchup', 'solid');  // Bu→Ro
+        addLink('ball_4', 'ball_5', 'same-matchup', 'solid');  // Bu→Ro
+        addLink('ball_2', 'ball_3', 'same-matchup', 'solid');  // Bu→KL
+        addLink('ball_6', 'ball_7', 'same-matchup', 'solid');  // St→KL
+        addLink('ball_8', 'ball_9', 'same-matchup', 'solid');  // St→Ro
+
+        // 6. same_over: CAUSAL within-over edges
+        // Over 0: balls 0-5
+        addLink('ball_0', 'ball_3', 'same-over', 'solid');
+        addLink('ball_1', 'ball_5', 'same-over', 'solid');
+        // Over 1: balls 6-9
+        addLink('ball_6', 'ball_9', 'same-over', 'solid');
+
+        // =====================================================================
+        // CROSS-DOMAIN EDGES
+        // =====================================================================
+
+        // faced_by: balls faced by CURRENT striker (Rohit) -> striker_identity
+        ballData.forEach((b, i) => {
+            if (b.batsman === currentStriker) {
+                addLink(`ball_${i}`, 'striker_identity', 'faced-by', 'solid');
+            }
+        });
+
+        // partnered_by: balls where CURRENT non-striker (KL) was involved -> nonstriker_identity
+        ballData.forEach((b, i) => {
+            if (b.batsman === currentNonstriker || b.batsman !== currentStriker) {
+                // KL faced or was non-striker
+                if (b.batsman === currentNonstriker) {
+                    addLink(`ball_${i}`, 'nonstriker_identity', 'partnered-by', 'solid');
+                }
+            }
+        });
+
+        // bowled_by: balls bowled by CURRENT bowler (Starc) -> bowler_identity
+        ballData.forEach((b, i) => {
+            if (b.bowler === currentBowler) {
+                addLink(`ball_${i}`, 'bowler_identity', 'bowled-by', 'solid');
+            }
+        });
+
+        // informs: recent 12 balls -> dynamics (using last 4 for visualization)
+        ballNodes.slice(-4).forEach(b => {
+            addLink(b, 'batting_momentum', 'informs', 'solid');
+            addLink(b, 'dot_pressure', 'informs', 'solid');
+        });
+
+        // =====================================================================
+        // QUERY EDGES
+        // =====================================================================
+
+        // attends: all nodes -> query
+        [...globalNodes, ...stateNodes, ...actorNodes, ...dynamicsNodes].forEach(n => {
+            addLink(n, 'query', 'query-attend', 'dashed');
+        });
+        ballNodes.forEach(b => addLink(b, 'query', 'query-attend', 'dashed'));
+
+        // drives: dynamics -> query (strong influence)
+        dynamicsNodes.forEach(d => addLink(d, 'query', 'query-drives', 'solid'));
+
+        // =====================================================================
+        // VISUALIZATION
+        // =====================================================================
+
+        const container = document.getElementById('graph-container');
+        const width = container.clientWidth;
+        const height = 800;
+
+        const svg = d3.select('#graph')
+            .attr('width', width)
+            .attr('height', height);
+
+        const tooltip = d3.select('.tooltip');
+
+        // Create arrow markers
+        const markerTypes = [
+            { id: 'arrow', color: '#666' },
+            { id: 'arrow-red', color: '#ef4444' },
+            { id: 'arrow-green', color: '#10b981' },
+            { id: 'arrow-purple', color: '#8b5cf6' },
+            { id: 'arrow-pink', color: '#ec4899' },
+            { id: 'arrow-blue', color: '#3b82f6' },
+            { id: 'arrow-orange', color: '#f97316' },
+            { id: 'arrow-cyan', color: '#06b6d4' },
+        ];
+
+        svg.append('defs').selectAll('marker')
+            .data(markerTypes)
+            .join('marker')
+            .attr('id', d => d.id)
+            .attr('viewBox', '0 -5 10 10')
+            .attr('refX', 18)
+            .attr('refY', 0)
+            .attr('markerWidth', 5)
+            .attr('markerHeight', 5)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('fill', d => d.color)
+            .attr('d', 'M0,-5L10,0L0,5');
+
+        // Create simulation
+        const simulation = d3.forceSimulation(nodes)
+            .force('link', d3.forceLink(links).id(d => d.id).distance(60).strength(0.2))
+            .force('charge', d3.forceManyBody().strength(-250))
+            .force('x', d3.forceX(width / 2).strength(0.03))
+            .force('y', d3.forceY(d => height * layerYPositions[d.layer]).strength(0.9))
+            .force('collision', d3.forceCollide().radius(30));
+
+        // Link color and style function
+        function getLinkStyle(d) {
+            const styles = {
+                'hierarchical': { color: '#444', width: 1, marker: null },
+                'intra-global': { color: layerColors.global, width: 1.5, marker: null },
+                'intra-state': { color: layerColors.state, width: 1.5, marker: null },
+                'matchup': { color: layerColors.actor, width: 1.5, marker: null },
+                'matchup-key': { color: '#ef4444', width: 3, marker: null },  // Key matchup
+                'intra-dynamics': { color: layerColors.dynamics, width: 1.5, marker: null },
+                'recent-precedes': { color: '#8b5cf6', width: 1.5, marker: 'url(#arrow-purple)' },
+                'same-bowler': { color: '#22c55e', width: 2, marker: null },
+                'same-batsman': { color: '#f97316', width: 2, marker: null },
+                'same-matchup': { color: '#ef4444', width: 2, marker: 'url(#arrow-red)' },
+                'same-over': { color: '#06b6d4', width: 1.5, marker: 'url(#arrow-cyan)' },
+                'faced-by': { color: '#ec4899', width: 1.5, marker: 'url(#arrow-pink)' },
+                'partnered-by': { color: '#f97316', width: 1.5, marker: 'url(#arrow-orange)' },
+                'bowled-by': { color: '#3b82f6', width: 1.5, marker: 'url(#arrow-blue)' },
+                'informs': { color: '#10b981', width: 1.5, marker: 'url(#arrow-green)' },
+                'query-attend': { color: '#fbbf24', width: 0.5, marker: null },
+                'query-drives': { color: '#ef4444', width: 2, marker: 'url(#arrow-red)' },
+            };
+            return styles[d.type] || { color: '#666', width: 1, marker: null };
+        }
+
+        // Draw links
+        const link = svg.append('g')
+            .selectAll('path')
+            .data(links)
+            .join('path')
+            .attr('class', 'link')
+            .attr('stroke', d => getLinkStyle(d).color)
+            .attr('stroke-width', d => getLinkStyle(d).width)
+            .attr('stroke-dasharray', d => d.style === 'dashed' ? '4,4' : (d.style === 'curved' ? '6,3' : null))
+            .attr('stroke-opacity', d => {
+                if (d.type === 'hierarchical' || d.type === 'query-attend') return 0.3;
+                return 0.7;
+            })
+            .attr('marker-end', d => getLinkStyle(d).marker)
+            .attr('fill', 'none');
+
+        // Draw nodes
+        const node = svg.append('g')
+            .selectAll('g')
+            .data(nodes)
+            .join('g')
+            .attr('class', 'node')
+            .call(d3.drag()
+                .on('start', dragstarted)
+                .on('drag', dragged)
+                .on('end', dragended));
+
+        // Node circles
+        node.append('circle')
+            .attr('r', d => {
+                if (d.layer === 'query') return 22;
+                if (d.layer === 'ball') return 14;
+                return 18;
+            })
+            .attr('fill', d => layerColors[d.layer])
+            .attr('stroke', '#fff')
+            .attr('stroke-width', d => d.id === 'striker_identity' || d.id === 'bowler_identity' ? 3 : 2);
+
+        // Node labels
+        node.append('text')
+            .attr('dy', d => d.layer === 'ball' ? 28 : 34)
+            .text(d => d.label)
+            .attr('fill', '#aaa')
+            .attr('font-size', d => d.layer === 'ball' ? '8px' : '9px');
+
+        // Hover and click handlers
+        node.on('mouseover', (event, d) => {
+            tooltip
+                .style('visibility', 'visible')
+                .html(`
+                    <div class="node-name">${d.label}</div>
+                    <div class="node-layer">Layer: ${d.layer.charAt(0).toUpperCase() + d.layer.slice(1)}</div>
+                    <div class="node-features">${d.features.replace(/\n/g, '<br>')}</div>
+                `);
+        })
+        .on('mousemove', (event) => {
+            tooltip
+                .style('top', (event.pageY - 10) + 'px')
+                .style('left', (event.pageX + 15) + 'px');
+        })
+        .on('mouseout', () => {
+            tooltip.style('visibility', 'hidden');
+        })
+        .on('click', (event, d) => {
+            event.stopPropagation();
+            highlightConnections(d);
+        });
+
+        // Click on background to reset
+        svg.on('click', () => resetHighlight());
+
+        function highlightConnections(selectedNode) {
+            const connectedNodeIds = new Set([selectedNode.id]);
+            const connectedLinkIndices = new Set();
+
+            links.forEach((l, i) => {
+                const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+
+                if (sourceId === selectedNode.id || targetId === selectedNode.id) {
+                    connectedNodeIds.add(sourceId);
+                    connectedNodeIds.add(targetId);
+                    connectedLinkIndices.add(i);
+                }
+            });
+
+            node.classed('dimmed', d => !connectedNodeIds.has(d.id));
+            node.classed('highlighted', d => connectedNodeIds.has(d.id));
+
+            link.classed('dimmed', (d, i) => !connectedLinkIndices.has(i));
+            link.classed('highlighted', (d, i) => connectedLinkIndices.has(i));
+        }
+
+        function resetHighlight() {
+            node.classed('dimmed', false).classed('highlighted', false);
+            link.classed('dimmed', false).classed('highlighted', false);
+        }
+
+        // Path generator for curved links
+        function linkPath(d) {
+            const sourceX = d.source.x;
+            const sourceY = d.source.y;
+            const targetX = d.target.x;
+            const targetY = d.target.y;
+
+            // Curved paths for same_bowler/same_batsman
+            if (d.type === 'same-bowler' || d.type === 'same-batsman') {
+                const dx = targetX - sourceX;
+                const dy = targetY - sourceY;
+                const dr = Math.sqrt(dx * dx + dy * dy) * 0.8;
+                const sweep = d.type === 'same-bowler' ? 1 : 0;  // Different curve directions
+                return `M${sourceX},${sourceY}A${dr},${dr} 0 0,${sweep} ${targetX},${targetY}`;
+            }
+
+            // Straight lines for everything else
+            return `M${sourceX},${sourceY}L${targetX},${targetY}`;
+        }
+
+        // Tick handler
+        simulation.on('tick', () => {
+            link.attr('d', linkPath);
+            node.attr('transform', d => `translate(${d.x},${d.y})`);
+        });
+
+        // Drag handlers
+        function dragstarted(event) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            event.subject.fx = event.subject.x;
+            event.subject.fy = event.subject.y;
+        }
+
+        function dragged(event) {
+            event.subject.fx = event.x;
+            event.subject.fy = event.y;
+        }
+
+        function dragended(event) {
+            if (!event.active) simulation.alphaTarget(0);
+            event.subject.fx = null;
+            event.subject.fy = null;
+        }
+    </script>
+</body>
+</html>
