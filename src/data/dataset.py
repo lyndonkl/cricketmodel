@@ -1,7 +1,8 @@
 """
 Cricket Dataset for PyTorch Geometric
 
-InMemoryDataset implementation for cricket ball prediction.
+On-disk Dataset implementation for cricket ball prediction.
+Saves each sample as a separate file for memory-efficient loading.
 Handles data loading, processing, and train/val/test splitting.
 """
 
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 import torch
-from torch_geometric.data import HeteroData, InMemoryDataset
+from torch_geometric.data import Dataset, HeteroData
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
@@ -20,7 +21,7 @@ from .entity_mapper import EntityMapper
 from .hetero_data_builder import create_samples_from_match
 
 
-class CricketDataset(InMemoryDataset):
+class CricketDataset(Dataset):
     """
     PyTorch Geometric dataset for cricket ball prediction.
 
@@ -28,7 +29,8 @@ class CricketDataset(InMemoryDataset):
     before a specific ball, with the label being that ball's outcome.
 
     The dataset processes raw match JSON files and caches processed
-    data for efficient loading.
+    data for efficient loading. Each sample is saved as a separate
+    file on disk to avoid loading all data into memory.
 
     IMPORTANT: Split by MATCH, not by ball, to avoid data leakage.
 
@@ -64,11 +66,20 @@ class CricketDataset(InMemoryDataset):
         self.val_ratio = val_ratio
         self.seed = seed
 
+        # These will be loaded after super().__init__ triggers process()
+        self._split_indices: Optional[List[int]] = None
+
         super().__init__(root, transform, pre_transform)
 
-        # Load the appropriate split
-        split_idx = {'train': 0, 'val': 1, 'test': 2, 'all': 3}[split]
-        self.load(self.processed_paths[split_idx])
+        # Load split indices after processing
+        self._load_split_indices()
+
+    def _load_split_indices(self) -> None:
+        """Load the indices for this split from the split_indices.json file."""
+        split_indices_path = os.path.join(self.processed_dir, 'split_indices.json')
+        with open(split_indices_path, 'r') as f:
+            all_splits = json.load(f)
+        self._split_indices = all_splits[self.split]
 
     @property
     def raw_dir(self) -> str:
@@ -90,14 +101,13 @@ class CricketDataset(InMemoryDataset):
 
     @property
     def processed_file_names(self) -> List[str]:
-        """Processed data files for each split."""
+        """Files that must exist for processing to be skipped."""
+        # We check for essential metadata files
+        # Individual sample files (data_*.pt) are tracked via split_indices.json
         return [
-            'train_data.pt',
-            'val_data.pt',
-            'test_data.pt',
-            'all_data.pt',
             'entity_mapper.pkl',
             'metadata.json',
+            'split_indices.json',
         ]
 
     def download(self):
@@ -108,7 +118,7 @@ class CricketDataset(InMemoryDataset):
         )
 
     def process(self):
-        """Process raw match files into HeteroData samples."""
+        """Process raw match files into individual HeteroData sample files."""
         # Find all match JSON files in raw_dir
         if not os.path.exists(self.raw_dir):
             raise RuntimeError(
@@ -147,25 +157,54 @@ class CricketDataset(InMemoryDataset):
         print(f"Split: {len(train_matches)} train, {len(val_matches)} val, "
               f"{len(test_matches)} test matches")
 
-        # Step 3: Process each split
-        splits = {
-            'train': train_matches,
-            'val': val_matches,
-            'test': test_matches,
-            'all': match_files,
+        # Step 3: Process all matches and save each sample individually
+        # Track which global indices belong to which split
+        split_indices = {
+            'train': [],
+            'val': [],
+            'test': [],
+            'all': [],
         }
 
-        for split_name, split_files in splits.items():
-            print(f"Processing {split_name} split...")
-            samples = self._process_matches(split_files, entity_mapper)
-            print(f"  {len(samples)} samples")
+        global_idx = 0
 
-            if self.pre_transform is not None:
-                samples = [self.pre_transform(s) for s in samples]
+        # Process train matches
+        print("Processing train split...")
+        for match_file in tqdm(train_matches, desc="Train matches"):
+            samples = self._process_single_match(match_file, entity_mapper)
+            for sample in samples:
+                self._save_sample(sample, global_idx)
+                split_indices['train'].append(global_idx)
+                split_indices['all'].append(global_idx)
+                global_idx += 1
+        print(f"  {len(split_indices['train'])} samples")
 
-            # Save processed data
-            path = os.path.join(self.processed_dir, f'{split_name}_data.pt')
-            self.save(samples, path)
+        # Process val matches
+        print("Processing val split...")
+        for match_file in tqdm(val_matches, desc="Val matches"):
+            samples = self._process_single_match(match_file, entity_mapper)
+            for sample in samples:
+                self._save_sample(sample, global_idx)
+                split_indices['val'].append(global_idx)
+                split_indices['all'].append(global_idx)
+                global_idx += 1
+        print(f"  {len(split_indices['val'])} samples")
+
+        # Process test matches
+        print("Processing test split...")
+        for match_file in tqdm(test_matches, desc="Test matches"):
+            samples = self._process_single_match(match_file, entity_mapper)
+            for sample in samples:
+                self._save_sample(sample, global_idx)
+                split_indices['test'].append(global_idx)
+                split_indices['all'].append(global_idx)
+                global_idx += 1
+        print(f"  {len(split_indices['test'])} samples")
+
+        # Save split indices
+        split_indices_path = os.path.join(self.processed_dir, 'split_indices.json')
+        with open(split_indices_path, 'w') as f:
+            json.dump(split_indices, f)
 
         # Save metadata
         metadata = {
@@ -173,6 +212,10 @@ class CricketDataset(InMemoryDataset):
             'num_train_matches': len(train_matches),
             'num_val_matches': len(val_matches),
             'num_test_matches': len(test_matches),
+            'num_train_samples': len(split_indices['train']),
+            'num_val_samples': len(split_indices['val']),
+            'num_test_samples': len(split_indices['test']),
+            'num_total_samples': global_idx,
             'num_venues': entity_mapper.num_venues,
             'num_teams': entity_mapper.num_teams,
             'num_players': entity_mapper.num_players,
@@ -184,30 +227,49 @@ class CricketDataset(InMemoryDataset):
         with open(os.path.join(self.processed_dir, 'metadata.json'), 'w') as f:
             json.dump(metadata, f, indent=2)
 
-    def _process_matches(
+        print(f"Total samples saved: {global_idx}")
+
+    def _process_single_match(
         self,
-        match_files: List[Path],
+        match_file: Path,
         entity_mapper: EntityMapper
     ) -> List[HeteroData]:
-        """Process list of match files into HeteroData samples."""
-        samples = []
+        """Process a single match file into HeteroData samples."""
+        try:
+            with open(match_file, 'r') as f:
+                match_data = json.load(f)
 
-        for match_file in tqdm(match_files, desc="Processing matches"):
-            try:
-                with open(match_file, 'r') as f:
-                    match_data = json.load(f)
+            samples = create_samples_from_match(
+                match_data=match_data,
+                entity_mapper=entity_mapper,
+                min_history=self.min_history
+            )
 
-                match_samples = create_samples_from_match(
-                    match_data=match_data,
-                    entity_mapper=entity_mapper,
-                    min_history=self.min_history
-                )
-                samples.extend(match_samples)
+            # Apply pre_transform if specified
+            if self.pre_transform is not None:
+                samples = [self.pre_transform(s) for s in samples]
 
-            except Exception as e:
-                print(f"Warning: Failed to process {match_file}: {e}")
+            return samples
 
-        return samples
+        except Exception as e:
+            print(f"Warning: Failed to process {match_file}: {e}")
+            return []
+
+    def _save_sample(self, sample: HeteroData, idx: int) -> None:
+        """Save a single sample to disk."""
+        path = os.path.join(self.processed_dir, f'data_{idx}.pt')
+        torch.save(sample, path)
+
+    def len(self) -> int:
+        """Return the number of samples in this split."""
+        return len(self._split_indices)
+
+    def get(self, idx: int) -> HeteroData:
+        """Load and return a single sample by index."""
+        # Map split-local index to global index
+        global_idx = self._split_indices[idx]
+        path = os.path.join(self.processed_dir, f'data_{global_idx}.pt')
+        return torch.load(path)
 
     def get_entity_mapper(self) -> EntityMapper:
         """Load and return the entity mapper."""
