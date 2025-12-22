@@ -7,8 +7,7 @@ Supports hierarchical player embeddings with team and role fallbacks.
 
 import json
 import pickle
-from pathlib import Path
-from typing import Dict, Optional, Set, List, Tuple
+from typing import Dict, Optional, Tuple
 
 
 # Player role categories for hierarchical embeddings
@@ -53,12 +52,10 @@ class EntityMapper:
         # Hierarchical player information for cold-start handling
         # Maps player name to their primary team (most frequent)
         self.player_to_team: Dict[str, str] = {}
-        # Maps player name to their inferred role
+        # Maps player name to their role (classified via Ollama)
         self.player_to_role: Dict[str, str] = {}
-        # Maps player name to their bowling type (pace/spin/unknown) - P1.2
+        # Maps player name to their bowling type (pace/spin/none/unknown)
         self.player_to_bowling_type: Dict[str, str] = {}
-        # Track player statistics for role inference
-        self._player_stats: Dict[str, Dict] = {}
 
         # Track next available ID (0 is reserved for unknown)
         self._next_venue_id = 1
@@ -212,7 +209,7 @@ class EntityMapper:
         Build entity mappings from a list of match JSON files.
 
         Should be called on ALL data before splitting to ensure consistent IDs.
-        Also builds player-team relationships and infers player roles.
+        Also builds player-team relationships and classifies players via Ollama.
 
         Args:
             match_files: List of paths to match JSON files
@@ -241,9 +238,7 @@ class EntityMapper:
                 batting_team = innings.get('team', '')
 
                 for over_data in innings.get('overs', []):
-                    over_num = over_data.get('over', 0)
-
-                    for ball_idx, delivery in enumerate(over_data.get('deliveries', [])):
+                    for delivery in over_data.get('deliveries', []):
                         batter = delivery.get('batter')
                         bowler = delivery.get('bowler')
                         non_striker = delivery.get('non_striker')
@@ -252,14 +247,12 @@ class EntityMapper:
                         if batter:
                             self.get_player_id(batter, create=True)
                             self._track_player_team(batter, batting_team, player_team_counts)
-                            self._track_player_stats(batter, delivery, over_num, ball_idx, is_batting=True)
                         if bowler:
                             self.get_player_id(bowler, create=True)
                             # Bowler is on the fielding team
                             bowling_team = [t for t in teams if t != batting_team]
                             if bowling_team:
                                 self._track_player_team(bowler, bowling_team[0], player_team_counts)
-                            self._track_player_stats(bowler, delivery, over_num, ball_idx, is_batting=False)
                         if non_striker:
                             self.get_player_id(non_striker, create=True)
                             self._track_player_team(non_striker, batting_team, player_team_counts)
@@ -270,11 +263,8 @@ class EntityMapper:
                 primary_team = max(team_counts.items(), key=lambda x: x[1])[0]
                 self.player_to_team[player] = primary_team
 
-        # Infer player roles from accumulated statistics
-        self._infer_player_roles()
-
-        # Infer bowling types from phase-specific economy patterns (P1.2)
-        self._infer_bowling_types()
+        # Classify players using Ollama LLM
+        self._classify_players_with_ollama()
 
     def _track_player_team(
         self,
@@ -288,171 +278,106 @@ class EntityMapper:
         if team:
             player_team_counts[player][team] = player_team_counts[player].get(team, 0) + 1
 
-    def _track_player_stats(
-        self,
-        player: str,
-        delivery: Dict,
-        over_num: int,
-        ball_idx: int,
-        is_batting: bool
-    ) -> None:
+    def _classify_players_with_ollama(self) -> None:
         """
-        Track player statistics for role inference.
+        Classify all players using local Ollama LLM.
 
-        For batsmen: track batting position (over when first faced), runs, boundaries
-        For bowlers: track overs bowled, wickets
+        For each player, queries the LLM to determine:
+        - role: opener, top_order, middle_order, finisher, bowler, allrounder, keeper, unknown
+        - bowling_type: pace, spin, none, unknown
+
+        Requires Ollama to be running locally with the gpt-oss:120b model.
         """
-        if player not in self._player_stats:
-            self._player_stats[player] = {
-                'batting_overs': [],      # Overs when batting
-                'total_runs': 0,
-                'boundaries': 0,
-                'balls_faced': 0,
-                'balls_bowled': 0,
-                'wickets': 0,
-                'first_batting_over': None,
-                # Phase-specific bowling stats for bowling type inference (P1.2)
-                'powerplay_balls': 0,     # Balls bowled in overs 0-5
-                'powerplay_runs': 0,      # Runs conceded in powerplay
-                'middle_balls': 0,        # Balls bowled in overs 6-15
-                'middle_runs': 0,         # Runs conceded in middle overs
-                'death_balls': 0,         # Balls bowled in overs 16-19
-                'death_runs': 0,          # Runs conceded in death overs
-            }
+        from tqdm import tqdm
 
-        stats = self._player_stats[player]
+        try:
+            from ollama import Client
+        except ImportError:
+            print("Warning: ollama package not installed. Run 'pip install ollama'")
+            print("Setting all players to unknown role/bowling_type")
+            for player in self.player_to_id.keys():
+                self.player_to_role[player] = 'unknown'
+                self.player_to_bowling_type[player] = 'unknown'
+            return
 
-        if is_batting:
-            # Track batting statistics
-            if stats['first_batting_over'] is None:
-                stats['first_batting_over'] = over_num
-            stats['batting_overs'].append(over_num)
-            stats['balls_faced'] += 1
-            runs = delivery.get('runs', {}).get('batter', 0)
-            stats['total_runs'] += runs
-            if runs in [4, 6]:
-                stats['boundaries'] += 1
-        else:
-            # Track bowling statistics
-            stats['balls_bowled'] += 1
-            if 'wickets' in delivery:
-                stats['wickets'] += len(delivery['wickets'])
+        try:
+            client = Client(host='http://localhost:11434')
+        except Exception as e:
+            print(f"Warning: Could not connect to Ollama: {e}")
+            print("Setting all players to unknown role/bowling_type")
+            for player in self.player_to_id.keys():
+                self.player_to_role[player] = 'unknown'
+                self.player_to_bowling_type[player] = 'unknown'
+            return
 
-            # Track phase-specific bowling stats (P1.2)
-            runs_conceded = delivery.get('runs', {}).get('total', 0)
-            if over_num < 6:  # Powerplay (overs 0-5)
-                stats['powerplay_balls'] += 1
-                stats['powerplay_runs'] += runs_conceded
-            elif over_num < 16:  # Middle overs (6-15)
-                stats['middle_balls'] += 1
-                stats['middle_runs'] += runs_conceded
-            else:  # Death overs (16-19)
-                stats['death_balls'] += 1
-                stats['death_runs'] += runs_conceded
+        print(f"Classifying {len(self.player_to_id)} players with Ollama...")
 
-    def _infer_player_roles(self) -> None:
+        for player in tqdm(self.player_to_id.keys(), desc="Classifying players"):
+            classification = self._classify_single_player(client, player)
+            self.player_to_role[player] = classification.get('role', 'unknown')
+            self.player_to_bowling_type[player] = classification.get('bowling_type', 'unknown')
+
+    def _classify_single_player(self, client, player_name: str) -> Dict[str, str]:
         """
-        Infer player roles from accumulated statistics.
+        Classify a single player using Ollama.
 
-        Role inference logic:
-        - opener: First batting over is typically 0, faces new ball
-        - top_order: First batting over 0-3, anchors innings
-        - middle_order: First batting over 4-10
-        - finisher: First batting over 11+, high boundary rate
-        - bowler: Mostly bowls, bats late or not at all
-        - allrounder: Significant contributions in both
-        - keeper: Would need additional data (not inferable from Cricsheet)
+        Args:
+            client: Ollama client instance
+            player_name: Name of the player to classify
+
+        Returns:
+            Dict with 'role' and 'bowling_type' keys
         """
-        for player, stats in self._player_stats.items():
-            balls_faced = stats['balls_faced']
-            balls_bowled = stats['balls_bowled']
-            first_over = stats['first_batting_over']
-            boundaries = stats['boundaries']
-            runs = stats['total_runs']
+        prompt = f"""You are a cricket expert. Classify this cricket player.
 
-            # Default to unknown
-            role = 'unknown'
+Player: {player_name}
 
-            # Determine if primarily batter or bowler
-            if balls_bowled > balls_faced * 2:
-                # Bowls much more than bats - primarily a bowler
-                role = 'bowler'
-            elif balls_faced > balls_bowled * 2:
-                # Bats much more than bowls - primarily a batter
-                if first_over is not None:
-                    if first_over <= 1:
-                        role = 'opener'
-                    elif first_over <= 4:
-                        role = 'top_order'
-                    elif first_over <= 12:
-                        role = 'middle_order'
-                    else:
-                        role = 'finisher'
+Respond with ONLY a valid JSON object (no markdown, no explanation, no extra text):
+{{"role": "<role>", "bowling_type": "<bowling_type>"}}
 
-                    # Check for finisher characteristics (high boundary rate)
-                    if balls_faced > 20:
-                        boundary_rate = boundaries / balls_faced
-                        if boundary_rate > 0.25 and first_over >= 10:
-                            role = 'finisher'
-            else:
-                # Roughly equal - all-rounder
-                if balls_faced >= 50 and balls_bowled >= 50:
-                    role = 'allrounder'
-                elif balls_bowled > balls_faced:
-                    role = 'bowler'
-                elif first_over is not None:
-                    if first_over <= 4:
-                        role = 'top_order'
-                    else:
-                        role = 'middle_order'
+Where:
+- role is one of: opener, top_order, middle_order, finisher, bowler, allrounder, keeper, unknown
+- bowling_type is one of: pace, spin, none, unknown
 
-            self.player_to_role[player] = role
+Rules:
+- "role" is their PRIMARY batting/playing role in T20 cricket
+- "bowling_type": use "pace" for fast/medium-fast bowlers, "spin" for spinners, "none" for pure batsmen who don't bowl, "unknown" if unsure
+- If you don't recognize the player, use "unknown" for both fields
+- Respond with ONLY the JSON object, nothing else"""
 
-    def _infer_bowling_types(self) -> None:
-        """
-        Infer bowling type (pace/spin/unknown) from phase-specific economy patterns.
+        try:
+            response = client.chat(
+                model='gpt-oss:120b',
+                messages=[{'role': 'user', 'content': prompt}]
+            )
 
-        P1.2 GDL improvement: Pace vs spin bowlers have different effectiveness by phase:
-        - Pace bowlers: Better in powerplay (new ball, bounce) than death overs
-        - Spin bowlers: Better in middle/death overs (grip, turn) than powerplay
+            # Parse JSON response
+            content = response.message.content.strip()
+            # Handle potential markdown code blocks
+            if content.startswith('```'):
+                content = content.split('```')[1]
+                if content.startswith('json'):
+                    content = content[4:]
+                content = content.strip()
 
-        Logic:
-        - Compare powerplay economy to death economy
-        - If powerplay_econ < death_econ * 0.85: likely pace
-        - If death_econ < powerplay_econ * 0.85: likely spin
-        - Otherwise: unknown (medium pacer or all-rounder)
+            result = json.loads(content)
 
-        Requires minimum 60 balls bowled for reliable inference.
-        """
-        for player, stats in self._player_stats.items():
-            # Default to unknown
-            bowling_type = 'unknown'
+            # Validate role
+            valid_roles = {'opener', 'top_order', 'middle_order', 'finisher',
+                          'bowler', 'allrounder', 'keeper', 'unknown'}
+            if result.get('role') not in valid_roles:
+                result['role'] = 'unknown'
 
-            # Only infer for players with significant bowling sample
-            if stats['balls_bowled'] < 60:
-                self.player_to_bowling_type[player] = bowling_type
-                continue
+            # Validate bowling_type
+            valid_bowling = {'pace', 'spin', 'none', 'unknown'}
+            if result.get('bowling_type') not in valid_bowling:
+                result['bowling_type'] = 'unknown'
 
-            # Calculate phase-specific economies (runs per over)
-            pp_balls = stats['powerplay_balls']
-            pp_runs = stats['powerplay_runs']
-            death_balls = stats['death_balls']
-            death_runs = stats['death_runs']
+            return result
 
-            # Need samples in both phases for comparison
-            if pp_balls >= 12 and death_balls >= 12:  # At least 2 overs in each
-                pp_economy = pp_runs / (pp_balls / 6.0)
-                death_economy = death_runs / (death_balls / 6.0)
-
-                # Pace bowlers: better (lower economy) in powerplay
-                if pp_economy < death_economy * 0.85:
-                    bowling_type = 'pace'
-                # Spin bowlers: better (lower economy) in death
-                elif death_economy < pp_economy * 0.85:
-                    bowling_type = 'spin'
-                # Otherwise: medium pacer or mixed - leave as unknown
-
-            self.player_to_bowling_type[player] = bowling_type
+        except Exception as e:
+            # Fallback to unknown on any error
+            return {'role': 'unknown', 'bowling_type': 'unknown'}
 
     def get_player_bowling_type(self, player: str) -> str:
         """
