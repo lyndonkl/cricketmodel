@@ -346,17 +346,19 @@
         };
 
         // Ball node metadata (simulating a real match scenario)
+        // Each ball tracks who faced it (batsman) AND who was at the other end (nonstriker)
+        // This is essential for correct partnered_by edge attribution
         const ballData = [
-            { id: 'ball_0', bowler: 'Bu', batsman: 'Ro', over: 0 },  // Bumrah to Rohit
-            { id: 'ball_1', bowler: 'Bu', batsman: 'Ro', over: 0 },
-            { id: 'ball_2', bowler: 'Bu', batsman: 'KL', over: 0 },  // Strike rotated
-            { id: 'ball_3', bowler: 'Bu', batsman: 'KL', over: 0 },
-            { id: 'ball_4', bowler: 'Bu', batsman: 'Ro', over: 0 },
-            { id: 'ball_5', bowler: 'Bu', batsman: 'Ro', over: 0 },
-            { id: 'ball_6', bowler: 'St', batsman: 'KL', over: 1 },  // New over, new bowler (Starc)
-            { id: 'ball_7', bowler: 'St', batsman: 'KL', over: 1 },
-            { id: 'ball_8', bowler: 'St', batsman: 'Ro', over: 1 },  // Strike rotated
-            { id: 'ball_9', bowler: 'St', batsman: 'Ro', over: 1 },
+            { id: 'ball_0', bowler: 'Bu', batsman: 'Ro', nonstriker: 'KL', over: 0 },  // Bumrah to Rohit
+            { id: 'ball_1', bowler: 'Bu', batsman: 'Ro', nonstriker: 'KL', over: 0 },
+            { id: 'ball_2', bowler: 'Bu', batsman: 'KL', nonstriker: 'Ro', over: 0 },  // Strike rotated (single)
+            { id: 'ball_3', bowler: 'Bu', batsman: 'KL', nonstriker: 'Ro', over: 0 },
+            { id: 'ball_4', bowler: 'Bu', batsman: 'Ro', nonstriker: 'KL', over: 0 },  // Strike rotated
+            { id: 'ball_5', bowler: 'Bu', batsman: 'Ro', nonstriker: 'KL', over: 0 },
+            { id: 'ball_6', bowler: 'St', batsman: 'KL', nonstriker: 'Ro', over: 1 },  // New over: batsmen swap ends
+            { id: 'ball_7', bowler: 'St', batsman: 'KL', nonstriker: 'Ro', over: 1 },
+            { id: 'ball_8', bowler: 'St', batsman: 'Ro', nonstriker: 'KL', over: 1 },  // Strike rotated
+            { id: 'ball_9', bowler: 'St', batsman: 'Ro', nonstriker: 'KL', over: 1 },
         ];
 
         // Current players (for cross-domain edge attribution)
@@ -400,6 +402,7 @@
                 label: `${b.bowler}→${b.batsman}`,
                 bowler: b.bowler,
                 batsman: b.batsman,
+                nonstriker: b.nonstriker,
                 over: b.over,
                 ballIndex: i
             })),
@@ -411,7 +414,7 @@
         // Add features to nodes
         nodes.forEach(n => {
             if (n.layer === 'ball') {
-                n.features = `Ball ${n.ballIndex}: ${n.bowler} bowling to ${n.batsman} (Over ${n.over})\n18 features: runs, wicket, extras, wicket types, bowling_end`;
+                n.features = `Ball ${n.ballIndex}: ${n.bowler} bowling to ${n.batsman} (nonstriker: ${n.nonstriker}, Over ${n.over})\n18 features: runs, is_wicket, over, ball_in_over, is_boundary, extras(4), wicket_types(6), run_out_attribution(2), bowling_end`;
             } else {
                 n.features = nodeFeatures[n.id] || '';
             }
@@ -537,13 +540,12 @@
             }
         });
 
-        // partnered_by: balls where CURRENT non-striker (KL) was involved -> nonstriker_identity
+        // partnered_by: balls where CURRENT non-striker (KL) was at non-striker end OR faced the ball
+        // This matches edge_builder.py:build_cross_domain_edges() logic exactly
         ballData.forEach((b, i) => {
-            if (b.batsman === currentNonstriker || b.batsman !== currentStriker) {
-                // KL faced or was non-striker
-                if (b.batsman === currentNonstriker) {
-                    addLink(`ball_${i}`, 'nonstriker_identity', 'partnered-by', 'solid');
-                }
+            // Connect if current nonstriker was at nonstriker end OR was the batsman facing
+            if (b.nonstriker === currentNonstriker || b.batsman === currentNonstriker) {
+                addLink(`ball_${i}`, 'nonstriker_identity', 'partnered-by', 'solid');
             }
         });
 
@@ -554,10 +556,10 @@
             }
         });
 
-        // informs: recent 12 balls -> dynamics (using last 4 for visualization)
+        // informs: recent 12 balls -> ALL dynamics nodes
+        // edge_builder.py connects recent balls to all 4 dynamics nodes
         ballNodes.slice(-4).forEach(b => {
-            addLink(b, 'batting_momentum', 'informs', 'solid');
-            addLink(b, 'dot_pressure', 'informs', 'solid');
+            dynamicsNodes.forEach(d => addLink(b, d, 'informs', 'solid'));
         });
 
         // =====================================================================
