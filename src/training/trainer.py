@@ -163,7 +163,6 @@ class Trainer:
         total_loss = 0.0
         correct = 0
         total = 0
-        num_batches = len(self.train_loader)
 
         pbar = tqdm(self.train_loader, desc=f'Epoch {self.epoch + 1} [Train]')
 

@@ -22,11 +22,6 @@ def _flatten_deliveries(overs_data: List[Dict]) -> List[Dict]:
     return deliveries
 
 
-def _get_ball_number(delivery: Dict) -> int:
-    """Get the ball number (0-indexed) from delivery."""
-    return delivery['_over'] * 6 + delivery['_ball_in_over']
-
-
 def _count_runs_wickets(deliveries: List[Dict]) -> Tuple[int, int, int]:
     """Count total runs, wickets, and legal balls from deliveries."""
     total_runs = 0
@@ -475,7 +470,6 @@ def compute_partnership(
     """
     partnership_runs = 0
     partnership_balls = 0
-    partnership_started = False
 
     # Find when this partnership started (last wicket or start of innings)
     last_wicket_idx = -1
@@ -489,7 +483,6 @@ def compute_partnership(
         target_pair = {striker_name, non_striker_name}
 
         if current_pair == target_pair:
-            partnership_started = True
             partnership_runs += d['runs']['total']
             # Count legal balls
             extras = d.get('extras', {})
@@ -586,7 +579,6 @@ def compute_dynamics(
     # Dot ball pressure
     consecutive_dots = 0
     balls_since_boundary = 0
-    found_boundary = False
 
     for d in reversed(recent):
         if d['runs']['total'] == 0:
@@ -596,7 +588,6 @@ def compute_dynamics(
 
     for d in reversed(deliveries):
         if d['runs']['batter'] in [4, 6]:
-            found_boundary = True
             break
         balls_since_boundary += 1
 
