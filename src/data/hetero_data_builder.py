@@ -33,7 +33,8 @@ def create_hetero_data(
     match_data: Dict,
     innings_idx: int,
     ball_idx: int,
-    entity_mapper: EntityMapper
+    entity_mapper: EntityMapper,
+    all_deliveries: Optional[List[Dict]] = None
 ) -> HeteroData:
     """
     Create a HeteroData object for predicting ball at ball_idx.
@@ -45,6 +46,7 @@ def create_hetero_data(
         innings_idx: Which innings (0 or 1)
         ball_idx: Which ball to predict (0-indexed in flattened deliveries)
         entity_mapper: Entity name to ID mapper
+        all_deliveries: Pre-computed flattened deliveries (optional, avoids recomputation)
 
     Returns:
         HeteroData object with all node features, edges, and label
@@ -63,8 +65,9 @@ def create_hetero_data(
     gender = info.get('gender', 'male')
     is_womens = gender == 'female'
 
-    # Flatten deliveries
-    all_deliveries = prepare_deliveries(innings)
+    # Flatten deliveries (use pre-computed if provided)
+    if all_deliveries is None:
+        all_deliveries = prepare_deliveries(innings)
 
     # Split into history (context) and target
     history = all_deliveries[:ball_idx]
@@ -310,7 +313,8 @@ def create_samples_from_innings(
                 match_data=match_data,
                 innings_idx=innings_idx,
                 ball_idx=ball_idx,
-                entity_mapper=entity_mapper
+                entity_mapper=entity_mapper,
+                all_deliveries=all_deliveries  # Pass pre-computed to avoid recomputation
             )
             samples.append(sample)
         except Exception as e:
