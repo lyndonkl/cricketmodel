@@ -39,3 +39,4 @@ dependencies:
   - pip:
     - torch-geometric>=2.4
     - wandb
+    - ollama>=0.2
