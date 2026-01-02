@@ -34,7 +34,15 @@ const DataLoader = {
         batting_momentum: { layer: 'dynamics', index: 0, featureDim: 1, description: 'Recent batting trend' },
         bowling_momentum: { layer: 'dynamics', index: 1, featureDim: 1, description: 'Recent bowling trend' },
         pressure_index: { layer: 'dynamics', index: 2, featureDim: 1, description: 'Overall pressure level' },
-        dot_pressure: { layer: 'dynamics', index: 3, featureDim: 5, description: 'Dot ball pressure' },
+        dot_pressure: { layer: 'dynamics', index: 3, featureDim: 5, description: 'consecutive_dots, balls_since_boundary, balls_since_wicket, pressure_accumulated, pressure_trend' },
+
+        // Ball layer (N nodes, 18 features each)
+        // Features: runs/6, is_wicket, over/20, ball_in_over/6, is_boundary,
+        //           is_wide, is_noball, is_bye, is_legbye,
+        //           wicket_bowled, wicket_caught, wicket_lbw, wicket_run_out, wicket_stumped, wicket_other,
+        //           striker_run_out, nonstriker_run_out, bowling_end
+        // Extra attrs: bowler_ids, batsman_ids, nonstriker_ids (for embedding lookup)
+        ball: { layer: 'ball', featureDim: 18, extraAttrs: ['bowler_ids', 'batsman_ids', 'nonstriker_ids'], description: 'Historical ball with 18 features + player IDs' },
 
         // Query layer (1 node)
         query: { layer: 'query', index: 0, featureDim: 1, description: 'Prediction query aggregator' }
@@ -237,6 +245,7 @@ const DataLoader = {
 
     /**
      * Generate sample ball nodes
+     * Each ball has 18 features + extra attributes for player IDs
      */
     generateSampleBalls(count) {
         const balls = [];
@@ -251,6 +260,7 @@ const DataLoader = {
             const isWicket = Math.random() < 0.05;
             const bowlerIdx = over % bowlers.length;
             const batsmanIdx = i % 2 === 0 ? 0 : 1;  // Alternating for simplicity
+            const isBoundary = runs >= 4;
 
             balls.push({
                 id: `ball_${i}`,
@@ -258,20 +268,39 @@ const DataLoader = {
                 over: over,
                 ballInOver: ballInOver,
                 bowler: bowlers[bowlerIdx],
-                bowlerId: bowlerIdx * 100 + 10,
                 batsman: batsmen[batsmanIdx],
-                batsmanId: batsmanIdx * 100 + 20,
                 nonstriker: batsmen[(batsmanIdx + 1) % 2],
-                nonstrikerId: ((batsmanIdx + 1) % 2) * 100 + 20,
                 runs: runs,
                 isWicket: isWicket,
-                isBoundary: runs >= 4,
+                isBoundary: isBoundary,
+                // 18 features matching compute_ball_features
                 features: {
-                    runs: runs / 6,
+                    runs_norm: runs / 6,
                     is_wicket: isWicket ? 1 : 0,
-                    over: over / 20,
-                    ball_in_over: ballInOver / 5,
-                    is_boundary: runs >= 4 ? 1 : 0
+                    over_norm: over / 20,
+                    ball_in_over_norm: ballInOver / 6,
+                    is_boundary: isBoundary ? 1 : 0,
+                    // Extras (simplified - all 0 for sample)
+                    is_wide: 0, is_noball: 0, is_bye: 0, is_legbye: 0,
+                    // Wicket types (simplified)
+                    wicket_bowled: 0, wicket_caught: 0, wicket_lbw: 0,
+                    wicket_run_out: 0, wicket_stumped: 0, wicket_other: 0,
+                    // Run-out attribution
+                    striker_run_out: 0, nonstriker_run_out: 0,
+                    // Positional
+                    bowling_end: over % 2
+                },
+                featureNames: [
+                    'runs_norm', 'is_wicket', 'over_norm', 'ball_in_over_norm', 'is_boundary',
+                    'is_wide', 'is_noball', 'is_bye', 'is_legbye',
+                    'wicket_bowled', 'wicket_caught', 'wicket_lbw', 'wicket_run_out', 'wicket_stumped', 'wicket_other',
+                    'striker_run_out', 'nonstriker_run_out', 'bowling_end'
+                ],
+                // Extra attributes for embedding lookup (like identity nodes)
+                extraAttrs: {
+                    bowler_id: bowlerIdx * 100 + 10,
+                    batsman_id: batsmanIdx * 100 + 20,
+                    nonstriker_id: ((batsmanIdx + 1) % 2) * 100 + 20
                 }
             });
         }

@@ -185,6 +185,29 @@ const DetailSidebar = {
             </div>
         `;
 
+        // Show extra attributes if present (player IDs for embedding lookup)
+        if (ball.extraAttrs && Object.keys(ball.extraAttrs).length > 0) {
+            html += `
+                <div class="detail-section">
+                    <h3>Player IDs (for embedding lookup)</h3>
+                    <div class="feature-list">
+            `;
+
+            for (const [name, value] of Object.entries(ball.extraAttrs)) {
+                html += `
+                    <div class="detail-row">
+                        <span class="label">${name}</span>
+                        <span class="value">${value}</span>
+                    </div>
+                `;
+            }
+
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+
         // Find connected edges
         const temporalEdges = this.findBallTemporalEdges(ball.id, data.edges.temporal);
         const crossDomainEdges = data.edges.crossdomain.filter(e => e.source === ball.id);
