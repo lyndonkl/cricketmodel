@@ -8,6 +8,7 @@ const ContextGraph = {
     height: 0,
     margin: { top: 20, right: 20, bottom: 20, left: 20 },
     selectedNode: null,
+    selectedEdge: null,
     highlightedLayer: null,
 
     // Node positions by layer (calculated on render)
@@ -143,7 +144,6 @@ const ContextGraph = {
      * Render edges
      */
     renderEdges(g, edges) {
-        const self = this;
         const edgeGroup = g.append('g').attr('class', 'edges');
 
         // Hierarchical edges
@@ -156,8 +156,8 @@ const ContextGraph = {
             this.drawEdge(edgeGroup, edge, 'intra');
         });
 
-        // Query edges
-        edges.query.forEach(edge => {
+        // Query edges (only context node -> query, not ball -> query)
+        edges.query.filter(e => !e.source.startsWith('ball_')).forEach(edge => {
             this.drawEdge(edgeGroup, edge, 'query-edge');
         });
     },
@@ -166,27 +166,31 @@ const ContextGraph = {
      * Draw a single edge
      */
     drawEdge(g, edge, className) {
+        const self = this;
         const sourcePos = this.nodePositions[edge.source];
         const targetPos = this.nodePositions[edge.target];
 
         if (!sourcePos || !targetPos) return;
+
+        let edgeEl;
 
         // Curved path for same-layer edges
         if (sourcePos.x === targetPos.x) {
             const midY = (sourcePos.y + targetPos.y) / 2;
             const curveOffset = 30;
 
-            g.append('path')
+            edgeEl = g.append('path')
                 .attr('class', `edge ${className}`)
                 .attr('d', `M ${sourcePos.x} ${sourcePos.y}
                            Q ${sourcePos.x + curveOffset} ${midY}
                              ${targetPos.x} ${targetPos.y}`)
                 .attr('data-source', edge.source)
                 .attr('data-target', edge.target)
-                .attr('data-type', edge.type);
+                .attr('data-type', edge.type)
+                .attr('data-category', className);
         } else {
             // Straight line for cross-layer edges
-            g.append('line')
+            edgeEl = g.append('line')
                 .attr('class', `edge ${className}`)
                 .attr('x1', sourcePos.x)
                 .attr('y1', sourcePos.y)
@@ -194,8 +198,29 @@ const ContextGraph = {
                 .attr('y2', targetPos.y)
                 .attr('data-source', edge.source)
                 .attr('data-target', edge.target)
-                .attr('data-type', edge.type);
+                .attr('data-type', edge.type)
+                .attr('data-category', className);
         }
+
+        // Store edge data for click/hover handlers
+        edgeEl.datum(edge);
+
+        // Click handler
+        edgeEl.on('click', function(event) {
+            event.stopPropagation();
+            self.selectEdge(edge, this);
+        });
+
+        // Hover handlers
+        edgeEl.on('mouseenter', function(event) {
+            self.showEdgeTooltip(event, edge);
+            d3.select(this).classed('hovered', true);
+        });
+
+        edgeEl.on('mouseleave', function() {
+            self.hideTooltip();
+            d3.select(this).classed('hovered', false);
+        });
     },
 
     /**
@@ -231,8 +256,10 @@ const ContextGraph = {
      * Select a node
      */
     selectNode(node, element) {
-        // Deselect previous
+        // Deselect previous node and edge
         this.svg.selectAll('.node.selected').classed('selected', false);
+        this.svg.selectAll('.edge.selected').classed('selected', false);
+        this.selectedEdge = null;
 
         if (this.selectedNode === node) {
             this.selectedNode = null;
@@ -242,6 +269,45 @@ const ContextGraph = {
             d3.select(element).classed('selected', true);
             DetailSidebar.showNode(node);
         }
+    },
+
+    /**
+     * Select an edge
+     */
+    selectEdge(edge, element) {
+        // Deselect previous node and edge
+        this.svg.selectAll('.node.selected').classed('selected', false);
+        this.svg.selectAll('.edge.selected').classed('selected', false);
+        this.selectedNode = null;
+
+        if (this.selectedEdge === edge) {
+            this.selectedEdge = null;
+            DetailSidebar.clear();
+        } else {
+            this.selectedEdge = edge;
+            d3.select(element).classed('selected', true);
+            DetailSidebar.showEdge(edge);
+        }
+    },
+
+    /**
+     * Show edge tooltip on hover
+     */
+    showEdgeTooltip(event, edge) {
+        const tooltip = d3.select('body').selectAll('.tooltip').data([1]);
+        const tooltipEnter = tooltip.enter().append('div').attr('class', 'tooltip');
+
+        const tooltipEl = tooltip.merge(tooltipEnter);
+        const edgeType = DataLoader.edgeTypes[edge.type];
+
+        tooltipEl
+            .style('left', (event.pageX + 10) + 'px')
+            .style('top', (event.pageY - 10) + 'px')
+            .html(`
+                <div class="title">${edge.type}</div>
+                <div class="info">${edge.source} → ${edge.target}</div>
+                <div class="info">${edgeType?.description || ''}</div>
+            `);
     },
 
     /**

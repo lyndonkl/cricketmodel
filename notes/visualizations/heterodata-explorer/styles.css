@@ -384,6 +384,21 @@ body {
 .edge.crossdomain { stroke: var(--color-crossdomain); }
 .edge.query-edge { stroke: var(--color-query-edge); }
 
+.edge {
+    cursor: pointer;
+}
+
+.edge.hovered {
+    stroke-opacity: 1;
+    stroke-width: 3px !important;
+}
+
+.edge.selected {
+    stroke-opacity: 1;
+    stroke-width: 3px !important;
+    filter: drop-shadow(0 0 4px rgba(255,255,255,0.5));
+}
+
 .edge.hidden {
     display: none;
 }
@@ -420,11 +435,25 @@ body {
     fill: none;
     stroke-width: 1.5px;
     stroke-opacity: 0.5;
+    cursor: pointer;
+    transition: stroke-opacity 0.15s, stroke-width 0.15s;
 }
 
-.temporal-arc.recent { stroke: #e74c3c; }
-.temporal-arc.medium { stroke: #f39c12; }
-.temporal-arc.distant { stroke: #95a5a6; }
+.temporal-arc:hover,
+.temporal-arc.hovered {
+    stroke-opacity: 1;
+    stroke-width: 3px;
+}
+
+.temporal-arc.selected {
+    stroke-opacity: 1;
+    stroke-width: 3px;
+    filter: drop-shadow(0 0 4px rgba(255,255,255,0.5));
+}
+
+.temporal-arc.recent_precedes { stroke: #e74c3c; }
+.temporal-arc.medium_precedes { stroke: #f39c12; }
+.temporal-arc.distant_precedes { stroke: #95a5a6; }
 .temporal-arc.same_bowler { stroke: #3498db; }
 .temporal-arc.same_batsman { stroke: #2ecc71; }
 .temporal-arc.same_matchup { stroke: #9b59b6; }

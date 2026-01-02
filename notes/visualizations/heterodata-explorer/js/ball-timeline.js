@@ -8,6 +8,7 @@ const BallTimeline = {
     height: 0,
     margin: { top: 40, right: 20, bottom: 20, left: 20 },
     selectedBall: null,
+    selectedEdge: null,
     ballPositions: {},
 
     // Visible temporal edge types
@@ -190,6 +191,7 @@ const BallTimeline = {
      * Draw a single arc
      */
     drawArc(g, edge, type, height) {
+        const self = this;
         const sourcePos = this.ballPositions[edge.source];
         const targetPos = this.ballPositions[edge.target];
 
@@ -198,7 +200,7 @@ const BallTimeline = {
         const midX = (sourcePos.x + targetPos.x) / 2;
         const arcY = sourcePos.y + height;
 
-        g.append('path')
+        const arcEl = g.append('path')
             .attr('class', `temporal-arc ${type}`)
             .attr('d', `M ${sourcePos.x} ${sourcePos.y}
                        Q ${midX} ${arcY}
@@ -206,6 +208,26 @@ const BallTimeline = {
             .attr('data-type', type)
             .attr('data-source', edge.source)
             .attr('data-target', edge.target);
+
+        // Store edge data
+        arcEl.datum(edge);
+
+        // Click handler
+        arcEl.on('click', function(event) {
+            event.stopPropagation();
+            self.selectTemporalEdge(edge, this);
+        });
+
+        // Hover handlers
+        arcEl.on('mouseenter', function(event) {
+            self.showEdgeTooltip(event, edge);
+            d3.select(this).classed('hovered', true);
+        });
+
+        arcEl.on('mouseleave', function() {
+            self.hideTooltip();
+            d3.select(this).classed('hovered', false);
+        });
     },
 
     /**
@@ -242,8 +264,10 @@ const BallTimeline = {
      * Select a ball
      */
     selectBall(ball, element) {
-        // Deselect previous
+        // Deselect previous ball and edge
         this.svg.selectAll('.ball-node.selected').classed('selected', false);
+        this.svg.selectAll('.temporal-arc.selected').classed('selected', false);
+        this.selectedEdge = null;
 
         if (this.selectedBall === ball) {
             this.selectedBall = null;
@@ -255,6 +279,47 @@ const BallTimeline = {
             DetailSidebar.showBall(ball);
             this.highlightCrossDomainEdges(ball);
         }
+    },
+
+    /**
+     * Select a temporal edge
+     */
+    selectTemporalEdge(edge, element) {
+        // Deselect previous ball and edge
+        this.svg.selectAll('.ball-node.selected').classed('selected', false);
+        this.svg.selectAll('.temporal-arc.selected').classed('selected', false);
+        this.selectedBall = null;
+        this.clearCrossDomainHighlight();
+
+        if (this.selectedEdge === edge) {
+            this.selectedEdge = null;
+            DetailSidebar.clear();
+        } else {
+            this.selectedEdge = edge;
+            d3.select(element).classed('selected', true);
+            DetailSidebar.showTemporalEdge(edge);
+        }
+    },
+
+    /**
+     * Show edge tooltip on hover
+     */
+    showEdgeTooltip(event, edge) {
+        const tooltip = d3.select('body').selectAll('.tooltip').data([1]);
+        const tooltipEnter = tooltip.enter().append('div').attr('class', 'tooltip');
+
+        const tooltipEl = tooltip.merge(tooltipEnter);
+        const edgeType = DataLoader.edgeTypes[edge.type];
+
+        tooltipEl
+            .style('left', (event.pageX + 10) + 'px')
+            .style('top', (event.pageY - 10) + 'px')
+            .html(`
+                <div class="title">${edge.type}</div>
+                <div class="info">${edge.source} → ${edge.target}</div>
+                <div class="info">${edgeType?.description || ''}</div>
+                ${edge.decay ? `<div class="info">Decay: ${edge.decay.toFixed(3)}</div>` : ''}
+            `);
     },
 
     /**

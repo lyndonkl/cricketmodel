@@ -7,15 +7,12 @@ const DataLoader = {
     data: null,
 
     // Node type metadata with layer assignments
+    // IMPORTANT: Layer assignments match edge_builder.py LAYER_NODES for correct edge generation
     nodeTypes: {
-        // Global/Entity layer (6 nodes) - all ID-based embedding nodes
+        // Global layer (3 nodes) - venue and team IDs
         venue: { layer: 'global', index: 0, featureDim: 1, description: 'Match venue ID' },
         batting_team: { layer: 'global', index: 1, featureDim: 1, description: 'Batting team ID' },
         bowling_team: { layer: 'global', index: 2, featureDim: 1, description: 'Bowling team ID' },
-        // Identity nodes have .x (player_id) + .team_id + .role_id for hierarchical fallback
-        striker_identity: { layer: 'global', index: 3, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Striker player ID + team/role fallback' },
-        nonstriker_identity: { layer: 'global', index: 4, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Non-striker player ID + team/role fallback' },
-        bowler_identity: { layer: 'global', index: 5, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Bowler player ID + team/role fallback' },
 
         // State layer (5 nodes)
         score_state: { layer: 'state', index: 0, featureDim: 5, description: 'Current score, wickets, balls' },
@@ -24,11 +21,15 @@ const DataLoader = {
         time_pressure: { layer: 'state', index: 3, featureDim: 3, description: 'Balls remaining, urgency, is_final_over' },
         wicket_buffer: { layer: 'state', index: 4, featureDim: 2, description: 'Wickets in hand, is_tail indicator' },
 
-        // Actor State layer (4 nodes) - computed state features for actors
-        striker_state: { layer: 'actor', index: 0, featureDim: 8, description: 'Striker: runs, balls, SR, dots_pct, is_set, boundaries, is_debut, balls_since' },
-        nonstriker_state: { layer: 'actor', index: 1, featureDim: 8, description: 'Non-striker: Z2 symmetric with striker' },
-        bowler_state: { layer: 'actor', index: 2, featureDim: 8, description: 'Bowler: balls, runs, wickets, economy, dots_pct, threat, is_pace, is_spin' },
-        partnership: { layer: 'actor', index: 3, featureDim: 4, description: 'Partnership: runs, balls, run_rate, stability' },
+        // Actor layer (7 nodes) - identity + state + partnership
+        // Identity nodes have .x (player_id) + .team_id + .role_id for hierarchical fallback
+        striker_identity: { layer: 'actor', index: 0, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Striker player ID + team/role fallback' },
+        striker_state: { layer: 'actor', index: 1, featureDim: 8, description: 'Striker: runs, balls, SR, dots_pct, is_set, boundaries, is_debut, balls_since' },
+        nonstriker_identity: { layer: 'actor', index: 2, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Non-striker player ID + team/role fallback' },
+        nonstriker_state: { layer: 'actor', index: 3, featureDim: 8, description: 'Non-striker: Z2 symmetric with striker' },
+        bowler_identity: { layer: 'actor', index: 4, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Bowler player ID + team/role fallback' },
+        bowler_state: { layer: 'actor', index: 5, featureDim: 8, description: 'Bowler: balls, runs, wickets, economy, dots_pct, threat, is_pace, is_spin' },
+        partnership: { layer: 'actor', index: 6, featureDim: 4, description: 'Partnership: runs, balls, run_rate, stability' },
 
         // Dynamics layer (4 nodes)
         batting_momentum: { layer: 'dynamics', index: 0, featureDim: 1, description: 'Recent batting trend' },
@@ -49,11 +50,11 @@ const DataLoader = {
         query: { layer: 'query', index: 0, featureDim: 1, description: 'Placeholder for learned embedding - aggregates via attention' }
     },
 
-    // Layer metadata
+    // Layer metadata - matches edge_builder.py LAYER_NODES
     layers: {
-        global: { name: 'Global', color: '#4a90d9', nodes: ['venue', 'batting_team', 'bowling_team', 'striker_identity', 'nonstriker_identity', 'bowler_identity'] },
+        global: { name: 'Global', color: '#4a90d9', nodes: ['venue', 'batting_team', 'bowling_team'] },
         state: { name: 'State', color: '#50c878', nodes: ['score_state', 'chase_state', 'phase_state', 'time_pressure', 'wicket_buffer'] },
-        actor: { name: 'Actor', color: '#f5a623', nodes: ['striker_state', 'nonstriker_state', 'bowler_state', 'partnership'] },
+        actor: { name: 'Actor', color: '#f5a623', nodes: ['striker_identity', 'striker_state', 'nonstriker_identity', 'nonstriker_state', 'bowler_identity', 'bowler_state', 'partnership'] },
         dynamics: { name: 'Dynamics', color: '#9b59b6', nodes: ['batting_momentum', 'bowling_momentum', 'pressure_index', 'dot_pressure'] },
         ball: { name: 'Ball', color: '#e74c3c', nodes: [] },  // Dynamic
         query: { name: 'Query', color: '#1abc9c', nodes: ['query'] }
@@ -119,11 +120,12 @@ const DataLoader = {
 
     /**
      * Generate context nodes with sample feature values
+     * Order matches edge_builder.py LAYER_NODES for each layer
      */
     generateContextNodes() {
         const nodes = [];
 
-        // Global/Entity layer (6 nodes) - all ID-based embedding nodes
+        // Global layer (3 nodes) - venue and team IDs
         nodes.push({
             id: 'venue', type: 'venue', layer: 'global',
             features: { venue_id: 5 },
@@ -138,25 +140,6 @@ const DataLoader = {
             id: 'bowling_team', type: 'bowling_team', layer: 'global',
             features: { team_id: 8 },
             featureNames: ['team_id']
-        });
-        // Identity nodes have .x (player_id) + extra attributes (team_id, role_id) for hierarchical fallback
-        nodes.push({
-            id: 'striker_identity', type: 'striker_identity', layer: 'global',
-            features: { player_id: 142 },
-            featureNames: ['player_id'],
-            extraAttrs: { team_id: 12, role_id: 1 }  // Hierarchical fallback: team embedding, role embedding
-        });
-        nodes.push({
-            id: 'nonstriker_identity', type: 'nonstriker_identity', layer: 'global',
-            features: { player_id: 87 },
-            featureNames: ['player_id'],
-            extraAttrs: { team_id: 12, role_id: 2 }  // Hierarchical fallback: team embedding, role embedding
-        });
-        nodes.push({
-            id: 'bowler_identity', type: 'bowler_identity', layer: 'global',
-            features: { player_id: 203 },
-            featureNames: ['player_id'],
-            extraAttrs: { team_id: 8, role_id: 3 }  // Hierarchical fallback: team embedding, role embedding
         });
 
         // State layer
@@ -186,18 +169,41 @@ const DataLoader = {
             featureNames: ['wickets_in_hand_norm', 'is_tail']
         });
 
-        // Actor State layer (4 nodes) - computed state features for actors
+        // Actor layer (7 nodes) - identity + state + partnership
+        // Order matches edge_builder.py LAYER_NODES['actor']
+
+        // striker_identity: player ID with hierarchical fallback
+        nodes.push({
+            id: 'striker_identity', type: 'striker_identity', layer: 'actor',
+            features: { player_id: 142 },
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 12, role_id: 1 }
+        });
         // striker_state: 7 base features + balls_since_on_strike
         nodes.push({
             id: 'striker_state', type: 'striker_state', layer: 'actor',
             features: { runs: 0.32, balls: 0.28, sr: 0.71, dots_pct: 0.3, is_set: 1.0, boundaries: 0.2, is_debut: 0.0, balls_since: 0.1 },
             featureNames: ['runs_norm', 'balls_faced_norm', 'strike_rate_norm', 'dots_pct', 'is_set', 'boundaries_norm', 'is_debut_ball', 'balls_since_on_strike']
         });
+        // nonstriker_identity: player ID with hierarchical fallback
+        nodes.push({
+            id: 'nonstriker_identity', type: 'nonstriker_identity', layer: 'actor',
+            features: { player_id: 87 },
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 12, role_id: 2 }
+        });
         // nonstriker_state: Z2 symmetric with striker (7 base + balls_since_as_nonstriker)
         nodes.push({
             id: 'nonstriker_state', type: 'nonstriker_state', layer: 'actor',
             features: { runs: 0.45, balls: 0.38, sr: 0.78, dots_pct: 0.25, is_set: 1.0, boundaries: 0.25, is_debut: 0.0, balls_since: 0.05 },
             featureNames: ['runs_norm', 'balls_faced_norm', 'strike_rate_norm', 'dots_pct', 'is_set', 'boundaries_norm', 'is_debut_ball', 'balls_since_as_nonstriker']
+        });
+        // bowler_identity: player ID with hierarchical fallback
+        nodes.push({
+            id: 'bowler_identity', type: 'bowler_identity', layer: 'actor',
+            features: { player_id: 203 },
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 8, role_id: 3 }
         });
         // bowler_state: bowling stats + type indicators
         nodes.push({
@@ -356,73 +362,261 @@ const DataLoader = {
             });
         });
 
-        // Intra-layer: matchup
-        edges.intra.push({ source: 'striker_state', target: 'bowler_state', type: 'matchup' });
-        edges.intra.push({ source: 'striker_state', target: 'partnership', type: 'relates_to' });
-        edges.intra.push({ source: 'nonstriker_state', target: 'partnership', type: 'relates_to' });
+        // Intra-layer edges (bidirectional, matching edge_builder.py)
 
-        // Temporal edges between balls
+        // INTRA_LAYER_GLOBAL
+        const intraGlobal = [
+            ['venue', 'batting_team'],
+            ['venue', 'bowling_team'],
+            ['batting_team', 'bowling_team']
+        ];
+        intraGlobal.forEach(([src, tgt]) => {
+            edges.intra.push({ source: src, target: tgt, type: 'relates_to' });
+            edges.intra.push({ source: tgt, target: src, type: 'relates_to' });
+        });
+
+        // INTRA_LAYER_STATE
+        const intraState = [
+            ['score_state', 'chase_state'],
+            ['score_state', 'phase_state'],
+            ['score_state', 'time_pressure'],
+            ['score_state', 'wicket_buffer'],
+            ['chase_state', 'time_pressure'],
+            ['phase_state', 'time_pressure'],
+            ['time_pressure', 'wicket_buffer']
+        ];
+        intraState.forEach(([src, tgt]) => {
+            edges.intra.push({ source: src, target: tgt, type: 'relates_to' });
+            edges.intra.push({ source: tgt, target: src, type: 'relates_to' });
+        });
+
+        // INTRA_LAYER_ACTOR (uses 'matchup' relation)
+        const intraActor = [
+            // Identity to state connections
+            ['striker_identity', 'striker_state'],
+            ['nonstriker_identity', 'nonstriker_state'],
+            ['bowler_identity', 'bowler_state'],
+            // THE KEY MATCHUP: striker vs bowler
+            ['striker_identity', 'bowler_identity'],
+            // Non-striker matchups (run-out risk, strike rotation)
+            ['nonstriker_identity', 'bowler_identity'],
+            ['striker_identity', 'nonstriker_identity'],
+            // Partnership connections
+            ['striker_state', 'partnership'],
+            ['nonstriker_state', 'partnership'],
+            ['bowler_state', 'partnership'],
+            ['striker_identity', 'partnership'],
+            ['nonstriker_identity', 'partnership']
+        ];
+        intraActor.forEach(([src, tgt]) => {
+            edges.intra.push({ source: src, target: tgt, type: 'matchup' });
+            edges.intra.push({ source: tgt, target: src, type: 'matchup' });
+        });
+
+        // INTRA_LAYER_DYNAMICS
+        const intraDynamics = [
+            ['batting_momentum', 'bowling_momentum'],
+            ['batting_momentum', 'pressure_index'],
+            ['bowling_momentum', 'pressure_index'],
+            ['pressure_index', 'dot_pressure']
+        ];
+        intraDynamics.forEach(([src, tgt]) => {
+            edges.intra.push({ source: src, target: tgt, type: 'relates_to' });
+            edges.intra.push({ source: tgt, target: src, type: 'relates_to' });
+        });
+
+        // Temporal edges between balls (matching build_temporal_edges in edge_builder.py)
         const numBalls = balls.length;
+        const maxTemporalDistance = 120;  // T20 = 120 balls
+        const spellWindow = 24.0;  // ~4 overs - typical bowler spell
+        const inningsWindow = 60.0;  // ~10 overs - batsman form window
+
+        // 1. Multi-scale precedes edges (CAUSAL: older -> newer)
         for (let i = 0; i < numBalls; i++) {
             for (let j = i + 1; j < numBalls; j++) {
                 const gap = j - i;
 
-                // Precedes edges (from older to newer)
-                if (gap <= 3) {
+                if (gap <= 6) {
+                    // Recent: within current over context
                     edges.temporal.recent_precedes.push({
                         source: `ball_${i}`, target: `ball_${j}`,
-                        type: 'recent_precedes', decay: 1 / gap
+                        type: 'recent_precedes', decay: gap / 6.0
                     });
-                } else if (gap <= 10) {
+                } else if (gap <= 24) {
+                    // Medium: 4-over spell window
                     edges.temporal.medium_precedes.push({
                         source: `ball_${i}`, target: `ball_${j}`,
-                        type: 'medium_precedes', decay: 0.5 / gap
+                        type: 'medium_precedes', decay: (gap - 6) / 18.0
                     });
-                } else if (gap <= 20) {
-                    edges.temporal.distant_precedes.push({
-                        source: `ball_${i}`, target: `ball_${j}`,
-                        type: 'distant_precedes', decay: 0.25 / gap
-                    });
-                }
-
-                // Same bowler/batsman/matchup (sample, not exhaustive)
-                if (balls[i].bowlerId === balls[j].bowlerId && gap <= 12) {
-                    edges.temporal.same_bowler.push({
-                        source: `ball_${i}`, target: `ball_${j}`,
-                        type: 'same_bowler'
-                    });
-                }
-                if (balls[i].batsmanId === balls[j].batsmanId && gap <= 12) {
-                    edges.temporal.same_batsman.push({
-                        source: `ball_${i}`, target: `ball_${j}`,
-                        type: 'same_batsman'
-                    });
-                }
-
-                // Same over
-                if (balls[i].over === balls[j].over) {
-                    edges.temporal.same_over.push({
-                        source: `ball_${i}`, target: `ball_${j}`,
-                        type: 'same_over', position: balls[j].ballInOver / 5
-                    });
+                } else {
+                    // Distant: sparse connections every 6 balls for efficiency
+                    if (gap % 6 === 0) {
+                        edges.temporal.distant_precedes.push({
+                            source: `ball_${i}`, target: `ball_${j}`,
+                            type: 'distant_precedes', decay: (gap - 24) / maxTemporalDistance
+                        });
+                    }
                 }
             }
         }
 
-        // Cross-domain: balls to context (sample - last 10 balls)
-        const recentBalls = balls.slice(-10);
+        // 2. Same bowler edges (BIDIRECTIONAL with temporal decay)
+        const bowlerToBalls = {};
+        balls.forEach((ball, idx) => {
+            const bowlerId = ball.extraAttrs?.bowler_id || ball.bowler;
+            if (!bowlerToBalls[bowlerId]) bowlerToBalls[bowlerId] = [];
+            bowlerToBalls[bowlerId].push(idx);
+        });
+
+        for (const ballIndices of Object.values(bowlerToBalls)) {
+            if (ballIndices.length > 1) {
+                for (let i = 0; i < ballIndices.length; i++) {
+                    for (let j = i + 1; j < ballIndices.length; j++) {
+                        const temporalDist = Math.abs(ballIndices[j] - ballIndices[i]) / spellWindow;
+                        // Forward edge
+                        edges.temporal.same_bowler.push({
+                            source: `ball_${ballIndices[i]}`, target: `ball_${ballIndices[j]}`,
+                            type: 'same_bowler', decay: temporalDist
+                        });
+                        // Backward edge
+                        edges.temporal.same_bowler.push({
+                            source: `ball_${ballIndices[j]}`, target: `ball_${ballIndices[i]}`,
+                            type: 'same_bowler', decay: temporalDist
+                        });
+                    }
+                }
+            }
+        }
+
+        // 3. Same batsman edges (BIDIRECTIONAL with temporal decay)
+        const batsmanToBalls = {};
+        balls.forEach((ball, idx) => {
+            const batsmanId = ball.extraAttrs?.batsman_id || ball.batsman;
+            if (!batsmanToBalls[batsmanId]) batsmanToBalls[batsmanId] = [];
+            batsmanToBalls[batsmanId].push(idx);
+        });
+
+        for (const ballIndices of Object.values(batsmanToBalls)) {
+            if (ballIndices.length > 1) {
+                for (let i = 0; i < ballIndices.length; i++) {
+                    for (let j = i + 1; j < ballIndices.length; j++) {
+                        const temporalDist = Math.abs(ballIndices[j] - ballIndices[i]) / inningsWindow;
+                        // Forward edge
+                        edges.temporal.same_batsman.push({
+                            source: `ball_${ballIndices[i]}`, target: `ball_${ballIndices[j]}`,
+                            type: 'same_batsman', decay: temporalDist
+                        });
+                        // Backward edge
+                        edges.temporal.same_batsman.push({
+                            source: `ball_${ballIndices[j]}`, target: `ball_${ballIndices[i]}`,
+                            type: 'same_batsman', decay: temporalDist
+                        });
+                    }
+                }
+            }
+        }
+
+        // 4. Same matchup edges (CAUSAL: older -> newer only)
+        const matchupToBalls = {};
+        balls.forEach((ball, idx) => {
+            const bowlerId = ball.extraAttrs?.bowler_id || ball.bowler;
+            const batsmanId = ball.extraAttrs?.batsman_id || ball.batsman;
+            const matchupKey = `${bowlerId}_${batsmanId}`;
+            if (!matchupToBalls[matchupKey]) matchupToBalls[matchupKey] = [];
+            matchupToBalls[matchupKey].push(idx);
+        });
+
+        for (const ballIndices of Object.values(matchupToBalls)) {
+            if (ballIndices.length > 1) {
+                const sorted = [...ballIndices].sort((a, b) => a - b);
+                for (let i = 0; i < sorted.length; i++) {
+                    for (let j = i + 1; j < sorted.length; j++) {
+                        // Only older -> newer direction (causal)
+                        edges.temporal.same_matchup.push({
+                            source: `ball_${sorted[i]}`, target: `ball_${sorted[j]}`,
+                            type: 'same_matchup'
+                        });
+                    }
+                }
+            }
+        }
+
+        // 5. Same over edges (CAUSAL with ball-in-over position)
+        // Matches build_same_over_edges in edge_builder.py
+        const overToBalls = {};
+        balls.forEach((ball, idx) => {
+            if (!overToBalls[ball.over]) overToBalls[ball.over] = [];
+            overToBalls[ball.over].push({ idx, ballInOver: ball.ballInOver });
+        });
+
+        for (const ballsInOver of Object.values(overToBalls)) {
+            if (ballsInOver.length > 1) {
+                const sorted = [...ballsInOver].sort((a, b) => a.idx - b.idx);
+                for (let i = 0; i < sorted.length; i++) {
+                    for (let j = i + 1; j < sorted.length; j++) {
+                        // Causal: older -> newer with position attribute
+                        // Clamp to 1.0 max since overs can have >6 deliveries due to wides/no-balls
+                        const tgtPosition = Math.min(sorted[j].ballInOver / 5.0, 1.0);
+                        edges.temporal.same_over.push({
+                            source: `ball_${sorted[i].idx}`, target: `ball_${sorted[j].idx}`,
+                            type: 'same_over', position: tgtPosition
+                        });
+                    }
+                }
+            }
+        }
+
+        // Cross-domain: balls to context (matching build_cross_domain_edges in edge_builder.py)
+        // These edges connect historical balls to CURRENT players only
+        // - faced_by: balls faced by CURRENT striker -> striker_identity
+        // - partnered_by: balls where CURRENT non-striker was partner OR was batting -> nonstriker_identity
+        // - bowled_by: balls bowled by CURRENT bowler -> bowler_identity
+        // - informs: recent_k balls -> all dynamics nodes
+
+        // For sample data, simulate "current" players from the last ball
+        const lastBall = balls[balls.length - 1];
+        const currentStrikerId = lastBall?.extraAttrs?.batsman_id || lastBall?.batsman;
+        const currentBowlerId = lastBall?.extraAttrs?.bowler_id || lastBall?.bowler;
+        const currentNonstrikerId = lastBall?.extraAttrs?.nonstriker_id || lastBall?.nonstriker;
+
+        // faced_by: Only balls actually faced by the CURRENT striker
+        balls.forEach(ball => {
+            const ballBatsmanId = ball.extraAttrs?.batsman_id || ball.batsman;
+            if (ballBatsmanId === currentStrikerId) {
+                edges.crossdomain.push({
+                    source: ball.id, target: 'striker_identity',
+                    type: 'faced_by'
+                });
+            }
+        });
+
+        // partnered_by: Balls where CURRENT non-striker was at non-striker end OR was batting
+        balls.forEach(ball => {
+            const ballNonstrikerId = ball.extraAttrs?.nonstriker_id || ball.nonstriker;
+            const ballBatsmanId = ball.extraAttrs?.batsman_id || ball.batsman;
+            if (ballNonstrikerId === currentNonstrikerId || ballBatsmanId === currentNonstrikerId) {
+                edges.crossdomain.push({
+                    source: ball.id, target: 'nonstriker_identity',
+                    type: 'partnered_by'
+                });
+            }
+        });
+
+        // bowled_by: Only balls actually bowled by the CURRENT bowler
+        balls.forEach(ball => {
+            const ballBowlerId = ball.extraAttrs?.bowler_id || ball.bowler;
+            if (ballBowlerId === currentBowlerId) {
+                edges.crossdomain.push({
+                    source: ball.id, target: 'bowler_identity',
+                    type: 'bowled_by'
+                });
+            }
+        });
+
+        // informs: Recent balls (last recent_k=12) inform ALL dynamics nodes
+        const recentK = 12;
+        const recentBalls = balls.slice(-recentK);
         recentBalls.forEach(ball => {
-            // faced_by: striker faced this ball
-            edges.crossdomain.push({
-                source: ball.id, target: 'striker_state',
-                type: 'faced_by'
-            });
-            // bowled_by: bowler bowled this ball
-            edges.crossdomain.push({
-                source: ball.id, target: 'bowler_state',
-                type: 'bowled_by'
-            });
-            // informs: ball informs all dynamics
             dynamicsNodes.forEach(d => {
                 edges.crossdomain.push({
                     source: ball.id, target: d,
@@ -431,14 +625,21 @@ const DataLoader = {
             });
         });
 
-        // Query edges
-        // Attends to dynamics
-        dynamicsNodes.forEach(d => {
-            edges.query.push({ source: 'query', target: d, type: 'attends' });
+        // Query edges (matching edge_builder.py)
+        // All context nodes -> query via 'attends'
+        const allContextNodes = [...globalNodes, ...stateNodes, ...actorNodes, ...dynamicsNodes];
+        allContextNodes.forEach(node => {
+            edges.query.push({ source: node, target: 'query', type: 'attends' });
         });
-        // Attends to actor states
-        ['striker_state', 'bowler_state', 'partnership'].forEach(a => {
-            edges.query.push({ source: 'query', target: a, type: 'attends' });
+
+        // Balls -> query via 'attends'
+        balls.forEach(ball => {
+            edges.query.push({ source: ball.id, target: 'query', type: 'attends' });
+        });
+
+        // Dynamics -> query via 'drives' (separate relation for momentum influence)
+        dynamicsNodes.forEach(d => {
+            edges.query.push({ source: d, target: 'query', type: 'drives' });
         });
 
         return edges;

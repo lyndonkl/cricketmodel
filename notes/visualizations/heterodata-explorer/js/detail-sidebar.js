@@ -263,6 +263,301 @@ const DetailSidebar = {
     },
 
     /**
+     * Show edge details
+     */
+    showEdge(edge) {
+        const edgeType = DataLoader.edgeTypes[edge.type];
+        const category = edgeType?.category || 'unknown';
+
+        // Get source and target node info
+        const data = DataLoader.data;
+        const sourceNode = data.contextNodes.find(n => n.id === edge.source);
+        const targetNode = data.contextNodes.find(n => n.id === edge.target);
+
+        let html = `
+            <div class="detail-section">
+                <h3>Edge Info</h3>
+                <div class="detail-row">
+                    <span class="label">Type</span>
+                    <span class="value">${edge.type}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Category</span>
+                    <span class="value">${category}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Description</span>
+                    <span class="value" style="font-family: inherit; font-size: 12px;">${edgeType?.description || '-'}</span>
+                </div>
+            </div>
+
+            <div class="detail-section">
+                <h3>Connection</h3>
+                <div class="detail-row">
+                    <span class="label">Source</span>
+                    <span class="value">${edge.source}</span>
+                </div>
+        `;
+
+        if (sourceNode) {
+            html += `
+                <div class="detail-row">
+                    <span class="label">Source Layer</span>
+                    <span class="value">${sourceNode.layer}</span>
+                </div>
+            `;
+        }
+
+        html += `
+                <div class="detail-row">
+                    <span class="label">Target</span>
+                    <span class="value">${edge.target}</span>
+                </div>
+        `;
+
+        if (targetNode) {
+            html += `
+                <div class="detail-row">
+                    <span class="label">Target Layer</span>
+                    <span class="value">${targetNode.layer}</span>
+                </div>
+            `;
+        }
+
+        html += '</div>';
+
+        // Show edge attributes if present (e.g., decay for temporal edges)
+        const edgeAttrs = {};
+        for (const [key, value] of Object.entries(edge)) {
+            if (!['source', 'target', 'type'].includes(key)) {
+                edgeAttrs[key] = value;
+            }
+        }
+
+        if (Object.keys(edgeAttrs).length > 0) {
+            html += `
+                <div class="detail-section">
+                    <h3>Edge Attributes</h3>
+                    <div class="feature-list">
+            `;
+
+            for (const [name, value] of Object.entries(edgeAttrs)) {
+                const formattedValue = typeof value === 'number' ? value.toFixed(4) : value;
+                html += `
+                    <div class="detail-row">
+                        <span class="label">${name}</span>
+                        <span class="value">${formattedValue}</span>
+                    </div>
+                `;
+            }
+
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show source node features if it's a context node
+        if (sourceNode) {
+            html += `
+                <div class="detail-section">
+                    <h3>Source Features (${sourceNode.featureNames.length} dims)</h3>
+                    <div class="feature-list">
+            `;
+
+            sourceNode.featureNames.forEach((name, i) => {
+                const value = Object.values(sourceNode.features)[i];
+                const formattedValue = typeof value === 'number' ? value.toFixed(3) : value;
+                html += `
+                    <div class="detail-row">
+                        <span class="label">${name}</span>
+                        <span class="value">${formattedValue}</span>
+                    </div>
+                `;
+            });
+
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show target node features if it's a context node
+        if (targetNode) {
+            html += `
+                <div class="detail-section">
+                    <h3>Target Features (${targetNode.featureNames.length} dims)</h3>
+                    <div class="feature-list">
+            `;
+
+            targetNode.featureNames.forEach((name, i) => {
+                const value = Object.values(targetNode.features)[i];
+                const formattedValue = typeof value === 'number' ? value.toFixed(3) : value;
+                html += `
+                    <div class="detail-row">
+                        <span class="label">${name}</span>
+                        <span class="value">${formattedValue}</span>
+                    </div>
+                `;
+            });
+
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+
+        this.container.innerHTML = html;
+    },
+
+    /**
+     * Show temporal edge details (ball to ball)
+     */
+    showTemporalEdge(edge) {
+        const edgeType = DataLoader.edgeTypes[edge.type];
+        const data = DataLoader.data;
+
+        // Find source and target balls
+        const sourceBall = data.ballNodes.find(b => b.id === edge.source);
+        const targetBall = data.ballNodes.find(b => b.id === edge.target);
+
+        let html = `
+            <div class="detail-section">
+                <h3>Temporal Edge</h3>
+                <div class="detail-row">
+                    <span class="label">Type</span>
+                    <span class="value">${edge.type}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Category</span>
+                    <span class="value">temporal</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Description</span>
+                    <span class="value" style="font-family: inherit; font-size: 12px;">${edgeType?.description || '-'}</span>
+                </div>
+            </div>
+        `;
+
+        // Show edge attributes (decay, position)
+        const edgeAttrs = {};
+        for (const [key, value] of Object.entries(edge)) {
+            if (!['source', 'target', 'type'].includes(key)) {
+                edgeAttrs[key] = value;
+            }
+        }
+
+        if (Object.keys(edgeAttrs).length > 0) {
+            html += `
+                <div class="detail-section">
+                    <h3>Edge Attributes</h3>
+                    <div class="feature-list">
+            `;
+
+            for (const [name, value] of Object.entries(edgeAttrs)) {
+                const formattedValue = typeof value === 'number' ? value.toFixed(4) : value;
+                html += `
+                    <div class="detail-row">
+                        <span class="label">${name}</span>
+                        <span class="value">${formattedValue}</span>
+                    </div>
+                `;
+            }
+
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show source ball info
+        if (sourceBall) {
+            html += `
+                <div class="detail-section">
+                    <h3>Source Ball</h3>
+                    <div class="detail-row">
+                        <span class="label">Ball</span>
+                        <span class="value">${sourceBall.id}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Over</span>
+                        <span class="value">${sourceBall.over + 1}.${sourceBall.ballInOver + 1}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Bowler</span>
+                        <span class="value">${sourceBall.bowler}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Batsman</span>
+                        <span class="value">${sourceBall.batsman}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Runs</span>
+                        <span class="value">${sourceBall.runs}${sourceBall.isWicket ? ' (W)' : ''}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show target ball info
+        if (targetBall) {
+            html += `
+                <div class="detail-section">
+                    <h3>Target Ball</h3>
+                    <div class="detail-row">
+                        <span class="label">Ball</span>
+                        <span class="value">${targetBall.id}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Over</span>
+                        <span class="value">${targetBall.over + 1}.${targetBall.ballInOver + 1}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Bowler</span>
+                        <span class="value">${targetBall.bowler}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Batsman</span>
+                        <span class="value">${targetBall.batsman}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Runs</span>
+                        <span class="value">${targetBall.runs}${targetBall.isWicket ? ' (W)' : ''}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show ball gap info
+        if (sourceBall && targetBall) {
+            const gap = targetBall.index - sourceBall.index;
+            html += `
+                <div class="detail-section">
+                    <h3>Connection</h3>
+                    <div class="detail-row">
+                        <span class="label">Ball Gap</span>
+                        <span class="value">${gap} balls</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Same Bowler</span>
+                        <span class="value">${sourceBall.bowler === targetBall.bowler ? 'Yes' : 'No'}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Same Batsman</span>
+                        <span class="value">${sourceBall.batsman === targetBall.batsman ? 'Yes' : 'No'}</span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="label">Same Over</span>
+                        <span class="value">${sourceBall.over === targetBall.over ? 'Yes' : 'No'}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        this.container.innerHTML = html;
+    },
+
+    /**
      * Find incoming edges for a node
      */
     findIncomingEdges(nodeId, edges) {
