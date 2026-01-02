@@ -252,11 +252,13 @@ def build_same_over_edges(
                     same_over_src.append(sorted_balls[i])
                     same_over_tgt.append(sorted_balls[j])
                     # Add target ball's position in over as edge attribute
+                    # Clamp to 1.0 max since overs can have >6 deliveries due to wides/no-balls
                     if ball_in_over_positions is not None:
-                        tgt_position = ball_in_over_positions[sorted_balls[j]] / 5.0  # Normalize 0-5 to 0-1
+                        tgt_position = min(ball_in_over_positions[sorted_balls[j]] / 5.0, 1.0)
                     else:
                         # Fallback: estimate position from ball index within over
-                        tgt_position = (j % 6) / 5.0
+                        # Use actual ball index, not loop index j
+                        tgt_position = (sorted_balls[j] % 6) / 5.0
                     same_over_position.append(tgt_position)
 
     if same_over_src:
