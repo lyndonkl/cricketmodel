@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HeteroData Explorer - Cricket Ball Prediction</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+    <!-- HEADER: Title + Match Selector -->
+    <header id="header">
+        <h1>HeteroData Explorer</h1>
+        <div class="header-controls">
+            <label for="match-selector">Match:</label>
+            <select id="match-selector">
+                <option value="sample">Sample Match (MI vs CSK)</option>
+            </select>
+            <span id="match-info"></span>
+        </div>
+    </header>
+
+    <!-- MAIN CONTAINER -->
+    <div id="main-container">
+        <!-- MAIN VISUALIZATION AREA -->
+        <main id="visualization-area">
+            <!-- Overview Panel: Layer Boxes -->
+            <section id="overview-panel">
+                <h2>Layer Overview</h2>
+                <div id="layer-boxes"></div>
+            </section>
+
+            <!-- Context Graph: 21 nodes -->
+            <section id="context-graph">
+                <h2>Context Graph <span class="node-count">(21 nodes)</span></h2>
+                <svg id="context-svg"></svg>
+            </section>
+
+            <!-- Ball Timeline: N balls -->
+            <section id="ball-timeline">
+                <h2>Ball Timeline <span id="ball-count">(0 balls)</span></h2>
+                <svg id="timeline-svg"></svg>
+            </section>
+        </main>
+
+        <!-- DETAIL SIDEBAR -->
+        <aside id="detail-sidebar">
+            <h2>Details</h2>
+            <div id="detail-content">
+                <p class="placeholder">Click a node or edge to see details</p>
+            </div>
+        </aside>
+    </div>
+
+    <!-- EDGE FILTER BAR -->
+    <footer id="edge-filter-bar">
+        <span class="filter-label">Edge Filters:</span>
+        <div class="filter-group">
+            <label><input type="checkbox" id="filter-hierarchical" checked> Hierarchical <span class="count"></span></label>
+            <label><input type="checkbox" id="filter-intra" checked> Intra-layer <span class="count"></span></label>
+            <label><input type="checkbox" id="filter-temporal" checked> Temporal <span class="count"></span></label>
+            <label><input type="checkbox" id="filter-crossdomain" checked> Cross-domain <span class="count"></span></label>
+            <label><input type="checkbox" id="filter-query" checked> Query <span class="count"></span></label>
+        </div>
+        <div class="temporal-subtypes" id="temporal-subtypes">
+            <label><input type="checkbox" data-temporal="recent_precedes" checked> recent</label>
+            <label><input type="checkbox" data-temporal="medium_precedes" checked> medium</label>
+            <label><input type="checkbox" data-temporal="distant_precedes" checked> distant</label>
+            <label><input type="checkbox" data-temporal="same_bowler" checked> same_bowler</label>
+            <label><input type="checkbox" data-temporal="same_batsman" checked> same_batsman</label>
+            <label><input type="checkbox" data-temporal="same_matchup" checked> same_matchup</label>
+            <label><input type="checkbox" data-temporal="same_over" checked> same_over</label>
+        </div>
+    </footer>
+
+    <!-- JavaScript Modules -->
+    <script src="js/data-loader.js"></script>
+    <script src="js/overview-panel.js"></script>
+    <script src="js/context-graph.js"></script>
+    <script src="js/ball-timeline.js"></script>
+    <script src="js/edge-filters.js"></script>
+    <script src="js/detail-sidebar.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
