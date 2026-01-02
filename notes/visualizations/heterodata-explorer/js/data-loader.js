@@ -8,10 +8,14 @@ const DataLoader = {
 
     // Node type metadata with layer assignments
     nodeTypes: {
-        // Global layer (3 nodes)
+        // Global/Entity layer (6 nodes) - all ID-based embedding nodes
         venue: { layer: 'global', index: 0, featureDim: 1, description: 'Match venue ID' },
         batting_team: { layer: 'global', index: 1, featureDim: 1, description: 'Batting team ID' },
         bowling_team: { layer: 'global', index: 2, featureDim: 1, description: 'Bowling team ID' },
+        // Identity nodes have .x (player_id) + .team_id + .role_id for hierarchical fallback
+        striker_identity: { layer: 'global', index: 3, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Striker player ID + team/role fallback' },
+        nonstriker_identity: { layer: 'global', index: 4, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Non-striker player ID + team/role fallback' },
+        bowler_identity: { layer: 'global', index: 5, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Bowler player ID + team/role fallback' },
 
         // State layer (5 nodes)
         score_state: { layer: 'state', index: 0, featureDim: 5, description: 'Current score, wickets, balls' },
@@ -20,15 +24,11 @@ const DataLoader = {
         time_pressure: { layer: 'state', index: 3, featureDim: 3, description: 'Urgency indicators' },
         wicket_buffer: { layer: 'state', index: 4, featureDim: 2, description: 'Wickets remaining buffer' },
 
-        // Actor layer (7 nodes)
-        // Identity nodes have .x (player_id) + .team_id + .role_id for hierarchical fallback
-        striker_identity: { layer: 'actor', index: 0, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Striker player ID + team/role fallback' },
-        striker_state: { layer: 'actor', index: 1, featureDim: 8, description: 'Striker runs, balls, SR' },
-        nonstriker_identity: { layer: 'actor', index: 2, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Non-striker player ID + team/role fallback' },
-        nonstriker_state: { layer: 'actor', index: 3, featureDim: 8, description: 'Non-striker state' },
-        bowler_identity: { layer: 'actor', index: 4, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Bowler player ID + team/role fallback' },
-        bowler_state: { layer: 'actor', index: 5, featureDim: 8, description: 'Bowler overs, economy, wickets' },
-        partnership: { layer: 'actor', index: 6, featureDim: 4, description: 'Current partnership runs/balls' },
+        // Actor State layer (4 nodes) - computed state features for actors
+        striker_state: { layer: 'actor', index: 0, featureDim: 8, description: 'Striker runs, balls, SR' },
+        nonstriker_state: { layer: 'actor', index: 1, featureDim: 8, description: 'Non-striker state' },
+        bowler_state: { layer: 'actor', index: 2, featureDim: 8, description: 'Bowler overs, economy, wickets' },
+        partnership: { layer: 'actor', index: 3, featureDim: 4, description: 'Current partnership runs/balls' },
 
         // Dynamics layer (4 nodes)
         batting_momentum: { layer: 'dynamics', index: 0, featureDim: 1, description: 'Recent batting trend' },
@@ -42,9 +42,9 @@ const DataLoader = {
 
     // Layer metadata
     layers: {
-        global: { name: 'Global', color: '#4a90d9', nodes: ['venue', 'batting_team', 'bowling_team'] },
+        global: { name: 'Global', color: '#4a90d9', nodes: ['venue', 'batting_team', 'bowling_team', 'striker_identity', 'nonstriker_identity', 'bowler_identity'] },
         state: { name: 'State', color: '#50c878', nodes: ['score_state', 'chase_state', 'phase_state', 'time_pressure', 'wicket_buffer'] },
-        actor: { name: 'Actor', color: '#f5a623', nodes: ['striker_identity', 'striker_state', 'nonstriker_identity', 'nonstriker_state', 'bowler_identity', 'bowler_state', 'partnership'] },
+        actor: { name: 'Actor', color: '#f5a623', nodes: ['striker_state', 'nonstriker_state', 'bowler_state', 'partnership'] },
         dynamics: { name: 'Dynamics', color: '#9b59b6', nodes: ['batting_momentum', 'bowling_momentum', 'pressure_index', 'dot_pressure'] },
         ball: { name: 'Ball', color: '#e74c3c', nodes: [] },  // Dynamic
         query: { name: 'Query', color: '#1abc9c', nodes: ['query'] }
@@ -114,7 +114,7 @@ const DataLoader = {
     generateContextNodes() {
         const nodes = [];
 
-        // Global layer
+        // Global/Entity layer (6 nodes) - all ID-based embedding nodes
         nodes.push({
             id: 'venue', type: 'venue', layer: 'global',
             features: { venue_id: 5 },
@@ -129,6 +129,25 @@ const DataLoader = {
             id: 'bowling_team', type: 'bowling_team', layer: 'global',
             features: { team_id: 8 },
             featureNames: ['team_id']
+        });
+        // Identity nodes have .x (player_id) + extra attributes (team_id, role_id) for hierarchical fallback
+        nodes.push({
+            id: 'striker_identity', type: 'striker_identity', layer: 'global',
+            features: { player_id: 142 },
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 12, role_id: 1 }  // Hierarchical fallback: team embedding, role embedding
+        });
+        nodes.push({
+            id: 'nonstriker_identity', type: 'nonstriker_identity', layer: 'global',
+            features: { player_id: 87 },
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 12, role_id: 2 }  // Hierarchical fallback: team embedding, role embedding
+        });
+        nodes.push({
+            id: 'bowler_identity', type: 'bowler_identity', layer: 'global',
+            features: { player_id: 203 },
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 8, role_id: 3 }  // Hierarchical fallback: team embedding, role embedding
         });
 
         // State layer
@@ -158,35 +177,16 @@ const DataLoader = {
             featureNames: ['wickets_remaining_norm', 'buffer_norm']
         });
 
-        // Actor layer
-        // Identity nodes have .x (player_id) + extra attributes (team_id, role_id) for hierarchical fallback
-        nodes.push({
-            id: 'striker_identity', type: 'striker_identity', layer: 'actor',
-            features: { player_id: 142 },
-            featureNames: ['player_id'],
-            extraAttrs: { team_id: 12, role_id: 1 }  // Hierarchical fallback: team embedding, role embedding
-        });
+        // Actor State layer (4 nodes) - computed state features for actors
         nodes.push({
             id: 'striker_state', type: 'striker_state', layer: 'actor',
             features: { runs: 0.32, balls: 0.28, sr: 0.71, boundaries: 0.2, dots: 0.3, is_debut: 0.0, strike_rate_recent: 0.65, balls_since_strike: 0.1 },
             featureNames: ['runs_norm', 'balls_faced_norm', 'strike_rate_norm', 'boundary_pct', 'dot_pct', 'is_debut_ball', 'strike_rate_recent', 'balls_since_on_strike']
         });
         nodes.push({
-            id: 'nonstriker_identity', type: 'nonstriker_identity', layer: 'actor',
-            features: { player_id: 87 },
-            featureNames: ['player_id'],
-            extraAttrs: { team_id: 12, role_id: 2 }  // Hierarchical fallback: team embedding, role embedding
-        });
-        nodes.push({
             id: 'nonstriker_state', type: 'nonstriker_state', layer: 'actor',
             features: { runs: 0.45, balls: 0.38, sr: 0.78, boundaries: 0.25, dots: 0.25, is_debut: 0.0, strike_rate_recent: 0.72, balls_since_nonstriker: 0.05 },
             featureNames: ['runs_norm', 'balls_faced_norm', 'strike_rate_norm', 'boundary_pct', 'dot_pct', 'is_debut_ball', 'strike_rate_recent', 'balls_since_as_nonstriker']
-        });
-        nodes.push({
-            id: 'bowler_identity', type: 'bowler_identity', layer: 'actor',
-            features: { player_id: 203 },
-            featureNames: ['player_id'],
-            extraAttrs: { team_id: 8, role_id: 3 }  // Hierarchical fallback: team embedding, role embedding
         });
         nodes.push({
             id: 'bowler_state', type: 'bowler_state', layer: 'actor',
