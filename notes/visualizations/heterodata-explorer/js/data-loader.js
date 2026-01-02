@@ -21,11 +21,12 @@ const DataLoader = {
         wicket_buffer: { layer: 'state', index: 4, featureDim: 2, description: 'Wickets remaining buffer' },
 
         // Actor layer (7 nodes)
-        striker_identity: { layer: 'actor', index: 0, featureDim: 1, description: 'Striker player ID' },
+        // Identity nodes have .x (player_id) + .team_id + .role_id for hierarchical fallback
+        striker_identity: { layer: 'actor', index: 0, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Striker player ID + team/role fallback' },
         striker_state: { layer: 'actor', index: 1, featureDim: 8, description: 'Striker runs, balls, SR' },
-        nonstriker_identity: { layer: 'actor', index: 2, featureDim: 1, description: 'Non-striker player ID' },
+        nonstriker_identity: { layer: 'actor', index: 2, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Non-striker player ID + team/role fallback' },
         nonstriker_state: { layer: 'actor', index: 3, featureDim: 8, description: 'Non-striker state' },
-        bowler_identity: { layer: 'actor', index: 4, featureDim: 1, description: 'Bowler player ID' },
+        bowler_identity: { layer: 'actor', index: 4, featureDim: 1, extraAttrs: ['team_id', 'role_id'], description: 'Bowler player ID + team/role fallback' },
         bowler_state: { layer: 'actor', index: 5, featureDim: 8, description: 'Bowler overs, economy, wickets' },
         partnership: { layer: 'actor', index: 6, featureDim: 4, description: 'Current partnership runs/balls' },
 
@@ -158,10 +159,12 @@ const DataLoader = {
         });
 
         // Actor layer
+        // Identity nodes have .x (player_id) + extra attributes (team_id, role_id) for hierarchical fallback
         nodes.push({
             id: 'striker_identity', type: 'striker_identity', layer: 'actor',
             features: { player_id: 142 },
-            featureNames: ['player_id']
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 12, role_id: 1 }  // Hierarchical fallback: team embedding, role embedding
         });
         nodes.push({
             id: 'striker_state', type: 'striker_state', layer: 'actor',
@@ -171,7 +174,8 @@ const DataLoader = {
         nodes.push({
             id: 'nonstriker_identity', type: 'nonstriker_identity', layer: 'actor',
             features: { player_id: 87 },
-            featureNames: ['player_id']
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 12, role_id: 2 }  // Hierarchical fallback: team embedding, role embedding
         });
         nodes.push({
             id: 'nonstriker_state', type: 'nonstriker_state', layer: 'actor',
@@ -181,7 +185,8 @@ const DataLoader = {
         nodes.push({
             id: 'bowler_identity', type: 'bowler_identity', layer: 'actor',
             features: { player_id: 203 },
-            featureNames: ['player_id']
+            featureNames: ['player_id'],
+            extraAttrs: { team_id: 8, role_id: 3 }  // Hierarchical fallback: team embedding, role embedding
         });
         nodes.push({
             id: 'bowler_state', type: 'bowler_state', layer: 'actor',

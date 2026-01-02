@@ -58,6 +58,29 @@ const DetailSidebar = {
             </div>
         `;
 
+        // Show extra attributes if present (e.g., team_id, role_id for identity nodes)
+        if (node.extraAttrs && Object.keys(node.extraAttrs).length > 0) {
+            html += `
+                <div class="detail-section">
+                    <h3>Extra Attributes (hierarchical fallback)</h3>
+                    <div class="feature-list">
+            `;
+
+            for (const [name, value] of Object.entries(node.extraAttrs)) {
+                html += `
+                    <div class="detail-row">
+                        <span class="label">${name}</span>
+                        <span class="value">${value}</span>
+                    </div>
+                `;
+            }
+
+            html += `
+                    </div>
+                </div>
+            `;
+        }
+
         // Find connected edges
         const incomingEdges = this.findIncomingEdges(node.id, data.edges);
         const outgoingEdges = this.findOutgoingEdges(node.id, data.edges);
