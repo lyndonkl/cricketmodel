@@ -25,10 +25,10 @@ const DataLoader = {
         wicket_buffer: { layer: 'state', index: 4, featureDim: 2, description: 'Wickets in hand, is_tail indicator' },
 
         // Actor State layer (4 nodes) - computed state features for actors
-        striker_state: { layer: 'actor', index: 0, featureDim: 8, description: 'Striker runs, balls, SR' },
-        nonstriker_state: { layer: 'actor', index: 1, featureDim: 8, description: 'Non-striker state' },
-        bowler_state: { layer: 'actor', index: 2, featureDim: 8, description: 'Bowler overs, economy, wickets' },
-        partnership: { layer: 'actor', index: 3, featureDim: 4, description: 'Current partnership runs/balls' },
+        striker_state: { layer: 'actor', index: 0, featureDim: 8, description: 'Striker: runs, balls, SR, dots_pct, is_set, boundaries, is_debut, balls_since' },
+        nonstriker_state: { layer: 'actor', index: 1, featureDim: 8, description: 'Non-striker: Z2 symmetric with striker' },
+        bowler_state: { layer: 'actor', index: 2, featureDim: 8, description: 'Bowler: balls, runs, wickets, economy, dots_pct, threat, is_pace, is_spin' },
+        partnership: { layer: 'actor', index: 3, featureDim: 4, description: 'Partnership: runs, balls, run_rate, stability' },
 
         // Dynamics layer (4 nodes)
         batting_momentum: { layer: 'dynamics', index: 0, featureDim: 1, description: 'Recent batting trend' },
@@ -178,25 +178,29 @@ const DataLoader = {
         });
 
         // Actor State layer (4 nodes) - computed state features for actors
+        // striker_state: 7 base features + balls_since_on_strike
         nodes.push({
             id: 'striker_state', type: 'striker_state', layer: 'actor',
-            features: { runs: 0.32, balls: 0.28, sr: 0.71, boundaries: 0.2, dots: 0.3, is_debut: 0.0, strike_rate_recent: 0.65, balls_since_strike: 0.1 },
-            featureNames: ['runs_norm', 'balls_faced_norm', 'strike_rate_norm', 'boundary_pct', 'dot_pct', 'is_debut_ball', 'strike_rate_recent', 'balls_since_on_strike']
+            features: { runs: 0.32, balls: 0.28, sr: 0.71, dots_pct: 0.3, is_set: 1.0, boundaries: 0.2, is_debut: 0.0, balls_since: 0.1 },
+            featureNames: ['runs_norm', 'balls_faced_norm', 'strike_rate_norm', 'dots_pct', 'is_set', 'boundaries_norm', 'is_debut_ball', 'balls_since_on_strike']
         });
+        // nonstriker_state: Z2 symmetric with striker (7 base + balls_since_as_nonstriker)
         nodes.push({
             id: 'nonstriker_state', type: 'nonstriker_state', layer: 'actor',
-            features: { runs: 0.45, balls: 0.38, sr: 0.78, boundaries: 0.25, dots: 0.25, is_debut: 0.0, strike_rate_recent: 0.72, balls_since_nonstriker: 0.05 },
-            featureNames: ['runs_norm', 'balls_faced_norm', 'strike_rate_norm', 'boundary_pct', 'dot_pct', 'is_debut_ball', 'strike_rate_recent', 'balls_since_as_nonstriker']
+            features: { runs: 0.45, balls: 0.38, sr: 0.78, dots_pct: 0.25, is_set: 1.0, boundaries: 0.25, is_debut: 0.0, balls_since: 0.05 },
+            featureNames: ['runs_norm', 'balls_faced_norm', 'strike_rate_norm', 'dots_pct', 'is_set', 'boundaries_norm', 'is_debut_ball', 'balls_since_as_nonstriker']
         });
+        // bowler_state: bowling stats + type indicators
         nodes.push({
             id: 'bowler_state', type: 'bowler_state', layer: 'actor',
-            features: { overs: 0.35, runs: 0.28, wickets: 0.2, economy: 0.42, dots: 0.45, boundaries: 0.15, is_pace: 1.0, is_spin: 0.0 },
-            featureNames: ['overs_norm', 'runs_conceded_norm', 'wickets_norm', 'economy_norm', 'dot_pct', 'boundary_pct', 'is_pace', 'is_spin']
+            features: { balls: 0.35, runs: 0.28, wickets: 0.2, economy: 0.42, dots_pct: 0.45, threat: 0.55, is_pace: 1.0, is_spin: 0.0 },
+            featureNames: ['balls_norm', 'runs_conceded_norm', 'wickets_norm', 'economy_norm', 'dots_pct', 'threat', 'is_pace', 'is_spin']
         });
+        // partnership: current batting pair stats
         nodes.push({
             id: 'partnership', type: 'partnership', layer: 'actor',
-            features: { runs: 0.28, balls: 0.22, sr: 0.68, is_new: 0.0 },
-            featureNames: ['runs_norm', 'balls_norm', 'strike_rate_norm', 'is_new_partnership']
+            features: { runs: 0.28, balls: 0.22, run_rate: 0.68, stability: 0.4 },
+            featureNames: ['runs_norm', 'balls_norm', 'run_rate_norm', 'stability']
         });
 
         // Dynamics layer
