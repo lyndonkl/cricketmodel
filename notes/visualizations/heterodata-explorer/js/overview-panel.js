@@ -21,14 +21,14 @@ const OverviewPanel = {
         const data = DataLoader.data;
         if (!data) return;
 
-        // Count nodes per layer
+        // Count nodes per layer (from DataLoader.layers metadata)
         const counts = {
-            global: 3,
-            state: 5,
-            actor: 7,
-            dynamics: 4,
-            ball: data.ballNodes.length,
-            query: 1
+            global: DataLoader.layers.global.nodes.length,    // 6 nodes
+            state: DataLoader.layers.state.nodes.length,      // 5 nodes
+            actor: DataLoader.layers.actor.nodes.length,      // 4 nodes
+            dynamics: DataLoader.layers.dynamics.nodes.length, // 4 nodes
+            ball: data.ballNodes.length,                       // N nodes
+            query: DataLoader.layers.query.nodes.length        // 1 node
         };
 
         // Layer order for display

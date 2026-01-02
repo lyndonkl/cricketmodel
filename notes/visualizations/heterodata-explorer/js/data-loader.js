@@ -21,8 +21,8 @@ const DataLoader = {
         score_state: { layer: 'state', index: 0, featureDim: 5, description: 'Current score, wickets, balls' },
         chase_state: { layer: 'state', index: 1, featureDim: 7, description: 'Chase target, RRR, difficulty' },
         phase_state: { layer: 'state', index: 2, featureDim: 6, description: 'Powerplay, middle, death phase' },
-        time_pressure: { layer: 'state', index: 3, featureDim: 3, description: 'Urgency indicators' },
-        wicket_buffer: { layer: 'state', index: 4, featureDim: 2, description: 'Wickets remaining buffer' },
+        time_pressure: { layer: 'state', index: 3, featureDim: 3, description: 'Balls remaining, urgency, is_final_over' },
+        wicket_buffer: { layer: 'state', index: 4, featureDim: 2, description: 'Wickets in hand, is_tail indicator' },
 
         // Actor State layer (4 nodes) - computed state features for actors
         striker_state: { layer: 'actor', index: 0, featureDim: 8, description: 'Striker runs, balls, SR' },
@@ -168,13 +168,13 @@ const DataLoader = {
         });
         nodes.push({
             id: 'time_pressure', type: 'time_pressure', layer: 'state',
-            features: { urgency: 0.35, balls_remaining_norm: 0.58, run_rate_gap: 0.12 },
-            featureNames: ['urgency', 'balls_remaining_norm', 'run_rate_gap']
+            features: { balls_remaining: 0.58, urgency: 0.35, is_final_over: 0.0 },
+            featureNames: ['balls_remaining_norm', 'urgency', 'is_final_over']
         });
         nodes.push({
             id: 'wicket_buffer', type: 'wicket_buffer', layer: 'state',
-            features: { wickets_remaining: 0.8, buffer_norm: 0.7 },
-            featureNames: ['wickets_remaining_norm', 'buffer_norm']
+            features: { wickets_in_hand: 0.8, is_tail: 0.0 },
+            featureNames: ['wickets_in_hand_norm', 'is_tail']
         });
 
         // Actor State layer (4 nodes) - computed state features for actors
