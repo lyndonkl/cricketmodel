@@ -45,7 +45,8 @@ const DataLoader = {
         ball: { layer: 'ball', featureDim: 18, extraAttrs: ['bowler_ids', 'batsman_ids', 'nonstriker_ids'], description: 'Historical ball with 18 features + player IDs' },
 
         // Query layer (1 node)
-        query: { layer: 'query', index: 0, featureDim: 1, description: 'Prediction query aggregator' }
+        // Placeholder initialized to zeros, model learns embedding
+        query: { layer: 'query', index: 0, featureDim: 1, description: 'Placeholder for learned embedding - aggregates via attention' }
     },
 
     // Layer metadata
@@ -233,11 +234,11 @@ const DataLoader = {
             featureNames: ['consecutive_dots', 'balls_since_boundary', 'balls_since_wicket', 'pressure_accumulated', 'pressure_trend']
         });
 
-        // Query layer
+        // Query layer - placeholder for learned embedding (initialized to zeros)
         nodes.push({
             id: 'query', type: 'query', layer: 'query',
-            features: { placeholder: 0.0 },
-            featureNames: ['placeholder']
+            features: { learned_embedding: 0.0 },
+            featureNames: ['learned_embedding_placeholder']
         });
 
         return nodes;
