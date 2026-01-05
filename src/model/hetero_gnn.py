@@ -10,6 +10,9 @@ import torch.nn as nn
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+from torch_geometric.utils import softmax as scatter_softmax
+from torch_geometric.nn import global_add_pool
+
 from .encoders import NodeEncoderDict
 from .conv_builder import build_conv_stack, build_phase_modulated_conv_stack
 
@@ -226,8 +229,13 @@ class CricketHeteroGNNWithPooling(CricketHeteroGNN):
         """
         Forward pass with ball pooling.
 
+        Uses attention-based pooling over ball nodes with proper batch handling.
+        For batched HeteroData, pools balls within each sample separately using
+        scatter operations, then combines with query representation.
+
         Args:
-            data: HeteroData or batched HeteroData
+            data: HeteroData or batched HeteroData. When batched, data['ball'].batch
+                  contains the sample index for each ball node.
 
         Returns:
             Logits [batch_size, num_classes]
@@ -249,23 +257,35 @@ class CricketHeteroGNNWithPooling(CricketHeteroGNN):
 
         # 3. Query representation
         query_repr = x_dict['query']  # [batch_size, hidden_dim]
+        batch_size = query_repr.shape[0]
 
-        # 4. Pool ball nodes with attention
+        # 4. Pool ball nodes with attention (proper batch handling)
         ball_repr = x_dict['ball']  # [total_balls, hidden_dim]
 
         if ball_repr.shape[0] > 0:
+            # Get batch assignment for each ball node
+            # In batched HeteroData, data['ball'].batch tells us which sample each ball belongs to
+            if hasattr(data['ball'], 'batch') and data['ball'].batch is not None:
+                ball_batch = data['ball'].batch  # [total_balls] with values 0..batch_size-1
+            else:
+                # Single sample case - all balls belong to batch 0
+                ball_batch = torch.zeros(ball_repr.shape[0], dtype=torch.long, device=ball_repr.device)
+
             # Compute attention scores
-            attn_scores = self.ball_attention(ball_repr)  # [total_balls, 1]
-            attn_weights = torch.softmax(attn_scores, dim=0)
+            attn_scores = self.ball_attention(ball_repr).squeeze(-1)  # [total_balls]
 
-            # Weighted sum (simplified - would need batch handling)
-            pooled_balls = (attn_weights * ball_repr).sum(dim=0, keepdim=True)
+            # Softmax within each sample (not globally)
+            # scatter_softmax groups by ball_batch and applies softmax within each group
+            attn_weights = scatter_softmax(attn_scores, ball_batch, dim=0)  # [total_balls]
 
-            # Expand to match batch size
-            batch_size = query_repr.shape[0]
-            pooled_balls = pooled_balls.expand(batch_size, -1)
+            # Weighted ball representations
+            weighted_balls = attn_weights.unsqueeze(-1) * ball_repr  # [total_balls, hidden_dim]
+
+            # Sum within each sample using PyG's global pooling
+            # global_add_pool sums nodes belonging to the same graph in the batch
+            pooled_balls = global_add_pool(weighted_balls, ball_batch, size=batch_size)  # [batch_size, hidden_dim]
         else:
-            # No balls - use zeros
+            # No balls at all - use zeros
             pooled_balls = torch.zeros_like(query_repr)
 
         # 5. Combine
