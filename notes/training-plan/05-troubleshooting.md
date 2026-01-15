@@ -496,6 +496,119 @@ for name, module in model.named_modules():
 
 ---
 
+## DDP (Distributed Training) Issues
+
+### Cannot Run in Jupyter Notebook
+
+**Symptom**: DDP code fails or hangs in Jupyter.
+
+**Cause**: DDP spawns multiple processes, which conflicts with how Jupyter handles the Python interpreter.
+
+**Solution**: Always run DDP training from command line:
+```bash
+torchrun --nproc_per_node=2 train.py
+```
+
+### NCCL Initialization Timeout
+
+**Symptom**:
+```
+RuntimeError: NCCL error in: ../torch/lib/c10d/ProcessGroupNCCL.cpp
+```
+
+**Solutions**:
+```bash
+# 1. Increase timeout
+export NCCL_TIMEOUT=1800  # 30 minutes
+
+# 2. Check GPU visibility
+nvidia-smi  # Should show all GPUs
+
+# 3. Check CUDA_VISIBLE_DEVICES isn't restricting access
+echo $CUDA_VISIBLE_DEVICES
+```
+
+### Different Results vs Single GPU
+
+**Symptom**: Metrics differ slightly between single-GPU and multi-GPU runs.
+
+**Causes**:
+1. Different random states (expected, due to data shuffling)
+2. BatchNorm statistics computed per-GPU
+3. Floating point non-determinism in gradient reduction
+
+**Solutions**:
+```python
+# 1. Use SyncBatchNorm for consistent BatchNorm (if using BatchNorm)
+model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+# 2. Set deterministic mode (slower)
+torch.backends.cudnn.deterministic = True
+```
+
+### Only One GPU Being Used
+
+**Symptom**: `nvidia-smi` shows only GPU 0 is busy.
+
+**Cause**: Not using `torchrun`, or CUDA_VISIBLE_DEVICES is set.
+
+**Solutions**:
+```bash
+# Verify you're using torchrun
+torchrun --nproc_per_node=2 train.py  # NOT python train.py
+
+# Check CUDA_VISIBLE_DEVICES
+unset CUDA_VISIBLE_DEVICES
+```
+
+### Checkpoint Loading Fails
+
+**Symptom**: Error loading checkpoint saved with DDP.
+
+**Cause**: DDP wraps model in `module`, so state dict keys have `module.` prefix.
+
+**Solution** (already implemented in Trainer):
+```python
+# When saving
+model_to_save = model.module if hasattr(model, 'module') else model
+torch.save(model_to_save.state_dict(), path)
+
+# When loading (handles both cases)
+checkpoint = torch.load(path)
+model.load_state_dict(checkpoint['model_state_dict'])
+```
+
+### Hanging at dist.barrier()
+
+**Symptom**: Training hangs at synchronization points.
+
+**Cause**: One process crashed or exited early.
+
+**Solutions**:
+1. Check for exceptions in all processes (use `--standalone` for debugging)
+2. Ensure all processes reach barrier (no early exits)
+3. Add timeout to barrier calls
+
+```bash
+# Debug mode with standalone flag
+torchrun --standalone --nproc_per_node=2 train.py
+```
+
+### Process Terminated Unexpectedly
+
+**Symptom**:
+```
+ERROR: One of the workers has been terminated unexpectedly
+```
+
+**Solutions**:
+1. Check for OOM on individual GPUs
+2. Reduce batch size
+3. Check for unhandled exceptions in worker processes
+4. Try with fewer workers: `--num-workers 0`
+
+---
+
 ## Getting Help
 
 If you've tried everything and are still stuck:
