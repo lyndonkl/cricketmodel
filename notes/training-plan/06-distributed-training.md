@@ -173,39 +173,59 @@ scaled_lr = base_lr * sqrt(effective_batch / base_batch)
 
 ## WandB Integration with DDP
 
-**Critical**: Only rank 0 should initialize WandB to avoid duplicate logging.
+WandB logging is built into the training script and controlled via the `--wandb` flag.
 
-The training code already handles this:
-- Only the main process (rank 0) prints to console
-- Only the main process saves checkpoints
-- Only the main process saves training history
+### Usage
 
-When adding WandB logging, follow the same pattern:
+```bash
+# Single device with WandB
+python train.py --epochs 100 --batch-size 64 --wandb
 
-```python
-from src.training import is_main_process
+# DDP with WandB
+torchrun --nproc_per_node=4 train.py --epochs 100 --batch-size 64 --wandb
 
-if is_main_process():
-    wandb.init(
-        project="cricket-gnn",
-        name=args.run_name,
-        config=vars(args)
-    )
-
-# During training
-if is_main_process():
-    wandb.log({"train/loss": train_loss, "epoch": epoch})
-
-# Cleanup
-if is_main_process():
-    wandb.finish()
+# Custom project/run name
+python train.py --wandb --wandb-project my-project --wandb-run-name experiment-1
 ```
 
-**Multi-Node WandB Timeout**: For multi-node setups, if you encounter timeout errors during `wandb.init()`, increase the timeout:
+### What Gets Logged
+
+**Per Epoch (Training):**
+- `train/loss`, `train/accuracy`
+- `learning_rate`
+
+**Per Epoch (Validation):**
+- `val/loss`, `val/accuracy`
+- `val/f1_macro`, `val/f1_weighted`, `val/log_loss`
+- `val/wicket_recall`, `val/boundary_precision`, `val/expected_runs_error`
+- `val/ece` (Expected Calibration Error)
+- `val/top_2_accuracy`, `val/top_3_accuracy`
+- Per-class metrics: `val/f1_{class}`, `val/precision_{class}`, `val/recall_{class}` for each class (dot, single, two, three, four, six, wicket)
+- `val/confusion_matrix` (image, every 10 epochs)
+
+**After Test Evaluation:**
+- `test/loss`, `test/accuracy`
+- `test/f1_macro`, `test/f1_weighted`, `test/log_loss`
+- `test/wicket_recall`, `test/boundary_precision`, `test/expected_runs_error`
+- `test/ece` (Expected Calibration Error)
+- `test/top_2_accuracy`, `test/top_3_accuracy`
+- Per-class metrics: `test/f1_{class}`, `test/precision_{class}`, `test/recall_{class}` for each class
+- `test/confusion_matrix` (image)
+
+### DDP Compatibility
+
+The integration is DDP-safe:
+- Only rank 0 initializes WandB (`wandb.init()`)
+- Only rank 0 logs metrics (`wandb.log()`)
+- Only rank 0 calls cleanup (`wandb.finish()`)
+
+### Multi-Node WandB Timeout
+
+For multi-node setups, if you encounter timeout errors during `wandb.init()`, increase the timeout by modifying `train.py`:
 
 ```python
 wandb.init(
-    project="cricket-gnn",
+    project=args.wandb_project,
     settings=wandb.Settings(init_timeout=120)  # 120 seconds
 )
 ```

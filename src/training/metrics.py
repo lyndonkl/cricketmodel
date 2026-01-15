@@ -169,6 +169,88 @@ def compute_confusion_matrix(
     return cm
 
 
+def compute_wicket_recall(labels: List[int], predictions: List[int]) -> float:
+    """
+    Compute recall for wicket class (class 6).
+
+    Wickets are game-changing events - missing them is costly.
+    Target: > 0.20
+    """
+    wicket_class = 6  # Wicket is class 6
+    true_wickets = sum(1 for l in labels if l == wicket_class)
+    if true_wickets == 0:
+        return 0.0
+    correct_wickets = sum(1 for l, p in zip(labels, predictions) if l == wicket_class and p == wicket_class)
+    return correct_wickets / true_wickets
+
+
+def compute_boundary_precision(labels: List[int], predictions: List[int]) -> float:
+    """
+    Compute precision for boundary classes (Four=4, Six=5).
+
+    When we predict a boundary, how often are we right?
+    Target: > 0.30
+    """
+    boundary_classes = [4, 5]  # Four and Six
+    predicted_boundaries = sum(1 for p in predictions if p in boundary_classes)
+    if predicted_boundaries == 0:
+        return 0.0
+    correct_boundaries = sum(
+        1 for l, p in zip(labels, predictions)
+        if p in boundary_classes and l == p
+    )
+    return correct_boundaries / predicted_boundaries
+
+
+def compute_expected_runs_error(labels: List[int], probs: np.ndarray) -> float:
+    """
+    Compute mean absolute error between predicted and actual expected runs.
+
+    Economic value of predictions.
+    """
+    # Outcome to runs mapping: Dot=0, Single=1, Two=2, Three=3, Four=4, Six=6, Wicket=0
+    runs_map = np.array([0, 1, 2, 3, 4, 6, 0])  # Index 5 is Six (6 runs), Index 6 is Wicket (0 runs)
+
+    # Expected runs from probability distribution
+    pred_expected_runs = np.dot(probs, runs_map)
+
+    # Actual runs
+    actual_runs = np.array([runs_map[l] for l in labels])
+
+    # Mean absolute error
+    return np.mean(np.abs(pred_expected_runs - actual_runs))
+
+
+def compute_expected_calibration_error(
+    labels: List[int],
+    probs: np.ndarray,
+    n_bins: int = 10
+) -> float:
+    """
+    Compute Expected Calibration Error (ECE).
+
+    Measures how well probability estimates match actual accuracy.
+    Target: ECE < 0.10
+    """
+    predictions = np.argmax(probs, axis=1)
+    confidences = np.max(probs, axis=1)
+    accuracies = (predictions == np.array(labels)).astype(float)
+
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    ece = 0.0
+
+    for i in range(n_bins):
+        in_bin = (confidences > bin_boundaries[i]) & (confidences <= bin_boundaries[i + 1])
+        prop_in_bin = np.mean(in_bin)
+
+        if prop_in_bin > 0:
+            avg_confidence = np.mean(confidences[in_bin])
+            avg_accuracy = np.mean(accuracies[in_bin])
+            ece += prop_in_bin * abs(avg_accuracy - avg_confidence)
+
+    return ece
+
+
 def compute_metrics(
     labels: List[int],
     predictions: List[int],
@@ -206,11 +288,17 @@ def compute_metrics(
     # Confusion matrix
     metrics['confusion_matrix'] = compute_confusion_matrix(labels, predictions, num_classes)
 
+    # Cricket-specific metrics
+    metrics['wicket_recall'] = compute_wicket_recall(labels, predictions)
+    metrics['boundary_precision'] = compute_boundary_precision(labels, predictions)
+
     # Probability-based metrics (if available)
     if probs is not None:
         metrics['log_loss'] = compute_log_loss(labels, probs)
         metrics['top_2_accuracy'] = compute_top_k_accuracy(labels, probs, k=2)
         metrics['top_3_accuracy'] = compute_top_k_accuracy(labels, probs, k=3)
+        metrics['expected_runs_error'] = compute_expected_runs_error(labels, probs)
+        metrics['ece'] = compute_expected_calibration_error(labels, probs)
 
     return metrics
 
@@ -334,3 +422,51 @@ def plot_confusion_matrix(
         plt.show()
 
     plt.close()
+
+
+def create_confusion_matrix_figure(
+    labels: List[int],
+    predictions: List[int],
+    normalize: bool = True
+):
+    """
+    Create confusion matrix figure for WandB logging.
+
+    Args:
+        labels: Ground truth labels
+        predictions: Predicted labels
+        normalize: Whether to normalize by row
+
+    Returns:
+        matplotlib figure object (or None if matplotlib not available)
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ImportError:
+        return None
+
+    cm = compute_confusion_matrix(labels, predictions)
+
+    if normalize:
+        cm_normalized = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+        cm_normalized = np.nan_to_num(cm_normalized)
+    else:
+        cm_normalized = cm
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(
+        cm_normalized,
+        annot=True,
+        fmt='.2f' if normalize else 'd',
+        cmap='Blues',
+        xticklabels=CLASS_NAMES,
+        yticklabels=CLASS_NAMES,
+        ax=ax,
+    )
+    ax.set_title('Confusion Matrix' + (' (Normalized)' if normalize else ''))
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('True')
+    plt.tight_layout()
+
+    return fig
