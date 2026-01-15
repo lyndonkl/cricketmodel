@@ -182,6 +182,11 @@ def main():
     """Main training function with DDP support."""
     args = parse_args()
 
+    # Resolve paths to absolute paths
+    args.data_dir = os.path.abspath(args.data_dir)
+    args.processed_dir = os.path.abspath(args.processed_dir)
+    args.checkpoint_dir = os.path.abspath(args.checkpoint_dir)
+
     # === DDP Setup ===
     # Auto-detect DDP from environment variables set by torchrun
     rank, local_rank, world_size = setup_distributed()
