@@ -19,6 +19,10 @@ python train.py --epochs 10 --batch-size 32
 
 If you accidentally run with `torchrun` on Mac, the code will still work but you'll see a warning that DDP provides no parallelism benefit on single-GPU systems.
 
+**Q: Can I use multiple CPUs on Mac instead?**
+
+While the Gloo backend technically supports multi-process CPU training, this provides **no parallelism benefit on a single machine**. DDP is designed for multi-device (GPU) or multi-node training. Running multiple CPU processes on the same machine just creates competition for the same resources. For single-machine Mac development, use standard single-process training.
+
 ### Linux with NVIDIA GPUs (RunPod, etc.)
 
 Use NCCL backend for optimal multi-GPU performance:
@@ -197,6 +201,15 @@ if is_main_process():
     wandb.finish()
 ```
 
+**Multi-Node WandB Timeout**: For multi-node setups, if you encounter timeout errors during `wandb.init()`, increase the timeout:
+
+```python
+wandb.init(
+    project="cricket-gnn",
+    settings=wandb.Settings(init_timeout=120)  # 120 seconds
+)
+```
+
 ---
 
 ## Key Implementation Details
@@ -256,6 +269,37 @@ from src.training.distributed import reduce_tensor
 avg_loss_tensor = torch.tensor([avg_loss], device=device)
 global_avg_loss = reduce_tensor(avg_loss_tensor).item()
 ```
+
+### 6. Synchronization with barrier()
+
+`barrier()` ensures all processes reach a synchronization point before continuing. It is called after checkpoint saves:
+
+```python
+# In Trainer.train() after saving best model
+if self.is_main:
+    self.save_checkpoint('best_model.pt')
+
+# All processes wait for checkpoint to be saved
+if self.is_distributed:
+    barrier()
+```
+
+**When to use barrier():**
+- After saving checkpoints (prevents other ranks from continuing before save completes)
+- Between distinct training phases
+
+**When NOT to use barrier():**
+- During forward/backward passes (DDP handles gradient sync automatically)
+- Excessively (adds synchronization overhead)
+
+### 7. Device Selection Architecture
+
+Device selection happens in two places by design:
+
+1. **`train.py`**: Primary control point - explicitly sets device based on platform and passes it to Trainer
+2. **`trainer.py`**: Fallback logic if `device=None` - allows Trainer to work standalone
+
+This defensive pattern ensures the Trainer can be used independently without requiring train.py's device logic.
 
 ---
 
@@ -325,4 +369,5 @@ torchrun --nproc_per_node=2 train.py
 
 - [Sebastian Raschka's PyTorch DDP Guide](https://sebastianraschka.com/teaching/pytorch-1h/)
 - [PyTorch DDP Tutorial](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html)
-- [PyTorch Distributed Documentation](https://pytorch.org/docs/stable/distributed.html)
+- [PyTorch Distributed Documentation](https://docs.pytorch.org/docs/stable/distributed.html)
+- [WandB Distributed Training Guide](https://docs.wandb.ai/models/track/log/distributed-training)
