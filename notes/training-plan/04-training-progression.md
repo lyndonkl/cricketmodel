@@ -374,6 +374,76 @@ if __name__ == "__main__":
 
 ---
 
+## Multi-GPU Training with DDP
+
+For faster training on multiple GPUs, use `torchrun`:
+
+### Basic DDP Commands
+
+```bash
+# 2 GPUs
+torchrun --nproc_per_node=2 train.py \
+    --hidden-dim 128 \
+    --num-layers 3 \
+    --epochs 100 \
+    --batch-size 64
+
+# 4 GPUs
+torchrun --nproc_per_node=4 train.py \
+    --hidden-dim 128 \
+    --num-layers 3 \
+    --epochs 100 \
+    --batch-size 32
+
+# All available GPUs
+torchrun --nproc_per_node=$(nvidia-smi -L | wc -l) train.py
+```
+
+### DDP with Hyperparameter Sweeps
+
+```bash
+# Stage 1: Tune hidden_dim with 2 GPUs
+for dim in 64 128 256; do
+    torchrun --nproc_per_node=2 train.py --hidden-dim $dim
+done
+
+# Stage 4: Full model ablations with 4 GPUs
+torchrun --nproc_per_node=4 train.py \
+    --model full \
+    --use_film \
+    --use_hierarchical \
+    --use_innings_heads \
+    --batch-size 32
+```
+
+### Effective Batch Size
+
+With DDP, effective batch = batch_size * num_gpus:
+
+| GPUs | --batch-size | Effective Batch |
+|------|--------------|-----------------|
+| 1    | 64           | 64              |
+| 2    | 64           | 128             |
+| 4    | 32           | 128             |
+| 8    | 16           | 128             |
+
+### WandB with DDP
+
+When using WandB with DDP, only rank 0 should log to avoid duplicates:
+
+```python
+from src.training import is_main_process
+
+if is_main_process():
+    wandb.init(project="cricket-gnn", name=run_name)
+    # ... logging ...
+    wandb.finish()
+```
+
+See `notes/training-plan/06-distributed-training.md` for comprehensive DDP documentation.
+
+---
+
 ## Checkpoints and Saving
 
 ### When to Save

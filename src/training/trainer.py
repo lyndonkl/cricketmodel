@@ -2,13 +2,17 @@
 Trainer for Cricket Ball Prediction Model
 
 Handles training loop, validation, early stopping, and checkpointing.
+Supports both single-GPU and Distributed Data Parallel (DDP) training.
+
+DDP Usage:
+    torchrun --nproc_per_node=2 train.py
 """
 
 import os
 import json
 import time
 from dataclasses import dataclass, asdict
-from typing import Dict, Optional, Tuple, List
+from typing import TYPE_CHECKING, Dict, Optional, Tuple, List
 
 import numpy as np
 import torch
@@ -20,6 +24,9 @@ from tqdm import tqdm
 
 from .metrics import compute_metrics, print_classification_report
 from .losses import FocalLoss
+
+if TYPE_CHECKING:
+    from torch.utils.data.distributed import DistributedSampler
 
 
 @dataclass
@@ -73,6 +80,10 @@ class Trainer:
         config: TrainingConfig,
         class_weights: Optional[torch.Tensor] = None,
         device: Optional[torch.device] = None,
+        # DDP parameters
+        train_sampler: Optional["DistributedSampler"] = None,
+        rank: int = 0,
+        world_size: int = 1,
     ):
         """
         Args:
@@ -82,14 +93,40 @@ class Trainer:
             config: Training configuration
             class_weights: Optional class weights for imbalanced data
             device: Device to train on
+            train_sampler: DistributedSampler for DDP (to call set_epoch)
+            rank: Process rank (0 for main process)
+            world_size: Total number of processes
         """
         self.config = config
-        self.device = device or torch.device(
-            'cuda' if torch.cuda.is_available() else 'cpu'
-        )
 
-        # Model
+        # DDP configuration
+        self.rank = rank
+        self.world_size = world_size
+        self.is_distributed = world_size > 1
+        self.is_main = rank == 0
+        self.train_sampler = train_sampler
+
+        # Device setup
+        if device is not None:
+            self.device = device
+        elif self.is_distributed:
+            self.device = torch.device(f'cuda:{rank}')
+        elif torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+
+        # Model - wrap with DDP if distributed
         self.model = model.to(self.device)
+
+        if self.is_distributed:
+            from torch.nn.parallel import DistributedDataParallel as DDP
+            self.model = DDP(
+                self.model,
+                device_ids=[rank],
+                output_device=rank,
+                find_unused_parameters=False,  # Set True if model has unused params
+            )
 
         # Data
         self.train_loader = train_loader
@@ -107,13 +144,14 @@ class Trainer:
                 alpha=class_weights,
                 reduction='mean'
             )
-            print(f"Using Focal Loss with gamma={config.focal_gamma}")
+            if self.is_main:
+                print(f"Using Focal Loss with gamma={config.focal_gamma}")
         else:
             self.criterion = nn.CrossEntropyLoss(weight=class_weights)
 
         # Optimizer
         self.optimizer = AdamW(
-            model.parameters(),
+            self.model.parameters(),
             lr=config.lr,
             weight_decay=config.weight_decay,
         )
@@ -148,8 +186,9 @@ class Trainer:
             'lr': [],
         }
 
-        # Create checkpoint dir
-        os.makedirs(config.checkpoint_dir, exist_ok=True)
+        # Create checkpoint dir (only on main process)
+        if self.is_main:
+            os.makedirs(config.checkpoint_dir, exist_ok=True)
 
     def train_epoch(self) -> Tuple[float, float]:
         """
@@ -164,9 +203,12 @@ class Trainer:
         correct = 0
         total = 0
 
-        pbar = tqdm(self.train_loader, desc=f'Epoch {self.epoch + 1} [Train]')
+        # Only show progress bar on main process
+        loader = self.train_loader
+        if self.is_main:
+            loader = tqdm(self.train_loader, desc=f'Epoch {self.epoch + 1} [Train]')
 
-        for batch_idx, batch in enumerate(pbar):
+        for batch_idx, batch in enumerate(loader):
             batch = batch.to(self.device)
 
             # Forward pass
@@ -193,9 +235,9 @@ class Trainer:
 
             self.global_step += 1
 
-            # Update progress bar
-            if batch_idx % 10 == 0:
-                pbar.set_postfix({
+            # Update progress bar (main process only)
+            if self.is_main and batch_idx % 10 == 0:
+                loader.set_postfix({
                     'loss': f'{loss.item():.4f}',
                     'acc': f'{correct / total:.4f}',
                 })
@@ -203,16 +245,29 @@ class Trainer:
         avg_loss = total_loss / total
         accuracy = correct / total
 
+        # In DDP, aggregate metrics across all processes
+        if self.is_distributed:
+            from .distributed import reduce_tensor
+            avg_loss_tensor = torch.tensor([avg_loss], device=self.device)
+            accuracy_tensor = torch.tensor([accuracy], device=self.device)
+
+            avg_loss = reduce_tensor(avg_loss_tensor).item()
+            accuracy = reduce_tensor(accuracy_tensor).item()
+
         return avg_loss, accuracy
 
     @torch.no_grad()
     def evaluate(
         self,
         loader: DataLoader,
-        desc: str = 'Eval'
+        desc: Optional[str] = 'Eval'
     ) -> Tuple[float, float, List[int], List[int], np.ndarray]:
         """
         Evaluate on a data loader.
+
+        Args:
+            loader: DataLoader to evaluate on
+            desc: Description for progress bar (None to suppress progress bar)
 
         Returns:
             (average_loss, accuracy, all_labels, all_preds, all_probs)
@@ -226,9 +281,12 @@ class Trainer:
         all_preds = []
         all_probs = []
 
-        pbar = tqdm(loader, desc=desc)
+        # Only show progress bar on main process and if desc is provided
+        eval_loader = loader
+        if self.is_main and desc is not None:
+            eval_loader = tqdm(loader, desc=desc)
 
-        for batch in pbar:
+        for batch in eval_loader:
             batch = batch.to(self.device)
 
             logits = self.model(batch)
@@ -245,10 +303,11 @@ class Trainer:
             all_preds.extend(pred.cpu().tolist())
             all_probs.append(probs.cpu().numpy())
 
-            pbar.set_postfix({
-                'loss': f'{total_loss / total:.4f}',
-                'acc': f'{correct / total:.4f}',
-            })
+            if self.is_main and desc is not None:
+                eval_loader.set_postfix({
+                    'loss': f'{total_loss / total:.4f}',
+                    'acc': f'{correct / total:.4f}',
+                })
 
         avg_loss = total_loss / total
         accuracy = correct / total
@@ -263,22 +322,32 @@ class Trainer:
         Returns:
             Training history dict
         """
-        print(f"Training on {self.device}")
-        print(f"Train batches: {len(self.train_loader)}")
-        print(f"Val batches: {len(self.val_loader)}")
-        print()
+        if self.is_main:
+            print(f"Training on {self.device}")
+            print(f"Train batches: {len(self.train_loader)}")
+            print(f"Val batches: {len(self.val_loader)}")
+            if self.is_distributed:
+                print(f"World size: {self.world_size}")
+                print(f"Effective batch size: {self.train_loader.batch_size * self.world_size}")
+            print()
 
         start_time = time.time()
 
         for epoch in range(self.config.epochs):
             self.epoch = epoch
 
+            # CRITICAL: Set epoch on sampler for proper shuffling in DDP
+            # This ensures each epoch uses a different random ordering
+            if self.train_sampler is not None:
+                self.train_sampler.set_epoch(epoch)
+
             # Train
             train_loss, train_acc = self.train_epoch()
 
-            # Validate
+            # Validate (all processes, but only main logs)
+            val_desc = f'Epoch {epoch + 1} [Val]' if self.is_main else None
             val_loss, val_acc, val_labels, val_preds, val_probs = self.evaluate(
-                self.val_loader, f'Epoch {epoch + 1} [Val]'
+                self.val_loader, val_desc
             )
 
             # Get current learning rate
@@ -291,18 +360,19 @@ class Trainer:
                 else:
                     self.scheduler.step()
 
-            # Record history
+            # Record history (all processes for consistency)
             self.history['train_loss'].append(train_loss)
             self.history['train_acc'].append(train_acc)
             self.history['val_loss'].append(val_loss)
             self.history['val_acc'].append(val_acc)
             self.history['lr'].append(current_lr)
 
-            # Print epoch summary
-            print(f"\nEpoch {epoch + 1}/{self.config.epochs}")
-            print(f"  Train Loss: {train_loss:.4f}  Train Acc: {train_acc:.4f}")
-            print(f"  Val Loss:   {val_loss:.4f}  Val Acc:   {val_acc:.4f}")
-            print(f"  LR: {current_lr:.6f}")
+            # Print epoch summary (main process only)
+            if self.is_main:
+                print(f"\nEpoch {epoch + 1}/{self.config.epochs}")
+                print(f"  Train Loss: {train_loss:.4f}  Train Acc: {train_acc:.4f}")
+                print(f"  Val Loss:   {val_loss:.4f}  Val Acc:   {val_acc:.4f}")
+                print(f"  LR: {current_lr:.6f}")
 
             # Check for improvement
             improved = val_loss < self.best_val_loss - self.config.min_delta
@@ -312,39 +382,59 @@ class Trainer:
                 self.best_val_acc = val_acc
                 self.patience_counter = 0
 
-                # Save best model
-                self.save_checkpoint('best_model.pt')
-                print(f"  ✓ New best model saved (val_loss: {val_loss:.4f})")
+                # Save best model (main process only)
+                if self.is_main:
+                    self.save_checkpoint('best_model.pt')
+                    print(f"  [checkmark] New best model saved (val_loss: {val_loss:.4f})")
             else:
                 self.patience_counter += 1
-                print(f"  No improvement for {self.patience_counter} epochs")
+                if self.is_main:
+                    print(f"  No improvement for {self.patience_counter} epochs")
 
-            # Save periodic checkpoint
-            if not self.config.save_best_only:
+            # Synchronize before next epoch (ensures checkpoint is saved)
+            if self.is_distributed:
+                from .distributed import barrier
+                barrier()
+
+            # Save periodic checkpoint (main process only)
+            if not self.config.save_best_only and self.is_main:
                 self.save_checkpoint(f'checkpoint_epoch_{epoch + 1}.pt')
 
             # Early stopping
             if self.patience_counter >= self.config.patience:
-                print(f"\n⚠ Early stopping triggered after {epoch + 1} epochs")
+                if self.is_main:
+                    print(f"\n[warning] Early stopping triggered after {epoch + 1} epochs")
                 break
 
         elapsed_time = time.time() - start_time
-        print(f"\nTraining completed in {elapsed_time / 60:.1f} minutes")
-        print(f"Best validation loss: {self.best_val_loss:.4f}")
-        print(f"Best validation accuracy: {self.best_val_acc:.4f}")
+        if self.is_main:
+            print(f"\nTraining completed in {elapsed_time / 60:.1f} minutes")
+            print(f"Best validation loss: {self.best_val_loss:.4f}")
+            print(f"Best validation accuracy: {self.best_val_acc:.4f}")
 
-        # Save training history
-        self._save_history()
+            # Save training history
+            self._save_history()
 
         return self.history
 
     def save_checkpoint(self, filename: str):
-        """Save model checkpoint."""
+        """
+        Save model checkpoint.
+
+        Handles DDP by extracting the underlying model via model.module
+        if wrapped in DistributedDataParallel.
+        """
         path = os.path.join(self.config.checkpoint_dir, filename)
+
+        # Get underlying model if wrapped in DDP
+        model_to_save = self.model
+        if hasattr(self.model, 'module'):
+            model_to_save = self.model.module
+
         torch.save({
             'epoch': self.epoch,
             'global_step': self.global_step,
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_to_save.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_loss': self.best_val_loss,

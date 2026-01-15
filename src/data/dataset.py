@@ -15,6 +15,7 @@ from typing import Callable, List, Optional, Tuple
 import torch
 from torch_geometric.data import Dataset, HeteroData
 from torch_geometric.loader import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 from .entity_mapper import EntityMapper
@@ -334,6 +335,106 @@ def create_dataloaders(
     )
 
     return train_loader, val_loader, test_loader
+
+
+def create_dataloaders_distributed(
+    root: str,
+    batch_size: int = 64,
+    num_workers: int = 4,
+    raw_data_dir: Optional[str] = None,
+    rank: int = 0,
+    world_size: int = 1,
+    **dataset_kwargs
+) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[DistributedSampler]]:
+    """
+    Create train, validation, and test dataloaders with DDP support.
+
+    When world_size > 1, uses DistributedSampler to partition data
+    across GPUs. Each GPU receives non-overlapping batches.
+
+    Following Sebastian Raschka's DDP methodology:
+    - DistributedSampler ensures each GPU gets unique data
+    - shuffle=False in DataLoader when using sampler (sampler handles shuffling)
+    - drop_last=True ensures all GPUs have same batch count
+    - Returns train_sampler so set_epoch() can be called each epoch
+
+    Args:
+        root: Root directory for processed data cache
+        batch_size: Batch size PER GPU (effective batch = batch_size * world_size)
+        num_workers: Number of data loading workers per GPU
+        raw_data_dir: Directory containing raw JSON match files
+        rank: Global rank of current process (0 to world_size-1)
+        world_size: Total number of processes
+        **dataset_kwargs: Additional arguments for CricketDataset
+                         (min_history, train_ratio, val_ratio, seed, etc.)
+
+    Returns:
+        Tuple of (train_loader, val_loader, test_loader, train_sampler)
+        train_sampler is returned so set_epoch() can be called each epoch
+        for proper shuffling in DDP mode.
+
+    Example:
+        # In train.py with DDP
+        train_loader, val_loader, test_loader, train_sampler = create_dataloaders_distributed(
+            root="data/processed",
+            batch_size=64,
+            rank=rank,
+            world_size=world_size,
+        )
+
+        # In training loop
+        for epoch in range(epochs):
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)  # CRITICAL for proper shuffling
+            train_one_epoch()
+    """
+    train_dataset = CricketDataset(root, split='train', raw_data_dir=raw_data_dir, **dataset_kwargs)
+    val_dataset = CricketDataset(root, split='val', raw_data_dir=raw_data_dir, **dataset_kwargs)
+    test_dataset = CricketDataset(root, split='test', raw_data_dir=raw_data_dir, **dataset_kwargs)
+
+    # Create distributed sampler for training data
+    train_sampler = None
+    shuffle_train = True
+
+    if world_size > 1:
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=True,  # Ensures all GPUs have same batch count
+        )
+        shuffle_train = False  # Sampler handles shuffling
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle_train,
+        sampler=train_sampler,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True if world_size > 1 else False,
+    )
+
+    # Validation and test don't need distributed sampling
+    # (we could add it for faster eval, but metrics must be gathered)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    return train_loader, val_loader, test_loader, train_sampler
 
 
 def compute_class_weights(dataset: CricketDataset) -> torch.Tensor:
