@@ -96,8 +96,12 @@ class CricketDataset(Dataset):
     @property
     def raw_file_names(self) -> List[str]:
         """Expected raw files - any .json files in raw_dir."""
-        # Return empty list to skip download check when using custom raw_data_dir
-        # The actual file existence is checked in process()
+        # Dynamically find JSON files in raw_dir to satisfy PyG's files_exist() check
+        # This prevents download() from being called when files already exist
+        if os.path.exists(self.raw_dir):
+            files = [f for f in os.listdir(self.raw_dir) if f.endswith('.json')]
+            if files:
+                return files[:1]  # Return at least one file to pass files_exist() check
         return []
 
     @property
