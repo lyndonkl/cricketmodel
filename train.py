@@ -79,6 +79,12 @@ def parse_args():
         default=4,
         help="Number of data loading workers per GPU"
     )
+    parser.add_argument(
+        "--ollama-workers",
+        type=int,
+        default=4,
+        help="Number of parallel workers for Ollama player classification"
+    )
 
     # Model
     parser.add_argument(
@@ -264,6 +270,7 @@ def main():
             world_size=world_size,
             min_history=1,
             seed=args.seed,
+            ollama_workers=args.ollama_workers,
         )
     else:
         train_loader, val_loader, test_loader = create_dataloaders(
@@ -273,6 +280,7 @@ def main():
             num_workers=args.num_workers,
             min_history=1,
             seed=args.seed,
+            ollama_workers=args.ollama_workers,
         )
         train_sampler = None
 

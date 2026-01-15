@@ -59,6 +59,7 @@ class CricketDataset(Dataset):
         train_ratio: float = 0.8,
         val_ratio: float = 0.1,
         seed: int = 42,
+        ollama_workers: int = 4,
     ):
         self.split = split
         self._raw_data_dir = raw_data_dir
@@ -66,6 +67,7 @@ class CricketDataset(Dataset):
         self.train_ratio = train_ratio
         self.val_ratio = val_ratio
         self.seed = seed
+        self._ollama_workers = ollama_workers
 
         # These will be loaded after super().__init__ triggers process()
         self._split_indices: Optional[List[int]] = None
@@ -140,11 +142,17 @@ class CricketDataset(Dataset):
         # Step 1: Build entity mapper from ALL matches
         print("Building entity mapper...")
         entity_mapper = EntityMapper()
-        entity_mapper.build_from_matches(match_files)
+        checkpoint_path = os.path.join(self.processed_dir, 'entity_mapper.pkl')
+        entity_mapper.build_from_matches(
+            match_files,
+            checkpoint_path=checkpoint_path,
+            num_workers=getattr(self, '_ollama_workers', 4),
+            checkpoint_every=100,
+        )
         print(f"Entity mapper: {entity_mapper}")
 
-        # Save entity mapper
-        entity_mapper.save(os.path.join(self.processed_dir, 'entity_mapper.pkl'))
+        # Save entity mapper (final save, may be redundant but ensures completeness)
+        entity_mapper.save(checkpoint_path)
 
         # Step 2: Split matches (not balls!)
         random.seed(self.seed)

@@ -6,8 +6,11 @@ Supports hierarchical player embeddings with team and role fallbacks.
 """
 
 import json
+import os
 import pickle
-from typing import Dict, Optional, Tuple
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Optional, Tuple
 
 
 # Player role categories for hierarchical embeddings
@@ -204,7 +207,13 @@ class EntityMapper:
         """Number of unique players (excluding unknown)."""
         return len(self.player_to_id)
 
-    def build_from_matches(self, match_files: list) -> None:
+    def build_from_matches(
+        self,
+        match_files: list,
+        checkpoint_path: Optional[str] = None,
+        num_workers: int = 4,
+        checkpoint_every: int = 100,
+    ) -> None:
         """
         Build entity mappings from a list of match JSON files.
 
@@ -213,6 +222,9 @@ class EntityMapper:
 
         Args:
             match_files: List of paths to match JSON files
+            checkpoint_path: Path to save/load checkpoint for resuming classification
+            num_workers: Number of parallel workers for Ollama requests
+            checkpoint_every: Save checkpoint every N players classified
         """
         # Track player-team associations (player can play for multiple teams)
         player_team_counts: Dict[str, Dict[str, int]] = {}
@@ -263,8 +275,22 @@ class EntityMapper:
                 primary_team = max(team_counts.items(), key=lambda x: x[1])[0]
                 self.player_to_team[player] = primary_team
 
-        # Classify players using Ollama LLM
-        self._classify_players_with_ollama()
+        # Load existing checkpoint if available (for resume)
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            try:
+                existing = EntityMapper.load(checkpoint_path)
+                self.player_to_role = existing.player_to_role
+                self.player_to_bowling_type = existing.player_to_bowling_type
+                print(f"Loaded checkpoint with {len(self.player_to_role)} pre-classified players")
+            except Exception as e:
+                print(f"Warning: Could not load checkpoint: {e}")
+
+        # Classify players using Ollama LLM (parallel)
+        self._classify_players_with_ollama(
+            num_workers=num_workers,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
+        )
 
     def _track_player_team(
         self,
@@ -278,15 +304,25 @@ class EntityMapper:
         if team:
             player_team_counts[player][team] = player_team_counts[player].get(team, 0) + 1
 
-    def _classify_players_with_ollama(self) -> None:
+    def _classify_players_with_ollama(
+        self,
+        num_workers: int = 4,
+        checkpoint_every: int = 100,
+        checkpoint_path: Optional[str] = None,
+    ) -> None:
         """
-        Classify all players using local Ollama LLM.
+        Classify all players using local Ollama LLM with parallel processing.
 
         For each player, queries the LLM to determine:
         - role: opener, top_order, middle_order, finisher, bowler, allrounder, keeper, unknown
         - bowling_type: pace, spin, none, unknown
 
         Requires Ollama to be running locally with the gpt-oss:120b model.
+
+        Args:
+            num_workers: Number of parallel workers for API requests
+            checkpoint_every: Save checkpoint every N players
+            checkpoint_path: Path to save checkpoint (for crash recovery)
         """
         from tqdm import tqdm
 
@@ -296,26 +332,85 @@ class EntityMapper:
             print("Warning: ollama package not installed. Run 'pip install ollama'")
             print("Setting all players to unknown role/bowling_type")
             for player in self.player_to_id.keys():
-                self.player_to_role[player] = 'unknown'
-                self.player_to_bowling_type[player] = 'unknown'
+                if player not in self.player_to_role:
+                    self.player_to_role[player] = 'unknown'
+                    self.player_to_bowling_type[player] = 'unknown'
             return
 
+        # Test connection
         try:
-            client = Client(host='http://localhost:11434')
+            test_client = Client(host='http://localhost:11434')
+            # Quick test to verify Ollama is responsive
+            test_client.list()
         except Exception as e:
             print(f"Warning: Could not connect to Ollama: {e}")
             print("Setting all players to unknown role/bowling_type")
             for player in self.player_to_id.keys():
-                self.player_to_role[player] = 'unknown'
-                self.player_to_bowling_type[player] = 'unknown'
+                if player not in self.player_to_role:
+                    self.player_to_role[player] = 'unknown'
+                    self.player_to_bowling_type[player] = 'unknown'
             return
 
-        print(f"Classifying {len(self.player_to_id)} players with Ollama...")
+        # Get players that haven't been classified yet (for resume support)
+        players_to_classify = [
+            p for p in self.player_to_id.keys()
+            if p not in self.player_to_role
+        ]
 
-        for player in tqdm(self.player_to_id.keys(), desc="Classifying players"):
-            classification = self._classify_single_player(client, player)
-            self.player_to_role[player] = classification.get('role', 'unknown')
-            self.player_to_bowling_type[player] = classification.get('bowling_type', 'unknown')
+        if not players_to_classify:
+            print("All players already classified (loaded from checkpoint)")
+            return
+
+        print(f"Classifying {len(players_to_classify)} players with Ollama "
+              f"({len(self.player_to_role)} already done, {num_workers} workers)...")
+
+        # Thread-safe lock for updating shared dicts
+        lock = threading.Lock()
+        completed_count = [0]  # Use list to allow modification in nested function
+
+        def classify_worker(player: str) -> Tuple[str, Dict[str, str]]:
+            """Worker function that creates its own client for thread safety."""
+            # Each thread creates its own client for thread safety
+            client = Client(host='http://localhost:11434')
+            result = self._classify_single_player(client, player)
+            return player, result
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks
+            futures = {
+                executor.submit(classify_worker, p): p
+                for p in players_to_classify
+            }
+
+            # Process completed tasks with progress bar
+            with tqdm(total=len(players_to_classify), desc="Classifying players") as pbar:
+                for future in as_completed(futures):
+                    try:
+                        player, classification = future.result()
+                        with lock:
+                            self.player_to_role[player] = classification.get('role', 'unknown')
+                            self.player_to_bowling_type[player] = classification.get('bowling_type', 'unknown')
+                            completed_count[0] += 1
+                            pbar.update(1)
+
+                            # Incremental checkpoint
+                            if checkpoint_path and completed_count[0] % checkpoint_every == 0:
+                                self.save(checkpoint_path)
+                                pbar.write(f"Checkpoint saved: {completed_count[0]}/{len(players_to_classify)} players")
+
+                    except Exception as e:
+                        player = futures[future]
+                        with lock:
+                            self.player_to_role[player] = 'unknown'
+                            self.player_to_bowling_type[player] = 'unknown'
+                            completed_count[0] += 1
+                            pbar.update(1)
+                        tqdm.write(f"Warning: Failed to classify {player}: {e}")
+
+        # Final save
+        if checkpoint_path:
+            self.save(checkpoint_path)
+            print(f"Final checkpoint saved: {len(self.player_to_role)} players classified")
 
     def _classify_single_player(self, client, player_name: str) -> Dict[str, str]:
         """
