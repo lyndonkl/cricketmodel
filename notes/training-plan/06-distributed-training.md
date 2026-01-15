@@ -190,15 +190,27 @@ python train.py --wandb --wandb-project my-project --wandb-run-name experiment-1
 
 ### What Gets Logged
 
-**Per Epoch:**
+**Per Epoch (Training):**
 - `train/loss`, `train/accuracy`
-- `val/loss`, `val/accuracy`
 - `learning_rate`
+
+**Per Epoch (Validation):**
+- `val/loss`, `val/accuracy`
+- `val/f1_macro`, `val/f1_weighted`, `val/log_loss`
+- `val/wicket_recall`, `val/boundary_precision`, `val/expected_runs_error`
+- `val/ece` (Expected Calibration Error)
+- `val/top_2_accuracy`, `val/top_3_accuracy`
+- Per-class metrics: `val/f1_{class}`, `val/precision_{class}`, `val/recall_{class}` for each class (dot, single, two, three, four, six, wicket)
+- `val/confusion_matrix` (image, every 10 epochs)
 
 **After Test Evaluation:**
 - `test/loss`, `test/accuracy`
-- `test/f1_macro`, `test/f1_weighted`
-- `test/precision_macro`, `test/recall_macro`
+- `test/f1_macro`, `test/f1_weighted`, `test/log_loss`
+- `test/wicket_recall`, `test/boundary_precision`, `test/expected_runs_error`
+- `test/ece` (Expected Calibration Error)
+- `test/top_2_accuracy`, `test/top_3_accuracy`
+- Per-class metrics: `test/f1_{class}`, `test/precision_{class}`, `test/recall_{class}` for each class
+- `test/confusion_matrix` (image)
 
 ### DDP Compatibility
 

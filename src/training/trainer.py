@@ -399,14 +399,51 @@ class Trainer:
             # Log to WandB (main process only)
             if self.is_main and self.use_wandb:
                 import wandb
-                wandb.log({
+                from .metrics import (
+                    compute_metrics, create_confusion_matrix_figure, CLASS_NAMES
+                )
+
+                # Compute comprehensive validation metrics
+                val_metrics = compute_metrics(val_labels, val_preds, val_probs)
+
+                wandb_log = {
                     "epoch": epoch + 1,
                     "train/loss": train_loss,
                     "train/accuracy": train_acc,
                     "val/loss": val_loss,
                     "val/accuracy": val_acc,
                     "learning_rate": current_lr,
-                })
+                    # Primary metrics
+                    "val/f1_macro": val_metrics["f1_macro"],
+                    "val/f1_weighted": val_metrics["f1_weighted"],
+                    "val/log_loss": val_metrics.get("log_loss", 0),
+                    # Cricket-specific metrics
+                    "val/wicket_recall": val_metrics["wicket_recall"],
+                    "val/boundary_precision": val_metrics["boundary_precision"],
+                    "val/expected_runs_error": val_metrics.get("expected_runs_error", 0),
+                    # Calibration
+                    "val/ece": val_metrics.get("ece", 0),
+                    # Top-k accuracy
+                    "val/top_2_accuracy": val_metrics.get("top_2_accuracy", 0),
+                    "val/top_3_accuracy": val_metrics.get("top_3_accuracy", 0),
+                }
+
+                # Per-class F1 scores
+                for class_name in CLASS_NAMES:
+                    class_metrics = val_metrics["per_class_f1"][class_name]
+                    wandb_log[f"val/f1_{class_name.lower()}"] = class_metrics["f1"]
+                    wandb_log[f"val/precision_{class_name.lower()}"] = class_metrics["precision"]
+                    wandb_log[f"val/recall_{class_name.lower()}"] = class_metrics["recall"]
+
+                wandb.log(wandb_log)
+
+                # Log confusion matrix as image (every 10 epochs to reduce overhead)
+                if (epoch + 1) % 10 == 0 or epoch == 0:
+                    fig = create_confusion_matrix_figure(val_labels, val_preds)
+                    if fig is not None:
+                        wandb.log({"val/confusion_matrix": wandb.Image(fig)})
+                        import matplotlib.pyplot as plt
+                        plt.close(fig)
 
             # Check for improvement
             improved = val_loss < self.best_val_loss - self.config.min_delta
@@ -526,17 +563,47 @@ class Trainer:
         print(f"Test Accuracy: {test_acc:.4f}")
         print_classification_report(labels, preds, probs)
 
-        # Log test metrics to WandB
+        # Log comprehensive test metrics to WandB
         if self.use_wandb:
             import wandb
-            wandb.log({
+            from .metrics import create_confusion_matrix_figure, CLASS_NAMES
+
+            wandb_log = {
                 "test/loss": test_loss,
                 "test/accuracy": test_acc,
+                # Primary metrics
                 "test/f1_macro": metrics.get("f1_macro", 0),
                 "test/f1_weighted": metrics.get("f1_weighted", 0),
                 "test/precision_macro": metrics.get("precision_macro", 0),
                 "test/recall_macro": metrics.get("recall_macro", 0),
-            })
+                "test/log_loss": metrics.get("log_loss", 0),
+                # Cricket-specific metrics
+                "test/wicket_recall": metrics.get("wicket_recall", 0),
+                "test/boundary_precision": metrics.get("boundary_precision", 0),
+                "test/expected_runs_error": metrics.get("expected_runs_error", 0),
+                # Calibration
+                "test/ece": metrics.get("ece", 0),
+                # Top-k accuracy
+                "test/top_2_accuracy": metrics.get("top_2_accuracy", 0),
+                "test/top_3_accuracy": metrics.get("top_3_accuracy", 0),
+            }
+
+            # Per-class F1/precision/recall
+            if "per_class_f1" in metrics:
+                for class_name in CLASS_NAMES:
+                    class_metrics = metrics["per_class_f1"][class_name]
+                    wandb_log[f"test/f1_{class_name.lower()}"] = class_metrics["f1"]
+                    wandb_log[f"test/precision_{class_name.lower()}"] = class_metrics["precision"]
+                    wandb_log[f"test/recall_{class_name.lower()}"] = class_metrics["recall"]
+
+            wandb.log(wandb_log)
+
+            # Log confusion matrix as image
+            fig = create_confusion_matrix_figure(labels, preds)
+            if fig is not None:
+                wandb.log({"test/confusion_matrix": wandb.Image(fig)})
+                import matplotlib.pyplot as plt
+                plt.close(fig)
 
         return metrics
 
