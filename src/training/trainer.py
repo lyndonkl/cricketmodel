@@ -106,13 +106,22 @@ class Trainer:
         self.is_main = rank == 0
         self.train_sampler = train_sampler
 
-        # Device setup
+        # Device setup - handles CUDA, MPS (Apple Silicon), and CPU
         if device is not None:
             self.device = device
         elif self.is_distributed:
-            self.device = torch.device(f'cuda:{rank}')
+            # In DDP, assign device based on platform
+            if torch.cuda.is_available():
+                self.device = torch.device(f'cuda:{rank}')
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                # MPS has single GPU, DDP won't help but will work
+                self.device = torch.device('mps')
+            else:
+                self.device = torch.device('cpu')
         elif torch.cuda.is_available():
             self.device = torch.device('cuda')
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            self.device = torch.device('mps')
         else:
             self.device = torch.device('cpu')
 
@@ -121,12 +130,21 @@ class Trainer:
 
         if self.is_distributed:
             from torch.nn.parallel import DistributedDataParallel as DDP
-            self.model = DDP(
-                self.model,
-                device_ids=[rank],
-                output_device=rank,
-                find_unused_parameters=False,  # Set True if model has unused params
-            )
+            # device_ids and output_device are CUDA-specific
+            # For CPU/MPS, omit these parameters
+            if torch.cuda.is_available():
+                self.model = DDP(
+                    self.model,
+                    device_ids=[rank],
+                    output_device=rank,
+                    find_unused_parameters=False,
+                )
+            else:
+                # CPU or MPS: don't specify device_ids
+                self.model = DDP(
+                    self.model,
+                    find_unused_parameters=False,
+                )
 
         # Data
         self.train_loader = train_loader

@@ -5,16 +5,23 @@ Provides helper functions for initializing, detecting, and managing
 distributed training across multiple GPUs following Sebastian Raschka's
 methodology (https://sebastianraschka.com/teaching/pytorch-1h/).
 
+Supports multiple platforms:
+- Linux with NVIDIA GPUs: NCCL backend (optimal)
+- Windows: Gloo backend
+- macOS with MPS: Single-device training (DDP not supported)
+
 Usage:
     # Single GPU (unchanged)
     python train.py
 
-    # Multi-GPU with DDP
+    # Multi-GPU with DDP (Linux/CUDA)
     torchrun --nproc_per_node=2 train.py
     torchrun --nproc_per_node=4 train.py --batch-size 32
 """
 
 import os
+import sys
+import warnings
 from typing import Tuple
 
 import torch
@@ -80,39 +87,95 @@ def is_main_process() -> bool:
     return get_rank() == 0
 
 
+def get_backend() -> str:
+    """
+    Auto-detect the appropriate distributed backend.
+
+    Backend selection per Sebastian Raschka's methodology:
+    - NCCL: Optimal for NVIDIA GPUs (Linux/macOS with CUDA)
+    - Gloo: Required for Windows, fallback for non-CUDA systems
+
+    Note: macOS with MPS only (no CUDA) will use Gloo, but DDP
+    is not recommended on MPS as Apple Silicon has single GPU.
+
+    Returns:
+        Backend name: "nccl" or "gloo"
+    """
+    # Windows requires Gloo
+    if sys.platform == "win32":
+        return "gloo"
+
+    # NCCL requires CUDA
+    if torch.cuda.is_available():
+        return "nccl"
+
+    # Fallback to Gloo for CPU/MPS
+    return "gloo"
+
+
+def is_mps_available() -> bool:
+    """
+    Check if MPS (Metal Performance Shaders) is available.
+
+    MPS is Apple Silicon's GPU acceleration framework.
+
+    Returns:
+        True if MPS is available
+    """
+    return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+
+
 def setup_distributed() -> Tuple[int, int, int]:
     """
     Initialize distributed process group.
 
     Called at the start of training when running with torchrun.
-    Uses NCCL backend for optimal GPU-to-GPU communication.
+    Auto-detects the appropriate backend based on platform and hardware.
 
-    NCCL (NVIDIA Collective Communications Library):
-    - Best performance for NVIDIA GPUs
-    - Supports all-reduce, broadcast, gather operations
-    - Handles gradient synchronization efficiently
+    Backend selection per Sebastian Raschka's methodology:
+    - NCCL: Best performance for NVIDIA GPUs (Linux with CUDA)
+    - Gloo: Required for Windows, fallback for CPU/MPS systems
+
+    Note: MPS (Apple Silicon) has a single GPU, so DDP provides no benefit.
+    For Mac development, prefer single-device training without torchrun.
 
     Returns:
         Tuple of (rank, local_rank, world_size)
 
     Example:
         rank, local_rank, world_size = setup_distributed()
-        device = torch.device(f'cuda:{local_rank}')
+        if torch.cuda.is_available():
+            device = torch.device(f'cuda:{local_rank}')
+        elif is_mps_available():
+            device = torch.device('mps')
+        else:
+            device = torch.device('cpu')
     """
     if not is_distributed():
         return 0, 0, 1
 
-    # Initialize process group with NCCL backend (optimal for GPU)
+    backend = get_backend()
+
+    # Warn if attempting DDP on MPS - it won't provide multi-GPU benefits
+    if is_mps_available() and not torch.cuda.is_available():
+        warnings.warn(
+            "DDP on MPS is not recommended. Apple Silicon Macs have a single GPU, "
+            "so DDP provides no parallelism benefit. Consider running without "
+            "torchrun for single-device training: python train.py"
+        )
+
+    # Initialize process group
     # init_method="env://" reads MASTER_ADDR and MASTER_PORT from environment
-    dist.init_process_group(backend="nccl", init_method="env://")
+    dist.init_process_group(backend=backend, init_method="env://")
 
     rank = get_rank()
     local_rank = get_local_rank()
     world_size = get_world_size()
 
-    # Set the device for this process
+    # Set the CUDA device for this process (only if CUDA available)
     # Each process is assigned to exactly one GPU
-    torch.cuda.set_device(local_rank)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
 
     return rank, local_rank, world_size
 

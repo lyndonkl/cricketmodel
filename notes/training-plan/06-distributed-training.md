@@ -4,6 +4,57 @@ This document covers multi-GPU training using PyTorch Distributed Data Parallel 
 
 ---
 
+## Platform Support
+
+### Mac (Apple Silicon / MPS)
+
+Apple Silicon Macs use MPS (Metal Performance Shaders) for GPU acceleration.
+
+**Important**: MPS does not support multi-GPU DDP because Macs have a single integrated GPU. For Mac development, use single-device training:
+
+```bash
+# Recommended for Mac development
+python train.py --epochs 10 --batch-size 32
+```
+
+If you accidentally run with `torchrun` on Mac, the code will still work but you'll see a warning that DDP provides no parallelism benefit on single-GPU systems.
+
+### Linux with NVIDIA GPUs (RunPod, etc.)
+
+Use NCCL backend for optimal multi-GPU performance:
+
+```bash
+# 2 GPUs
+torchrun --nproc_per_node=2 train.py --epochs 100 --batch-size 64
+
+# 4 GPUs
+torchrun --nproc_per_node=4 train.py --epochs 100 --batch-size 32
+```
+
+### Windows
+
+Windows uses the Gloo backend automatically:
+
+```bash
+torchrun --nproc_per_node=2 train.py
+```
+
+### Backend Selection
+
+The backend is auto-detected based on platform and hardware:
+
+| Platform | CUDA Available | Backend Used |
+|----------|----------------|--------------|
+| Linux    | Yes            | NCCL         |
+| Linux    | No             | Gloo         |
+| macOS    | Yes (rare)     | NCCL         |
+| macOS    | No (MPS only)  | Gloo*        |
+| Windows  | Any            | Gloo         |
+
+*Note: DDP on MPS is not recommended due to single-GPU limitation.
+
+---
+
 ## Overview
 
 DDP enables training across multiple GPUs by:
