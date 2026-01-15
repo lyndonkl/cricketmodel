@@ -84,6 +84,8 @@ class Trainer:
         train_sampler: Optional["DistributedSampler"] = None,
         rank: int = 0,
         world_size: int = 1,
+        # WandB
+        use_wandb: bool = False,
     ):
         """
         Args:
@@ -96,8 +98,10 @@ class Trainer:
             train_sampler: DistributedSampler for DDP (to call set_epoch)
             rank: Process rank (0 for main process)
             world_size: Total number of processes
+            use_wandb: Enable WandB logging (only on rank 0)
         """
         self.config = config
+        self.use_wandb = use_wandb
 
         # DDP configuration
         self.rank = rank
@@ -392,6 +396,18 @@ class Trainer:
                 print(f"  Val Loss:   {val_loss:.4f}  Val Acc:   {val_acc:.4f}")
                 print(f"  LR: {current_lr:.6f}")
 
+            # Log to WandB (main process only)
+            if self.is_main and self.use_wandb:
+                import wandb
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "train/loss": train_loss,
+                    "train/accuracy": train_acc,
+                    "val/loss": val_loss,
+                    "val/accuracy": val_acc,
+                    "learning_rate": current_lr,
+                })
+
             # Check for improvement
             improved = val_loss < self.best_val_loss - self.config.min_delta
 
@@ -509,6 +525,18 @@ class Trainer:
         print(f"\nTest Loss: {test_loss:.4f}")
         print(f"Test Accuracy: {test_acc:.4f}")
         print_classification_report(labels, preds, probs)
+
+        # Log test metrics to WandB
+        if self.use_wandb:
+            import wandb
+            wandb.log({
+                "test/loss": test_loss,
+                "test/accuracy": test_acc,
+                "test/f1_macro": metrics.get("f1_macro", 0),
+                "test/f1_weighted": metrics.get("f1_weighted", 0),
+                "test/precision_macro": metrics.get("precision_macro", 0),
+                "test/recall_macro": metrics.get("recall_macro", 0),
+            })
 
         return metrics
 

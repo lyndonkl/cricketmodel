@@ -156,6 +156,25 @@ def parse_args():
         help="Disable class weighting for imbalanced data"
     )
 
+    # WandB
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging"
+    )
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default="cricket-gnn",
+        help="WandB project name"
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        type=str,
+        default=None,
+        help="WandB run name (auto-generated if not set)"
+    )
+
     return parser.parse_args()
 
 
@@ -198,6 +217,29 @@ def main():
         if ddp_enabled:
             print(f"DDP enabled: {world_size} GPUs")
             print(f"Effective batch size: {args.batch_size * world_size}")
+
+    # === WandB Setup ===
+    if args.wandb and is_main:
+        import wandb
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            config={
+                "batch_size": args.batch_size,
+                "effective_batch_size": args.batch_size * world_size,
+                "lr": args.lr,
+                "weight_decay": args.weight_decay,
+                "epochs": args.epochs,
+                "hidden_dim": args.hidden_dim,
+                "num_layers": args.num_layers,
+                "num_heads": args.num_heads,
+                "dropout": args.dropout,
+                "patience": args.patience,
+                "world_size": world_size,
+                "device": str(device),
+            }
+        )
+        print("WandB logging enabled")
 
     # === Create Dataloaders ===
     if is_main:
@@ -349,6 +391,7 @@ def main():
         train_sampler=train_sampler,
         rank=rank,
         world_size=world_size,
+        use_wandb=args.wandb,
     )
 
     # Train
@@ -379,6 +422,10 @@ def main():
         print("=" * 60)
 
     # === Cleanup ===
+    if args.wandb and is_main:
+        import wandb
+        wandb.finish()
+
     cleanup_distributed()
 
 

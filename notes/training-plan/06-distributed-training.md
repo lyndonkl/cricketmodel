@@ -173,39 +173,47 @@ scaled_lr = base_lr * sqrt(effective_batch / base_batch)
 
 ## WandB Integration with DDP
 
-**Critical**: Only rank 0 should initialize WandB to avoid duplicate logging.
+WandB logging is built into the training script and controlled via the `--wandb` flag.
 
-The training code already handles this:
-- Only the main process (rank 0) prints to console
-- Only the main process saves checkpoints
-- Only the main process saves training history
+### Usage
 
-When adding WandB logging, follow the same pattern:
+```bash
+# Single device with WandB
+python train.py --epochs 100 --batch-size 64 --wandb
 
-```python
-from src.training import is_main_process
+# DDP with WandB
+torchrun --nproc_per_node=4 train.py --epochs 100 --batch-size 64 --wandb
 
-if is_main_process():
-    wandb.init(
-        project="cricket-gnn",
-        name=args.run_name,
-        config=vars(args)
-    )
-
-# During training
-if is_main_process():
-    wandb.log({"train/loss": train_loss, "epoch": epoch})
-
-# Cleanup
-if is_main_process():
-    wandb.finish()
+# Custom project/run name
+python train.py --wandb --wandb-project my-project --wandb-run-name experiment-1
 ```
 
-**Multi-Node WandB Timeout**: For multi-node setups, if you encounter timeout errors during `wandb.init()`, increase the timeout:
+### What Gets Logged
+
+**Per Epoch:**
+- `train/loss`, `train/accuracy`
+- `val/loss`, `val/accuracy`
+- `learning_rate`
+
+**After Test Evaluation:**
+- `test/loss`, `test/accuracy`
+- `test/f1_macro`, `test/f1_weighted`
+- `test/precision_macro`, `test/recall_macro`
+
+### DDP Compatibility
+
+The integration is DDP-safe:
+- Only rank 0 initializes WandB (`wandb.init()`)
+- Only rank 0 logs metrics (`wandb.log()`)
+- Only rank 0 calls cleanup (`wandb.finish()`)
+
+### Multi-Node WandB Timeout
+
+For multi-node setups, if you encounter timeout errors during `wandb.init()`, increase the timeout by modifying `train.py`:
 
 ```python
 wandb.init(
-    project="cricket-gnn",
+    project=args.wandb_project,
     settings=wandb.Settings(init_timeout=120)  # 120 seconds
 )
 ```
