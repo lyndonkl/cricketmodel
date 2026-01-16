@@ -117,10 +117,8 @@ class Trainer:
             # In DDP, assign device based on platform
             if torch.cuda.is_available():
                 self.device = torch.device(f'cuda:{rank}')
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                # MPS has single GPU, DDP won't help but will work
-                self.device = torch.device('mps')
             else:
+                # Gloo backend (non-CUDA DDP) requires CPU tensors
                 self.device = torch.device('cpu')
         elif torch.cuda.is_available():
             self.device = torch.device('cuda')
