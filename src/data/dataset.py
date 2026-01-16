@@ -450,16 +450,25 @@ def create_dataloaders_distributed(
     return train_loader, val_loader, test_loader, train_sampler
 
 
-def compute_class_weights(dataset: CricketDataset) -> torch.Tensor:
+def compute_class_weights(dataset: CricketDataset, cache: bool = True) -> torch.Tensor:
     """
     Compute inverse frequency class weights for imbalanced data.
 
     Args:
         dataset: CricketDataset to compute weights from
+        cache: If True, cache weights to disk and load from cache on subsequent calls
 
     Returns:
         Tensor of class weights [num_classes]
     """
+    cache_path = os.path.join(dataset.processed_dir, 'class_weights.pt')
+
+    # Try to load from cache
+    if cache and os.path.exists(cache_path):
+        print(f"Loading cached class weights from {cache_path}")
+        return torch.load(cache_path, weights_only=True)
+
+    # Compute class weights
     from collections import Counter
 
     class_counts = Counter()
@@ -476,7 +485,14 @@ def compute_class_weights(dataset: CricketDataset) -> torch.Tensor:
         else:
             weights.append(1.0)
 
-    return torch.tensor(weights, dtype=torch.float)
+    weights_tensor = torch.tensor(weights, dtype=torch.float)
+
+    # Save to cache
+    if cache:
+        torch.save(weights_tensor, cache_path)
+        print(f"Cached class weights to {cache_path}")
+
+    return weights_tensor
 
 
 def get_class_distribution(dataset: CricketDataset) -> dict:
