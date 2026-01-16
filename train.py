@@ -37,7 +37,6 @@ from src.config import set_seed
 from src.data import (
     create_dataloaders,
     compute_class_weights,
-    get_class_distribution,
 )
 from src.data.dataset import create_dataloaders_distributed
 from src.model import (
@@ -309,12 +308,6 @@ def main():
         print(f"Val samples: {len(val_dataset)}")
         print(f"Test samples: {len(test_dataset)}")
 
-        # Class distribution
-        print("\nClass distribution (train):")
-        dist = get_class_distribution(train_dataset)
-        for name, info in dist.items():
-            print(f"  {name}: {info['count']} ({info['percentage']:.1f}%)")
-
     # Get entity counts from metadata
     metadata = train_dataset.get_metadata()
     if is_main:
@@ -345,20 +338,27 @@ def main():
 
     # Compute class weights (only rank 0 computes, others load from cache)
     class_weights = None
+    class_distribution = None
     if not args.no_class_weights:
         cache_path = os.path.join(train_dataset.processed_dir, 'class_weights.pt')
 
         if is_main:
             # Rank 0 computes and saves to cache
-            class_weights = compute_class_weights(train_dataset)
-            print(f"Class weights: {class_weights.tolist()}")
+            class_weights, class_distribution = compute_class_weights(train_dataset)
+
+            # Print class distribution
+            print("\nClass distribution (train):")
+            for name, info in class_distribution.items():
+                print(f"  {name}: {info['count']} ({info['percentage']:.1f}%)")
+            print(f"\nClass weights: {class_weights.tolist()}")
 
         # Synchronize: rank 0 finishes saving before others try to load
         barrier()
 
         if not is_main:
             # Other ranks load directly from cache file
-            class_weights = torch.load(cache_path, weights_only=True)
+            cached = torch.load(cache_path, weights_only=False)
+            class_weights = cached['weights']
 
     # === Test Only Mode ===
     if args.test_only:
