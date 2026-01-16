@@ -463,7 +463,7 @@ def compute_class_weights(dataset: CricketDataset) -> torch.Tensor:
     from collections import Counter
 
     class_counts = Counter()
-    for data in dataset:
+    for data in tqdm(dataset, desc="Computing class weights", unit="sample"):
         class_counts[data.y.item()] += 1
 
     total = sum(class_counts.values())
