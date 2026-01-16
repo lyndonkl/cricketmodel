@@ -450,7 +450,9 @@ def create_dataloaders_distributed(
     return train_loader, val_loader, test_loader, train_sampler
 
 
-def compute_class_weights(dataset: CricketDataset, cache: bool = True) -> torch.Tensor:
+def compute_class_weights(
+    dataset: CricketDataset, cache: bool = True
+) -> tuple[torch.Tensor, dict]:
     """
     Compute inverse frequency class weights for imbalanced data.
 
@@ -459,14 +461,16 @@ def compute_class_weights(dataset: CricketDataset, cache: bool = True) -> torch.
         cache: If True, cache weights to disk and load from cache on subsequent calls
 
     Returns:
-        Tensor of class weights [num_classes]
+        Tuple of (weights tensor [num_classes], distribution dict)
     """
     cache_path = os.path.join(dataset.processed_dir, 'class_weights.pt')
+    class_names = ['Dot', 'Single', 'Two', 'Three', 'Four', 'Six', 'Wicket']
 
     # Try to load from cache
     if cache and os.path.exists(cache_path):
         print(f"Loading cached class weights from {cache_path}")
-        return torch.load(cache_path, weights_only=True)
+        cached = torch.load(cache_path, weights_only=False)
+        return cached['weights'], cached['distribution']
 
     # Compute class weights
     from collections import Counter
@@ -487,12 +491,19 @@ def compute_class_weights(dataset: CricketDataset, cache: bool = True) -> torch.
 
     weights_tensor = torch.tensor(weights, dtype=torch.float)
 
+    # Build distribution dict
+    distribution = {}
+    for c in range(num_classes):
+        count = class_counts[c]
+        percentage = (count / total * 100) if total > 0 else 0
+        distribution[class_names[c]] = {'count': count, 'percentage': percentage}
+
     # Save to cache
     if cache:
-        torch.save(weights_tensor, cache_path)
+        torch.save({'weights': weights_tensor, 'distribution': distribution}, cache_path)
         print(f"Cached class weights to {cache_path}")
 
-    return weights_tensor
+    return weights_tensor, distribution
 
 
 def get_class_distribution(dataset: CricketDataset) -> dict:
