@@ -282,7 +282,8 @@ class CricketDataset(Dataset):
         # Map split-local index to global index
         global_idx = self._split_indices[idx]
         path = os.path.join(self.processed_dir, f'data_{global_idx}.pt')
-        return torch.load(path)
+        # weights_only=False needed for PyTorch 2.6+ to load PyG HeteroData objects
+        return torch.load(path, weights_only=False)
 
     def get_entity_mapper(self) -> EntityMapper:
         """Load and return the entity mapper."""
