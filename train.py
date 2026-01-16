@@ -343,18 +343,22 @@ def main():
     if is_main:
         print(get_model_summary(model))
 
-    # Compute class weights (only rank 0 computes, others wait and load from cache)
+    # Compute class weights (only rank 0 computes, others load from cache)
     class_weights = None
     if not args.no_class_weights:
+        cache_path = os.path.join(train_dataset.processed_dir, 'class_weights.pt')
+
         if is_main:
             # Rank 0 computes and saves to cache
             class_weights = compute_class_weights(train_dataset)
             print(f"Class weights: {class_weights.tolist()}")
+
         # Synchronize: rank 0 finishes saving before others try to load
         barrier()
+
         if not is_main:
-            # Other ranks load from cache (now guaranteed to exist)
-            class_weights = compute_class_weights(train_dataset)
+            # Other ranks load directly from cache file
+            class_weights = torch.load(cache_path, weights_only=True)
 
     # === Test Only Mode ===
     if args.test_only:
