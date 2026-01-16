@@ -22,6 +22,7 @@ set -e
 # Required environment variables for macOS with conda + pip PyTorch
 export KMP_DUPLICATE_LIB_OK=TRUE
 export PYTORCH_ENABLE_MPS_FALLBACK=1
+export PYTHONUNBUFFERED=1  # Disable output buffering for progress bars with torchrun
 
 # Default values
 NPROC=4
@@ -60,6 +61,7 @@ cd "$PROJECT_ROOT"
 echo "Environment variables set:"
 echo "  KMP_DUPLICATE_LIB_OK=$KMP_DUPLICATE_LIB_OK"
 echo "  PYTORCH_ENABLE_MPS_FALLBACK=$PYTORCH_ENABLE_MPS_FALLBACK"
+echo "  PYTHONUNBUFFERED=$PYTHONUNBUFFERED"
 echo ""
 echo "Running: torchrun --nproc_per_node=$NPROC train.py$TRAIN_ARGS"
 echo ""
