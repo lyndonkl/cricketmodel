@@ -22,6 +22,11 @@ import argparse
 import json
 import os
 
+# Enable MPS fallback for PyTorch Geometric ops not yet implemented on MPS
+# (e.g., scatter_reduce used in GATv2Conv attention)
+# This must be set BEFORE importing torch
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 
 from src.config import set_seed
