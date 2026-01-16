@@ -54,6 +54,7 @@ from src.training.distributed import (
     get_world_size,
     setup_distributed,
     cleanup_distributed,
+    barrier,
 )
 
 
@@ -342,12 +343,22 @@ def main():
     if is_main:
         print(get_model_summary(model))
 
-    # Compute class weights
+    # Compute class weights (only rank 0 computes, others load from cache)
     class_weights = None
     if not args.no_class_weights:
-        class_weights = compute_class_weights(train_dataset)
+        cache_path = os.path.join(train_dataset.processed_dir, 'class_weights.pt')
+
         if is_main:
+            # Rank 0 computes and saves to cache
+            class_weights = compute_class_weights(train_dataset)
             print(f"Class weights: {class_weights.tolist()}")
+
+        # Synchronize: rank 0 finishes saving before others try to load
+        barrier()
+
+        if not is_main:
+            # Other ranks load directly from cache file
+            class_weights = torch.load(cache_path, weights_only=True)
 
     # === Test Only Mode ===
     if args.test_only:
