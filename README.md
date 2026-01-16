@@ -92,9 +92,33 @@ The data should be in `data/t20s_male_json/*.json`.
 
 ## Training
 
+### Multi-Core CPU Training (Recommended for Mac)
+
+Use the training wrapper script for distributed training across multiple CPU cores:
+
 ```bash
-# Basic training
-python train.py
+# Train on 14 CPU cores with WandB logging
+./scripts/train.sh --nproc 14 --epochs 100 --wandb
+
+# Train on 4 cores (default)
+./scripts/train.sh --epochs 100 --wandb
+
+# See all options
+./scripts/train.sh --help
+```
+
+The wrapper script automatically sets required environment variables for macOS compatibility.
+
+### Single-Device Training
+
+For single-device training (uses MPS on Apple Silicon):
+
+```bash
+# MPS training (Apple Silicon GPU)
+python train.py --epochs 100 --wandb
+
+# Force CPU (if needed)
+python train.py --force-cpu --epochs 100 --wandb
 
 # Custom settings
 python train.py \
@@ -102,8 +126,7 @@ python train.py \
     --batch-size 64 \
     --hidden-dim 128 \
     --num-layers 3 \
-    --lr 1e-3 \
-    --device auto
+    --lr 1e-3
 
 # Test a trained model
 python train.py --test-only
@@ -121,7 +144,8 @@ python train.py --test-only
 | `--epochs` | 100 | Training epochs |
 | `--lr` | 1e-3 | Learning rate |
 | `--patience` | 10 | Early stopping patience |
-| `--device` | auto | Device: auto, cuda, mps, cpu |
+| `--force-cpu` | False | Force CPU usage (required for multi-core DDP) |
+| `--wandb` | False | Enable WandB logging |
 | `--test-only` | False | Only evaluate existing model |
 
 ## Project Structure
@@ -209,14 +233,15 @@ python -c "import torch; print('MPS available:', torch.backends.mps.is_available
 
 ## Dependencies
 
-Core dependencies managed via conda for reproducibility:
+Core dependencies managed via conda + pip:
 
 | Package | Version | Notes |
 |---------|---------|-------|
 | Python | 3.11 | Required |
-| PyTorch | >=2.1,<2.3 | MPS/CUDA support |
-| PyTorch Geometric | >=2.4 | Installed via pip (no conda pkg for ARM) |
+| PyTorch | >=2.8,<2.9 | Installed via pip (conda dropped support after 2.5) |
+| PyTorch Geometric | >=2.7 | Installed via pip |
 | NumPy | >=1.24,<2 | Pinned for PyTorch compatibility |
+| WandB | latest | Experiment tracking |
 
 See `environment.yml` for full specification.
 

@@ -144,8 +144,17 @@ def setup_distributed() -> Tuple[int, int, int]:
 
     Example:
         rank, local_rank, world_size = setup_distributed()
-        if torch.cuda.is_available():
-            device = torch.device(f'cuda:{local_rank}')
+        ddp_enabled = world_size > 1
+        if force_cpu:  # --force-cpu flag
+            device = torch.device('cpu')
+        elif ddp_enabled:
+            if torch.cuda.is_available():
+                device = torch.device(f'cuda:{local_rank}')
+            else:
+                # Gloo backend requires CPU tensors
+                device = torch.device('cpu')
+        elif torch.cuda.is_available():
+            device = torch.device('cuda')
         elif is_mps_available():
             device = torch.device('mps')
         else:
