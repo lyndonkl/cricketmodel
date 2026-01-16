@@ -175,7 +175,13 @@ def setup_distributed() -> Tuple[int, int, int]:
 
     # Initialize process group
     # init_method="env://" reads MASTER_ADDR and MASTER_PORT from environment
-    dist.init_process_group(backend=backend, init_method="env://")
+    # Increase timeout to 60 minutes for long operations like class weight computation
+    from datetime import timedelta
+    dist.init_process_group(
+        backend=backend,
+        init_method="env://",
+        timeout=timedelta(minutes=60)
+    )
 
     rank = get_rank()
     local_rank = get_local_rank()
