@@ -30,3 +30,10 @@ build/
 
 # Logs
 *.log
+
+# Data (processed datasets are large and machine-generated)
+data/processed/
+
+# Training artifacts
+checkpoints/
+wandb/

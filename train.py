@@ -27,6 +27,10 @@ import os
 # This must be set BEFORE importing torch
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+# Fix OpenMP duplicate library error on macOS with conda + pip
+# This occurs when multiple copies of libomp are linked (conda's and pip's)
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import torch
 
 from src.config import set_seed
