@@ -1,16 +1,10 @@
 name: cricketmodel
 channels:
-  - pytorch
   - conda-forge
   - defaults
 dependencies:
   # Python
   - python=3.11
-
-  # PyTorch (MPS support for Apple Silicon)
-  - pytorch>=2.1,<2.3
-  - torchvision
-  - torchaudio
 
   # Data processing (pin numpy<2 for PyTorch compatibility)
   - numpy>=1.24,<2
@@ -34,9 +28,12 @@ dependencies:
   - jupyter
   - ipykernel
 
-  # Pip for PyG (no conda package for Apple Silicon)
+  # Pip for PyTorch 2.8+ (conda packages dropped after PyTorch 2.5)
   - pip
   - pip:
-    - torch-geometric>=2.4
+    - torch>=2.8.0,<2.9
+    - torchvision
+    - torchaudio
+    - torch-geometric>=2.7.0
     - wandb
     - ollama>=0.2
