@@ -375,6 +375,7 @@ def main():
                 config=training_config,
                 class_weights=class_weights,
                 device=device,
+                force_cpu=args.force_cpu,
             )
 
             # Test
@@ -416,6 +417,7 @@ def main():
         config=training_config,
         class_weights=class_weights,
         device=device,
+        force_cpu=args.force_cpu,
         train_sampler=train_sampler,
         rank=rank,
         world_size=world_size,

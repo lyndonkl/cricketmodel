@@ -80,6 +80,7 @@ class Trainer:
         config: TrainingConfig,
         class_weights: Optional[torch.Tensor] = None,
         device: Optional[torch.device] = None,
+        force_cpu: bool = False,
         # DDP parameters
         train_sampler: Optional["DistributedSampler"] = None,
         rank: int = 0,
@@ -95,6 +96,7 @@ class Trainer:
             config: Training configuration
             class_weights: Optional class weights for imbalanced data
             device: Device to train on
+            force_cpu: Force CPU usage (for DDP with Gloo backend)
             train_sampler: DistributedSampler for DDP (to call set_epoch)
             rank: Process rank (0 for main process)
             world_size: Total number of processes
@@ -113,6 +115,8 @@ class Trainer:
         # Device setup - handles CUDA, MPS (Apple Silicon), and CPU
         if device is not None:
             self.device = device
+        elif force_cpu:
+            self.device = torch.device('cpu')
         elif self.is_distributed:
             # In DDP, assign device based on platform
             if torch.cuda.is_available():
