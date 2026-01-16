@@ -54,6 +54,7 @@ from src.training.distributed import (
     get_world_size,
     setup_distributed,
     cleanup_distributed,
+    barrier,
 )
 
 
@@ -342,12 +343,18 @@ def main():
     if is_main:
         print(get_model_summary(model))
 
-    # Compute class weights
+    # Compute class weights (only rank 0 computes, others wait and load from cache)
     class_weights = None
     if not args.no_class_weights:
-        class_weights = compute_class_weights(train_dataset)
         if is_main:
+            # Rank 0 computes and saves to cache
+            class_weights = compute_class_weights(train_dataset)
             print(f"Class weights: {class_weights.tolist()}")
+        # Synchronize: rank 0 finishes saving before others try to load
+        barrier()
+        if not is_main:
+            # Other ranks load from cache (now guaranteed to exist)
+            class_weights = compute_class_weights(train_dataset)
 
     # === Test Only Mode ===
     if args.test_only:
