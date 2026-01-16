@@ -189,6 +189,11 @@ def parse_args():
         default=None,
         help="WandB run name (auto-generated if not set)"
     )
+    parser.add_argument(
+        "--force-cpu",
+        action="store_true",
+        help="Force CPU usage (required for DDP with torchrun on non-CUDA systems)"
+    )
 
     return parser.parse_args()
 
@@ -208,19 +213,19 @@ def main():
     ddp_enabled = world_size > 1
     is_main = is_main_process()
 
-    # Set device based on DDP status and available hardware
+    # Set device based on --force-cpu flag, DDP status, and available hardware
     # Platform behavior:
+    #   - --force-cpu: Always use CPU (required for DDP with Gloo on non-CUDA)
     #   - Linux/RunPod with CUDA: Use cuda:{local_rank} for DDP
-    #   - Mac with MPS: Use MPS (single device, DDP not beneficial)
+    #   - Mac with MPS (no DDP): Use MPS for single-device training
     #   - CPU fallback: Use CPU
-    if ddp_enabled:
+    if args.force_cpu:
+        device = torch.device('cpu')
+    elif ddp_enabled:
         if torch.cuda.is_available():
             device = torch.device(f'cuda:{local_rank}')
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            # MPS doesn't support true multi-GPU DDP (Apple Silicon has single GPU)
-            # Still works but provides no parallelism benefit
-            device = torch.device('mps')
         else:
+            # Gloo backend requires CPU tensors - MPS not compatible
             device = torch.device('cpu')
     elif torch.cuda.is_available():
         device = torch.device('cuda')

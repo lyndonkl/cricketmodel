@@ -8,6 +8,9 @@
 #   ./scripts/train.sh --nproc 14 --wandb # With WandB logging
 #   ./scripts/train.sh --help             # Show all options
 #
+# Note: DDP with torchrun automatically uses CPU on non-CUDA systems (Gloo backend).
+#       For single-device MPS training, run directly: python train.py --wandb
+#
 # Environment variables set:
 #   KMP_DUPLICATE_LIB_OK=TRUE  - Fixes OpenMP duplicate library error on macOS
 #                                when mixing conda packages with pip-installed PyTorch
