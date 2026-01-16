@@ -356,7 +356,8 @@ def main():
                 raise RuntimeError(f"No checkpoint found at {checkpoint_path}")
 
             # Load model
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            # weights_only=False needed for PyTorch 2.6+ compatibility
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             model.load_state_dict(checkpoint["model_state_dict"])
             model = model.to(device)
 
