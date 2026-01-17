@@ -93,7 +93,7 @@ class CricketDataset(Dataset):
 
     @property
     def processed_dir(self) -> str:
-        return os.path.join(self.root, 'processed')
+        return self.root  # root already IS the processed directory
 
     @property
     def raw_file_names(self) -> List[str]:
