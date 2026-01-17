@@ -18,6 +18,23 @@ from typing import Dict, List, Tuple, Optional
 EdgeType = Tuple[str, str, str]
 
 
+class SAGEConvWrapper(nn.Module):
+    """
+    Wrapper around SAGEConv that ignores edge_attr parameter.
+
+    SAGEConv doesn't support edge attributes, but HeteroConv forwards
+    edge_attr_dict to all convolutions. This wrapper drops edge_attr
+    to avoid TypeError.
+    """
+    def __init__(self, in_channels: int, out_channels: int, aggr: str = 'mean'):
+        super().__init__()
+        self.conv = SAGEConv(in_channels, out_channels, aggr=aggr)
+
+    def forward(self, x, edge_index, edge_attr=None):
+        # Ignore edge_attr - SAGEConv doesn't use it
+        return self.conv(x, edge_index)
+
+
 class FiLMLayer(nn.Module):
     """
     Feature-wise Linear Modulation (FiLM) layer.
@@ -184,7 +201,7 @@ def build_hetero_conv(
         elif rel == 'distant_precedes':
             # Distant temporal context: simpler aggregation for sparse historical connections
             # These edges are sparser (every 6 balls) so mean aggregation is efficient
-            convs[edge_type] = SAGEConv(
+            convs[edge_type] = SAGEConvWrapper(
                 hidden_dim,
                 hidden_dim,
                 aggr='mean',
@@ -284,7 +301,7 @@ def build_hetero_conv(
 
         else:
             # Default: simple message passing
-            convs[edge_type] = SAGEConv(
+            convs[edge_type] = SAGEConvWrapper(
                 hidden_dim,
                 hidden_dim,
                 aggr='mean',
