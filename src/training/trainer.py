@@ -143,13 +143,13 @@ class Trainer:
                     self.model,
                     device_ids=[rank],
                     output_device=rank,
-                    find_unused_parameters=False,
+                    find_unused_parameters=True,
                 )
             else:
                 # CPU or MPS: don't specify device_ids
                 self.model = DDP(
                     self.model,
-                    find_unused_parameters=False,
+                    find_unused_parameters=True,
                 )
 
         # Data
