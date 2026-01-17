@@ -44,7 +44,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import set_seed
 from src.data import create_dataloaders, compute_class_weights
 from src.model import CricketHeteroGNN, ModelConfig, get_model_summary
+from src.model.hetero_gnn import (
+    CricketHeteroGNNWithPooling,
+    CricketHeteroGNNHybrid,
+    CricketHeteroGNNPhaseModulated,
+    CricketHeteroGNNInningsConditional,
+    CricketHeteroGNNFull,
+)
 from src.training import Trainer, TrainingConfig
+
+
+# =============================================================================
+# Model Class Registry
+# =============================================================================
+
+MODEL_CLASSES = {
+    "CricketHeteroGNN": CricketHeteroGNN,
+    "CricketHeteroGNNWithPooling": CricketHeteroGNNWithPooling,
+    "CricketHeteroGNNHybrid": CricketHeteroGNNHybrid,
+    "CricketHeteroGNNPhaseModulated": CricketHeteroGNNPhaseModulated,
+    "CricketHeteroGNNInningsConditional": CricketHeteroGNNInningsConditional,
+    "CricketHeteroGNNFull": CricketHeteroGNNFull,
+}
 
 
 # =============================================================================
@@ -79,10 +100,51 @@ SEARCH_SPACES = {
         "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
         "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
     },
+    # === Model Variant Search Phases ===
+    "model_variants": {
+        # Compare different model architectures with fixed hyperparameters
+        "model_class": {"type": "categorical", "values": [
+            "CricketHeteroGNN",
+            "CricketHeteroGNNHybrid",
+            "CricketHeteroGNNInningsConditional",
+            "CricketHeteroGNNFull",
+        ]},
+    },
+    "model_variants_all": {
+        # All model variants including pooling and phase-modulated
+        "model_class": {"type": "categorical", "values": list(MODEL_CLASSES.keys())},
+    },
+    "model_with_hyperparams": {
+        # Search model variants AND key hyperparameters together
+        "model_class": {"type": "categorical", "values": [
+            "CricketHeteroGNN",
+            "CricketHeteroGNNHybrid",
+            "CricketHeteroGNNFull",
+        ]},
+        "hidden_dim": {"type": "categorical", "values": [64, 128, 256]},
+        "lr": {"type": "categorical", "values": [5e-4, 1e-3]},
+    },
+    "full_with_model": {
+        # Comprehensive search including model variants
+        "model_class": {"type": "categorical", "values": [
+            "CricketHeteroGNN",
+            "CricketHeteroGNNHybrid",
+            "CricketHeteroGNNInningsConditional",
+            "CricketHeteroGNNFull",
+        ]},
+        "hidden_dim": {"type": "int", "low": 64, "high": 256, "step": 32},
+        "num_layers": {"type": "int", "low": 2, "high": 5},
+        "num_heads": {"type": "categorical", "values": [2, 4, 8]},
+        "lr": {"type": "float", "low": 1e-4, "high": 2e-3, "log": True},
+        "dropout": {"type": "float", "low": 0.0, "high": 0.3},
+        "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
+        "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
+    },
 }
 
 # Default hyperparameter values (used when not being searched)
 DEFAULT_PARAMS = {
+    "model_class": "CricketHeteroGNN",  # Default to base model
     "hidden_dim": 128,
     "num_layers": 3,
     "num_heads": 4,
@@ -162,6 +224,7 @@ def create_objective(
             params[param_name] = suggest_param(trial, param_name, param_spec)
 
         # Extract params for model vs training config
+        model_class_name = params.get("model_class", DEFAULT_PARAMS["model_class"])
         hidden_dim = params.get("hidden_dim", DEFAULT_PARAMS["hidden_dim"])
         num_layers = params.get("num_layers", DEFAULT_PARAMS["num_layers"])
         num_heads = params.get("num_heads", DEFAULT_PARAMS["num_heads"])
@@ -175,7 +238,8 @@ def create_objective(
         trial_checkpoint_dir = os.path.join(checkpoint_base_dir, f"trial_{trial.number}")
         os.makedirs(trial_checkpoint_dir, exist_ok=True)
 
-        # 3. Create model
+        # 3. Create model using the selected model class
+        model_class = MODEL_CLASSES[model_class_name]
         model_config = ModelConfig(
             num_venues=metadata["num_venues"],
             num_teams=metadata["num_teams"],
@@ -185,7 +249,7 @@ def create_objective(
             num_heads=num_heads,
             dropout=dropout,
         )
-        model = CricketHeteroGNN(model_config)
+        model = model_class(model_config)
 
         # 4. Create training config
         training_config = TrainingConfig(
@@ -215,6 +279,7 @@ def create_objective(
         # 7. Train with pruning callback
         print(f"\n{'='*60}")
         print(f"Trial {trial.number}")
+        print(f"Model: {model_class_name}")
         print(f"Params: {params}")
         print(f"{'='*60}")
 
@@ -293,6 +358,7 @@ def create_objective(
             print(f"    Test Accuracy: {test_acc:.4f}")
 
             # 9. Store additional metrics as trial attributes
+            trial.set_user_attr("model_class", model_class_name)
             trial.set_user_attr("test_f1_weighted", test_metrics["f1_weighted"])
             trial.set_user_attr("test_accuracy", test_acc)
             trial.set_user_attr("test_loss", test_loss)
