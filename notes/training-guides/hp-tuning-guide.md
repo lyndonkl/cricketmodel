@@ -266,6 +266,13 @@ The study name includes a timestamp, so each run creates a new study unless you 
   ```
 - MPS support in PyTorch is still maturing; CPU is more stable for this workload
 
+**Too Many Open Files (parallel trials)**
+- Fixed in latest version: DataLoader workers are automatically disabled when `--n-jobs > 1`
+- If you still see this error, increase the file descriptor limit before running:
+  ```bash
+  ulimit -n 4096
+  ```
+
 **Out of Memory**
 - Reduce `--batch-size` (try 32 instead of 64)
 - Reduce hidden_dim search range
