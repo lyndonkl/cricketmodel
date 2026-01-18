@@ -153,6 +153,38 @@ python scripts/hp_search.py --phase phase4_loss --n-trials 10 --epochs 30 \
 ```
 - Goal: Optimize focal_gamma and class weighting
 
+### Recommended Parallel Workflow
+
+Faster alternative using parallel trials (no WandB logging, but results saved to SQLite/JSON):
+
+**Phase 1: Coarse Search**
+```bash
+python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --device cpu --n-jobs 4
+```
+
+**Phase 2: Architecture Tuning**
+```bash
+python scripts/hp_search.py --phase phase2_architecture --n-trials 12 --epochs 25 \
+    --best-params checkpoints/optuna/phase1_coarse_*/best_params.json --device cpu --n-jobs 4
+```
+
+**Phase 3: Training Dynamics**
+```bash
+python scripts/hp_search.py --phase phase3_training --n-trials 15 --epochs 30 \
+    --best-params checkpoints/optuna/phase2_architecture_*/best_params.json --device cpu --n-jobs 4
+```
+
+**Phase 4: Loss Function**
+```bash
+python scripts/hp_search.py --phase phase4_loss --n-trials 10 --epochs 30 \
+    --best-params checkpoints/optuna/phase3_training_*/best_params.json --device cpu --n-jobs 4
+```
+
+**Notes:**
+- Adjust `--n-jobs` based on your CPU cores (recommended: cores / 2)
+- Results still saved to `best_params.json` and SQLite for chaining phases
+- Review results via Optuna visualizations in `checkpoints/optuna/visualizations/`
+
 ### Alternative: Full Joint Search
 ```bash
 python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --wandb --device cpu
