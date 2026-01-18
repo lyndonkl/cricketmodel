@@ -18,6 +18,10 @@ dependencies:
   # Visualization
   - matplotlib>=3.7
   - seaborn>=0.12
+  - plotly>=5.0
+
+  # Hyperparameter tuning
+  - optuna>=3.0
 
   # Development tools
   - pytest>=7.0
@@ -37,6 +41,4 @@ dependencies:
     - torch-geometric>=2.7.0
     - wandb
     - ollama>=0.2
-    - optuna>=3.0.0
     - optuna-integration[wandb]>=3.0.0
-    - plotly>=5.0.0
