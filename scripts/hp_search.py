@@ -398,6 +398,7 @@ def run_phase(
     wandb_project: str = "cricket-gnn-optuna",
     checkpoint_base_dir: str = "checkpoints/optuna",
     seed: int = 42,
+    n_jobs: int = 1,
 ) -> optuna.Study:
     """
     Run Optuna study for a specific phase.
@@ -513,12 +514,15 @@ def run_phase(
         callbacks = []
 
     # Run optimization
+    if n_jobs > 1:
+        print(f"Running {n_jobs} trials in parallel (WandB logging disabled for parallel runs)")
     try:
         study.optimize(
             objective,
             n_trials=n_trials,
-            callbacks=callbacks,
+            callbacks=callbacks if n_jobs == 1 else [],  # WandB doesn't work well with parallel
             show_progress_bar=True,
+            n_jobs=n_jobs,
         )
     finally:
         if use_wandb:
@@ -638,6 +642,12 @@ def parse_args():
         type=str,
         default="sqlite:///optuna_studies.db",
         help="Optuna storage URL",
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        help="Number of parallel trials (default: 1). Note: each job loads full dataset into memory",
     )
 
     # Sequential tuning
@@ -768,6 +778,7 @@ def main():
         wandb_project=args.wandb_project,
         checkpoint_base_dir=args.checkpoint_dir,
         seed=args.seed,
+        n_jobs=args.n_jobs,
     )
 
     # Print final summary

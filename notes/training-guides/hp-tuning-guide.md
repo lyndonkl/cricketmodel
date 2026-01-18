@@ -108,6 +108,7 @@ python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --
 |----------|---------|-------------|
 | `--phase` | full | Search phase to run |
 | `--n-trials` | 20 | Number of Optuna trials |
+| `--n-jobs` | 1 | Parallel trials (disables WandB if >1) |
 | `--epochs` | 30 | Epochs per trial |
 | `--patience` | 5 | Early stopping patience |
 | `--batch-size` | 64 | Batch size |
@@ -158,6 +159,20 @@ python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --
 ```
 - Searches all parameters simultaneously
 - More trials needed but can find unexpected combinations
+
+### Parallel Trials (Faster)
+
+Run multiple trials simultaneously with `--n-jobs`:
+
+```bash
+# Run 4 trials in parallel (no WandB - incompatible with parallel)
+python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --device cpu --n-jobs 4
+```
+
+**Notes:**
+- Each parallel job loads the full dataset into memory
+- WandB logging is automatically disabled when `--n-jobs > 1`
+- Recommended: `--n-jobs` = number of CPU cores / 2 (leave headroom)
 
 ---
 
