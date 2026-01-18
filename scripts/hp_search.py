@@ -733,11 +733,14 @@ def main():
     print("Loading datasets...")
     print("=" * 60)
 
+    # Reduce DataLoader workers when running parallel trials to avoid "too many open files"
+    num_workers = 0 if args.n_jobs > 1 else 4
+
     train_loader, val_loader, test_loader = create_dataloaders(
         root=args.processed_dir,
         raw_data_dir=args.data_dir,
         batch_size=args.batch_size,
-        num_workers=4,
+        num_workers=num_workers,
         min_history=1,
         seed=args.seed,
     )
