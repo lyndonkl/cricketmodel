@@ -37,3 +37,6 @@ dependencies:
     - torch-geometric>=2.7.0
     - wandb
     - ollama>=0.2
+    - optuna>=3.0.0
+    - optuna-integration[wandb]>=3.0.0
+    - plotly>=5.0.0

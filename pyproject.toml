@@ -25,6 +25,9 @@ viz = [
 ]
 tracking = [
     "wandb",
+    "optuna>=3.0.0",
+    "optuna-integration[wandb]>=3.0.0",
+    "plotly>=5.0.0",
 ]
 llm = [
     "ollama>=0.2.0",
