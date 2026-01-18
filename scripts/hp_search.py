@@ -733,8 +733,9 @@ def main():
     print("Loading datasets...")
     print("=" * 60)
 
-    # Reduce DataLoader workers when running parallel trials to avoid "too many open files"
-    num_workers = 0 if args.n_jobs > 1 else 4
+    # Reduce DataLoader workers when running many parallel trials to avoid "too many open files"
+    # 4 jobs × 4 workers = 16 processes is safe; more than that risks file descriptor limits
+    num_workers = 4 if args.n_jobs <= 4 else 0
 
     train_loader, val_loader, test_loader = create_dataloaders(
         root=args.processed_dir,
