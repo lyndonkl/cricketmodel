@@ -604,6 +604,13 @@ def parse_args():
         default=64,
         help="Batch size",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        choices=["cpu", "cuda", "mps"],
+        help="Device to use (default: auto-detect)",
+    )
 
     # Data paths
     parser.add_argument(
@@ -684,7 +691,9 @@ def main():
     set_seed(args.seed)
 
     # Detect device
-    if torch.cuda.is_available():
+    if args.device:
+        device = torch.device(args.device)
+    elif torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = torch.device("mps")

@@ -111,6 +111,7 @@ python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --
 | `--epochs` | 30 | Epochs per trial |
 | `--patience` | 5 | Early stopping patience |
 | `--batch-size` | 64 | Batch size |
+| `--device` | auto | Device: `cpu`, `cuda`, or `mps` (auto-detects if not set) |
 | `--wandb` | False | Enable WandB logging |
 | `--wandb-project` | cricket-gnn-optuna | WandB project name |
 | `--best-params` | None | JSON from previous phase |
@@ -210,6 +211,13 @@ The study name includes a timestamp, so each run creates a new study unless you 
 ## 10. Troubleshooting
 
 ### Common Issues
+
+**MPS (Apple Silicon) Errors**
+- If you see `MPSNDArray` or buffer allocation errors on Mac, use CPU instead:
+  ```bash
+  python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --wandb --device cpu
+  ```
+- MPS support in PyTorch is still maturing; CPU is more stable for this workload
 
 **Out of Memory**
 - Reduce `--batch-size` (try 32 instead of 64)
