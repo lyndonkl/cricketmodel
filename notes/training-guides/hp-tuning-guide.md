@@ -87,17 +87,17 @@ python train.py --test-only --wandb
 conda env update -f environment.yml
 
 # Quick test (2 trials, 5 epochs)
-python scripts/hp_search.py --phase phase1_coarse --n-trials 2 --epochs 5
+python scripts/hp_search.py --phase phase1_coarse --n-trials 2 --epochs 5 --device cpu
 
 # Phase 1: Find good hidden_dim and lr
-python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --wandb
+python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --wandb --device cpu
 
 # Phase 2: Use Phase 1 results, tune architecture
 python scripts/hp_search.py --phase phase2_architecture --n-trials 12 --epochs 25 \
-    --best-params checkpoints/optuna/*/best_params.json --wandb
+    --best-params checkpoints/optuna/*/best_params.json --wandb --device cpu
 
 # Full search (comprehensive)
-python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --wandb
+python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --wandb --device cpu
 ```
 
 ---
@@ -125,7 +125,7 @@ python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --
 
 **Phase 1: Coarse Search**
 ```bash
-python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --wandb
+python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --wandb --device cpu
 ```
 - Goal: Find ballpark hidden_dim and learning rate
 - Output: `checkpoints/optuna/phase1_coarse_*/best_params.json`
@@ -133,7 +133,7 @@ python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --wa
 **Phase 2: Architecture Tuning**
 ```bash
 python scripts/hp_search.py --phase phase2_architecture --n-trials 12 --epochs 25 \
-    --best-params checkpoints/optuna/phase1_coarse_*/best_params.json --wandb
+    --best-params checkpoints/optuna/phase1_coarse_*/best_params.json --wandb --device cpu
 ```
 - Goal: Tune num_layers and num_heads using Phase 1 results
 - Output: Updated best_params.json
@@ -141,20 +141,20 @@ python scripts/hp_search.py --phase phase2_architecture --n-trials 12 --epochs 2
 **Phase 3: Training Dynamics**
 ```bash
 python scripts/hp_search.py --phase phase3_training --n-trials 15 --epochs 30 \
-    --best-params checkpoints/optuna/phase2_architecture_*/best_params.json --wandb
+    --best-params checkpoints/optuna/phase2_architecture_*/best_params.json --wandb --device cpu
 ```
 - Goal: Fine-tune dropout, weight_decay, and learning rate
 
 **Phase 4: Loss Function**
 ```bash
 python scripts/hp_search.py --phase phase4_loss --n-trials 10 --epochs 30 \
-    --best-params checkpoints/optuna/phase3_training_*/best_params.json --wandb
+    --best-params checkpoints/optuna/phase3_training_*/best_params.json --wandb --device cpu
 ```
 - Goal: Optimize focal_gamma and class weighting
 
 ### Alternative: Full Joint Search
 ```bash
-python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --wandb
+python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --wandb --device cpu
 ```
 - Searches all parameters simultaneously
 - More trials needed but can find unexpected combinations
@@ -201,7 +201,7 @@ Optuna studies are saved to SQLite and can be resumed:
 
 ```bash
 # Resume a study (will continue from where it left off)
-python scripts/hp_search.py --phase phase1_coarse --n-trials 20 --storage sqlite:///optuna_studies.db
+python scripts/hp_search.py --phase phase1_coarse --n-trials 20 --storage sqlite:///optuna_studies.db --device cpu
 ```
 
 The study name includes a timestamp, so each run creates a new study unless you specify the same storage and study name.
@@ -240,7 +240,7 @@ The study name includes a timestamp, so each run creates a new study unless you 
 
 ```bash
 # Run single trial with verbose output
-python scripts/hp_search.py --phase phase1_coarse --n-trials 1 --epochs 5 --wandb
+python scripts/hp_search.py --phase phase1_coarse --n-trials 1 --epochs 5 --wandb --device cpu
 
 # Check study database
 sqlite3 optuna_studies.db "SELECT * FROM trials LIMIT 10;"
