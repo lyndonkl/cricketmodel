@@ -41,9 +41,27 @@ from src.data import (
 from src.data.dataset import create_dataloaders_distributed
 from src.model import (
     CricketHeteroGNN,
+    CricketHeteroGNNWithPooling,
+    CricketHeteroGNNHybrid,
+    CricketHeteroGNNPhaseModulated,
+    CricketHeteroGNNInningsConditional,
+    CricketHeteroGNNFull,
     ModelConfig,
     get_model_summary,
 )
+
+# =============================================================================
+# Model Class Registry
+# =============================================================================
+
+MODEL_CLASSES = {
+    "CricketHeteroGNN": CricketHeteroGNN,
+    "CricketHeteroGNNWithPooling": CricketHeteroGNNWithPooling,
+    "CricketHeteroGNNHybrid": CricketHeteroGNNHybrid,
+    "CricketHeteroGNNPhaseModulated": CricketHeteroGNNPhaseModulated,
+    "CricketHeteroGNNInningsConditional": CricketHeteroGNNInningsConditional,
+    "CricketHeteroGNNFull": CricketHeteroGNNFull,
+}
 from src.training import Trainer, TrainingConfig
 from src.training.distributed import (
     is_distributed,
@@ -93,6 +111,24 @@ def parse_args():
         type=int,
         default=4,
         help="Number of parallel workers for Ollama player classification"
+    )
+
+    # Config file
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to JSON config file (e.g., best_params.json from HP search). "
+             "CLI args override config file values."
+    )
+
+    # Model class selection
+    parser.add_argument(
+        "--model-class",
+        type=str,
+        default="CricketHeteroGNN",
+        choices=list(MODEL_CLASSES.keys()),
+        help="Model architecture variant to use"
     )
 
     # Model
@@ -198,9 +234,62 @@ def parse_args():
     return parser.parse_args()
 
 
+def load_config_file(config_path: str) -> dict:
+    """Load hyperparameters from a JSON config file."""
+    with open(config_path, 'r') as f:
+        return json.load(f)
+
+
+def merge_config_with_args(args, config: dict):
+    """
+    Merge config file values with CLI args.
+    CLI args take precedence over config file values.
+    Only updates args if the CLI arg was not explicitly set (still at default).
+    """
+    # Map config keys to argparse attribute names (handle underscore vs hyphen)
+    key_mapping = {
+        'hidden_dim': 'hidden_dim',
+        'num_layers': 'num_layers',
+        'num_heads': 'num_heads',
+        'dropout': 'dropout',
+        'lr': 'lr',
+        'weight_decay': 'weight_decay',
+        'batch_size': 'batch_size',
+        'model_class': 'model_class',
+    }
+
+    # Get the defaults from argparse
+    defaults = {
+        'hidden_dim': 128,
+        'num_layers': 3,
+        'num_heads': 4,
+        'dropout': 0.1,
+        'lr': 1e-3,
+        'weight_decay': 0.01,
+        'batch_size': 64,
+        'model_class': 'CricketHeteroGNN',
+    }
+
+    for config_key, arg_attr in key_mapping.items():
+        if config_key in config:
+            current_value = getattr(args, arg_attr, None)
+            # Only override if current value is the default (not explicitly set by user)
+            if current_value == defaults.get(arg_attr):
+                setattr(args, arg_attr, config[config_key])
+
+
 def main():
     """Main training function with DDP support."""
     args = parse_args()
+
+    # Load config file if provided and merge with CLI args
+    if args.config is not None:
+        if os.path.exists(args.config):
+            config = load_config_file(args.config)
+            merge_config_with_args(args, config)
+            print(f"Loaded config from: {args.config}")
+        else:
+            raise FileNotFoundError(f"Config file not found: {args.config}")
 
     # Resolve paths to absolute paths
     args.data_dir = os.path.abspath(args.data_dir)
@@ -250,6 +339,7 @@ def main():
             project=args.wandb_project,
             name=args.wandb_run_name,
             config={
+                "model_class": args.model_class,
                 "batch_size": args.batch_size,
                 "effective_batch_size": args.batch_size * world_size,
                 "lr": args.lr,
@@ -321,6 +411,7 @@ def main():
         print("\n" + "=" * 60)
         print("Creating model...")
         print("=" * 60)
+        print(f"Model class: {args.model_class}")
 
     model_config = ModelConfig(
         num_venues=metadata["num_venues"],
@@ -332,7 +423,9 @@ def main():
         dropout=args.dropout,
     )
 
-    model = CricketHeteroGNN(model_config)
+    # Use selected model class from registry
+    ModelClass = MODEL_CLASSES[args.model_class]
+    model = ModelClass(model_config)
     if is_main:
         print(get_model_summary(model))
 
