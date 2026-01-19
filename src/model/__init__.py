@@ -16,6 +16,10 @@ from .conv_builder import (
 from .hetero_gnn import (
     CricketHeteroGNN,
     CricketHeteroGNNWithPooling,
+    CricketHeteroGNNHybrid,
+    CricketHeteroGNNPhaseModulated,
+    CricketHeteroGNNInningsConditional,
+    CricketHeteroGNNFull,
     ModelConfig,
     count_parameters,
     get_model_summary,
@@ -33,9 +37,13 @@ __all__ = [
     "get_edge_types_for_conv",
     "HeteroConvBlock",
     "build_conv_stack",
-    # Main model
+    # Main models
     "CricketHeteroGNN",
     "CricketHeteroGNNWithPooling",
+    "CricketHeteroGNNHybrid",
+    "CricketHeteroGNNPhaseModulated",
+    "CricketHeteroGNNInningsConditional",
+    "CricketHeteroGNNFull",
     "ModelConfig",
     "count_parameters",
     "get_model_summary",
