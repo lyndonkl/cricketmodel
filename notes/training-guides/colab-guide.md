@@ -215,6 +215,27 @@ python scripts/hp_search.py \
     --device cpu
 ```
 
+### Training Final Model with Best Params
+
+After completing HP search, train your final model using the `--config` flag:
+
+```bash
+# Train with best hyperparameters from HP search
+python train.py \
+    --config checkpoints/optuna/cricket_gnn_phase4_loss_*/best_params.json \
+    --epochs 100 \
+    --device cuda
+
+# Or specify a different model architecture variant
+python train.py \
+    --config checkpoints/optuna/cricket_gnn_phase4_loss_*/best_params.json \
+    --model-class CricketGNNWithEdgeFeatures \
+    --epochs 100 \
+    --device cuda
+```
+
+The `--config` flag loads all hyperparameters from the JSON file. Any CLI arguments override the config values.
+
 ---
 
 ## 7. Tips for Efficient Colab Usage
@@ -261,4 +282,4 @@ GPU availability is better during:
 | Data | Upload each session | Local disk | Local disk |
 | Best for | Quick experiments | Long runs | Development |
 
-**Recommendation:** Use Colab for initial exploration and Phase 1-2. Use local CPU/MPS for final training with best hyperparameters.
+**Recommendation:** Use Colab for initial exploration and Phase 1-2. Use local CPU/MPS or RunPod for final training with best hyperparameters using `python train.py --config best_params.json`.
