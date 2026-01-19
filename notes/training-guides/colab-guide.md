@@ -44,11 +44,17 @@ We use Weights & Biases (WandB) to track experiments:
 2. Once logged in, go to [wandb.ai/authorize](https://wandb.ai/authorize)
 3. Copy your API key (you'll paste this into Colab later)
 
-### Prepare Your Data
+### Upload Processed Data to Google Drive
 
-You'll need the raw match data file:
-- **File:** `data/t20s_male_json.zip` (216 MB)
-- This contains ~2,300 T20 match JSON files
+The processed data (~97 GB) needs to be uploaded to Google Drive once:
+
+1. On your local machine, zip the processed data:
+   ```bash
+   cd /path/to/cricketmodel/data
+   zip -r processed.zip processed/
+   ```
+2. Upload `processed.zip` to your Google Drive root folder
+3. The notebook will mount Drive and extract it automatically
 
 ---
 
@@ -74,14 +80,13 @@ Run cells in order by clicking the play button (▶) or pressing `Shift+Enter`:
 | Cell | What It Does | Expected Output |
 |------|--------------|-----------------|
 | 1 | GPU check | Shows "T4" GPU with ~15 GB memory |
-| 2 | Clone repo | Repository cloned, shows recent commits |
+| 2 | Clone repo | Prompts for GitHub PAT, then clones repo |
 | 3 | Install deps | Packages install (may show warnings, that's OK) |
 | 4 | WandB login | Prompts for API key, shows "Successfully logged in" |
-| 5 | Upload data | File picker opens, then shows extraction count |
-| 6 | Process data | Progress bars, takes ~30 minutes first time |
-| 7 | Run HP search | Trial progress, F1 scores per trial |
-| 8 | View results | Best hyperparameters found |
-| 9 | Download | Downloads results.zip to your computer |
+| 5 | Load processed data | Mounts Google Drive, extracts processed.zip |
+| 6 | HP search (4 phases) | Trial progress, F1 scores per trial |
+| 7 | View results | Best hyperparameters found |
+| 8 | Download | Downloads results.zip to your computer |
 
 ### Time Estimates
 
@@ -148,19 +153,6 @@ If cell 1 shows "No GPU detected":
 4. Re-run cell 1
 
 **Note:** Free GPUs have limited availability. If T4 is unavailable, try again later or during off-peak hours (early morning US time).
-
-### Data Upload Issues
-
-If the upload dialog doesn't appear or times out:
-
-1. Refresh the page
-2. Re-run the upload cell
-3. Alternatively, upload to Google Drive and mount:
-   ```python
-   from google.colab import drive
-   drive.mount('/content/drive')
-   !cp /content/drive/MyDrive/t20s_male_json.zip .
-   ```
 
 ### WandB Login Fails
 
