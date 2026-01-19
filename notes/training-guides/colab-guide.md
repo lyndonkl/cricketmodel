@@ -11,7 +11,7 @@ Google Colab (Colaboratory) is a free Jupyter notebook environment that runs in 
 - **Free GPU access:** T4 GPU with 15 GB VRAM (sufficient for our model)
 - **No setup required:** Python and common libraries pre-installed
 - **Google Drive integration:** Easy file upload/download
-- **12-hour session limit:** Sessions disconnect after 12 hours of inactivity
+- **Session limits:** 12 hours max runtime, ~90 minutes of browser inactivity triggers disconnect
 
 **Access it at:** [colab.research.google.com](https://colab.research.google.com)
 
@@ -97,17 +97,20 @@ You can also monitor in real-time on your [WandB dashboard](https://wandb.ai).
 
 ### Session Timeout / Disconnected
 
-Colab disconnects after ~90 minutes of inactivity or 12 hours total.
+Colab has two timeout mechanisms:
+- **Browser inactivity (~90 min):** If your browser tab is idle (no mouse/keyboard activity), Colab disconnects. Your code may keep running briefly but then stops.
+- **Max runtime (12 hours):** Hard limit regardless of activity.
 
-**To recover:**
-1. Reconnect: Click "Reconnect" in the toolbar
+**To prevent browser inactivity disconnects:**
+- Keep the Colab tab visible and occasionally interact with it (scroll, click)
+- Don't close your laptop lid or let your computer sleep
+- Some users run a simple JavaScript snippet in browser console to simulate activity (search "Colab anti-disconnect")
+
+**To recover after disconnect:**
+1. Click "Reconnect" in the toolbar
 2. Re-run cells 1-5 (setup cells)
 3. Cell 6 will be faster if data was cached
 4. Your Optuna study is saved to SQLite and resumes automatically
-
-**To prevent disconnection:**
-- Keep the browser tab active
-- Don't close your laptop lid while running
 
 ### GPU Memory Errors
 
