@@ -23,6 +23,19 @@ Google Colab (Colaboratory) is a free Jupyter notebook environment that runs in 
 
 You need a Google account to use Colab. Create one at [accounts.google.com](https://accounts.google.com) if you don't have one.
 
+### Get a GitHub Personal Access Token (PAT)
+
+The repository is private, so you need a PAT to clone it in Colab:
+
+1. Go to [github.com/settings/tokens](https://github.com/settings/tokens)
+2. Click **Generate new token (classic)**
+3. Give it a name (e.g., "Colab access")
+4. Select the `repo` scope (full control of private repositories)
+5. Click **Generate token**
+6. **Copy the token immediately** - you won't see it again
+
+The notebook will securely prompt for this token when cloning.
+
 ### Get a WandB API Key
 
 We use Weights & Biases (WandB) to track experiments:
