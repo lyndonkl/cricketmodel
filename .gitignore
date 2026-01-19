@@ -37,3 +37,4 @@ data/processed/
 # Training artifacts
 checkpoints/
 wandb/
+optuna_studies.db
