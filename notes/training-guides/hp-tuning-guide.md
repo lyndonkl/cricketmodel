@@ -80,6 +80,16 @@ python train.py --hidden-dim 128 --num-layers 3 --lr 1e-3 --dropout 0.2 --epochs
 python train.py --test-only --wandb
 ```
 
+### Using Google Colab (Free GPU)
+
+For faster training with a free T4 GPU, use Google Colab:
+
+1. Open `notebooks/hp_search_colab.ipynb` in [Google Colab](https://colab.research.google.com)
+2. Upload your `data/t20s_male_json.zip` file (216 MB)
+3. Follow the notebook cells to run HP search
+
+See [colab-guide.md](colab-guide.md) for detailed instructions.
+
 ### Hyperparameter Search
 
 ```bash
