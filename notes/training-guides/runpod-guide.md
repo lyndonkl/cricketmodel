@@ -414,10 +414,10 @@ echo "=== All HP search phases complete! ==="
 echo "Final best params: $PHASE4_BEST"
 cat "$PHASE4_BEST"
 
-# Train final model with best hyperparameters
+# Train final model with all 4 GPUs using DDP
 echo ""
-echo "=== Training final model ==="
-python train.py \
+echo "=== Training final model with torchrun (4 GPUs) ==="
+torchrun --standalone --nproc_per_node=4 train.py \
     --config "$PHASE4_BEST" \
     --epochs 100 \
     --wandb \
