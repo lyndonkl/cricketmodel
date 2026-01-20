@@ -258,6 +258,14 @@ With 4 GPUs, run 4 Optuna workers in parallel - each worker uses one GPU and run
 - Optuna's TPE sampler coordinates trial selection across workers
 - ~4x faster than single-GPU (4 trials run simultaneously)
 
+### Data Fraction for Faster HP Search
+
+By default, `hp_search.py` uses `--data-fraction 0.05` (5% of data) to achieve ~30 minute trials. This allows faster iteration during hyperparameter exploration while still finding good configurations.
+
+- **Default:** `--data-fraction 0.05` (~30 min per trial)
+- **Full data:** Use `--data-fraction 1.0` if you want to search with the complete dataset
+- **Applied to:** Train, validation, and test sets (all subsetted equally)
+
 ### Phase 1: Coarse Search (4 GPUs)
 
 ```bash
@@ -351,6 +359,7 @@ set -e
 
 NUM_GPUS=4
 STAGGER_DELAY=15  # seconds between each GPU start to avoid SQLite race conditions
+DATA_FRACTION=0.05  # Use 5% of data for ~30 min trials (use 1.0 for full dataset)
 
 run_phase() {
     local phase=$1
@@ -365,10 +374,12 @@ run_phase() {
         if [ -z "$best_params" ]; then
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
                 --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
+                --data-fraction $DATA_FRACTION \
                 --wandb --device cuda --n-jobs 1 &
         else
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
                 --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
+                --data-fraction $DATA_FRACTION \
                 --best-params "$best_params" \
                 --wandb --device cuda --n-jobs 1 &
         fi
