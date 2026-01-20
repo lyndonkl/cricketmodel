@@ -339,56 +339,62 @@ echo "Phase 4 complete!"
 
 ### Run All Phases in Sequence (Unattended)
 
-Create a script to run all 4 phases with 4 GPUs:
+Create a script to run all 4 phases with 4 GPUs. **Important:** Create and run this script from the cricketmodel directory.
+
+**Note:** The script uses staggered starts (15 second delay between each GPU) to avoid SQLite database race conditions when multiple processes try to create the Optuna study tables simultaneously.
 
 ```bash
+cd /workspace/cricketmodel
 cat > run_all_phases.sh << 'EOF'
 #!/bin/bash
 set -e
 
 NUM_GPUS=4
+STAGGER_DELAY=15  # seconds between each GPU start to avoid SQLite race conditions
 
 run_phase() {
     local phase=$1
-    local trials=$2
+    local trials_per_gpu=$2
     local epochs=$3
     local best_params=$4
 
-    echo "=== Running $phase with $NUM_GPUS GPUs ==="
+    echo "=== Running $phase with $NUM_GPUS GPUs (staggered start) ==="
 
     for gpu in $(seq 0 $((NUM_GPUS-1))); do
+        echo "Starting GPU $gpu..."
         if [ -z "$best_params" ]; then
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
-                --phase $phase --n-trials $trials --epochs $epochs \
+                --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
                 --wandb --device cuda --n-jobs 1 &
         else
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
-                --phase $phase --n-trials $trials --epochs $epochs \
+                --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
                 --best-params "$best_params" \
                 --wandb --device cuda --n-jobs 1 &
         fi
+        sleep $STAGGER_DELAY
     done
     wait
     echo "=== $phase complete! ==="
 }
 
-# Phase 1: Coarse Search
-run_phase "phase1_coarse" 10 25 ""
+# Phase 1: 12 trials (3 per GPU)
+run_phase "phase1_coarse" 3 25 ""
 PHASE1_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase1_coarse_*/best_params.json | head -1)
 echo "Phase 1 best: $PHASE1_BEST"
 
-# Phase 2: Architecture
-run_phase "phase2_architecture" 12 25 "$PHASE1_BEST"
+# Phase 2: 12 trials (3 per GPU)
+run_phase "phase2_architecture" 3 25 "$PHASE1_BEST"
 PHASE2_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase2_architecture_*/best_params.json | head -1)
 echo "Phase 2 best: $PHASE2_BEST"
 
-# Phase 3: Training Dynamics
-run_phase "phase3_training" 15 30 "$PHASE2_BEST"
+# Phase 3: 16 trials (4 per GPU)
+run_phase "phase3_training" 4 30 "$PHASE2_BEST"
 PHASE3_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase3_training_*/best_params.json | head -1)
 echo "Phase 3 best: $PHASE3_BEST"
 
-# Phase 4: Loss Function
-run_phase "phase4_loss" 10 30 "$PHASE3_BEST"
+# Phase 4: 12 trials (3 per GPU)
+run_phase "phase4_loss" 3 30 "$PHASE3_BEST"
 PHASE4_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase4_loss_*/best_params.json | head -1)
 echo "Phase 4 best: $PHASE4_BEST"
 
@@ -397,10 +403,10 @@ echo "=== All HP search phases complete! ==="
 echo "Final best params: $PHASE4_BEST"
 cat "$PHASE4_BEST"
 
-# Train final model with all 4 GPUs using DDP
+# Train final model with best hyperparameters
 echo ""
-echo "=== Training final model with torchrun (4 GPUs) ==="
-torchrun --standalone --nproc_per_node=4 train.py \
+echo "=== Training final model ==="
+python train.py \
     --config "$PHASE4_BEST" \
     --epochs 100 \
     --wandb \
@@ -412,11 +418,21 @@ EOF
 chmod +x run_all_phases.sh
 ```
 
+**Before running**, set the file descriptor limit and clean up any previous runs:
+
+```bash
+ulimit -n 65535
+rm -f optuna_studies.db
+```
+
 ### Running Long Jobs (Survives Disconnection)
+
+**Important:** Always run from the cricketmodel directory.
 
 **Option A: Using nohup**
 
 ```bash
+cd /workspace/cricketmodel
 nohup ./run_all_phases.sh > hp_search.log 2>&1 &
 echo $! > run.pid  # Save process ID
 ```
@@ -427,7 +443,8 @@ echo $! > run.pid  # Save process ID
 # Start a named screen session
 screen -S training
 
-# Run your script
+# Navigate to project and run
+cd /workspace/cricketmodel
 ./run_all_phases.sh
 
 # Detach: Press Ctrl+A, then D
@@ -440,7 +457,8 @@ screen -S training
 # Start a named tmux session
 tmux new -s training
 
-# Run your script
+# Navigate to project and run
+cd /workspace/cricketmodel
 ./run_all_phases.sh
 
 # Detach: Press Ctrl+B, then D
