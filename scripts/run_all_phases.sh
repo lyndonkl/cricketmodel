@@ -9,7 +9,7 @@ echo "Running from: $(pwd)"
 
 NUM_GPUS=4
 STAGGER_DELAY=15  # seconds between each GPU start to avoid SQLite race conditions
-DATA_FRACTION=0.05  # Use 5% of data for ~30 min trials (use 1.0 for full dataset)
+DATA_FRACTION=0.02  # Use 2% of data for faster trials (use 1.0 for full dataset)
 BATCH_SIZE=256  # Larger batch size for faster epochs (default was 64)
 
 # Set file descriptor limit for PyTorch multiprocessing
