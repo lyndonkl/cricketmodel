@@ -1,7 +1,11 @@
 #!/bin/bash
 # Run all HP search phases with 4 GPUs, then train final model
-# Usage: ./scripts/run_all_phases.sh
+# Usage: ./scripts/run_all_phases.sh (can run from any directory)
 set -e
+
+# Change to project root (parent of scripts directory)
+cd "$(dirname "$0")/.."
+echo "Running from: $(pwd)"
 
 NUM_GPUS=4
 STAGGER_DELAY=15  # seconds between each GPU start to avoid SQLite race conditions
