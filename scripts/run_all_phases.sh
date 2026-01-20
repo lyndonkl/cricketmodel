@@ -10,6 +10,7 @@ echo "Running from: $(pwd)"
 NUM_GPUS=4
 STAGGER_DELAY=15  # seconds between each GPU start to avoid SQLite race conditions
 DATA_FRACTION=0.05  # Use 5% of data for ~30 min trials (use 1.0 for full dataset)
+BATCH_SIZE=256  # Larger batch size for faster epochs (default was 64)
 
 # Set file descriptor limit for PyTorch multiprocessing
 ulimit -n 65535
@@ -35,12 +36,14 @@ run_phase() {
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
                 --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
                 --data-fraction $DATA_FRACTION \
+                --batch-size $BATCH_SIZE \
                 --study-name "$study_name" \
                 --wandb --device cuda --n-jobs 1 &
         else
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
                 --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
                 --data-fraction $DATA_FRACTION \
+                --batch-size $BATCH_SIZE \
                 --study-name "$study_name" \
                 --best-params "$best_params" \
                 --wandb --device cuda --n-jobs 1 &
