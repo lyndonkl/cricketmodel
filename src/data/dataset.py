@@ -496,9 +496,8 @@ def compute_class_weights(
     cache_path = os.path.join(base_dataset.processed_dir, 'class_weights.pt')
     class_names = ['Dot', 'Single', 'Two', 'Three', 'Four', 'Six', 'Wicket']
 
-    # Only use cache for full dataset, not subsets
-    is_subset = hasattr(dataset, 'dataset')
-    if cache and not is_subset and os.path.exists(cache_path):
+    # Always use cache if it exists (contains weights from full dataset)
+    if cache and os.path.exists(cache_path):
         print(f"Loading cached class weights from {cache_path}")
         cached = torch.load(cache_path, weights_only=False)
         return cached['weights'], cached['distribution']
@@ -529,8 +528,8 @@ def compute_class_weights(
         percentage = (count / total * 100) if total > 0 else 0
         distribution[class_names[c]] = {'count': count, 'percentage': percentage}
 
-    # Save to cache (only for full dataset, not subsets)
-    if cache and not is_subset:
+    # Save to cache
+    if cache:
         torch.save({'weights': weights_tensor, 'distribution': distribution}, cache_path)
         print(f"Cached class weights to {cache_path}")
 
