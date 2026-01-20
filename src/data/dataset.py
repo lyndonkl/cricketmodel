@@ -528,8 +528,9 @@ def compute_class_weights(
         percentage = (count / total * 100) if total > 0 else 0
         distribution[class_names[c]] = {'count': count, 'percentage': percentage}
 
-    # Save to cache
-    if cache:
+    # Save to cache (only for full dataset, not subsets)
+    is_subset = hasattr(dataset, 'dataset')
+    if cache and not is_subset:
         torch.save({'weights': weights_tensor, 'distribution': distribution}, cache_path)
         print(f"Cached class weights to {cache_path}")
 
