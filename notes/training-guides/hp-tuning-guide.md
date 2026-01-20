@@ -122,7 +122,7 @@ python scripts/hp_search.py --phase full_with_model --n-trials 50 --epochs 30 --
 | `--epochs` | 30 | Epochs per trial |
 | `--patience` | 5 | Early stopping patience |
 | `--batch-size` | 64 | Batch size |
-| `--data-fraction` | 0.3 | Fraction of training data (0.3 = ~3x faster epochs) |
+| `--data-fraction` | 0.05 | Fraction of data to use (0.05 = ~30 min trials) |
 | `--device` | auto | Device: `cpu`, `cuda`, or `mps` (auto-detects if not set) |
 | `--wandb` | False | Enable WandB logging |
 | `--wandb-project` | cricket-gnn-optuna | WandB project name |

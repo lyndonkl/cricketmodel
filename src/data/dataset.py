@@ -315,9 +315,9 @@ def create_dataloaders(
         num_workers: Number of worker processes
         raw_data_dir: Directory containing raw JSON match files (optional).
                       If not provided, defaults to {root}/raw/matches/
-        train_fraction: Fraction of training/validation data to use (default: 1.0).
-                       Values < 1.0 create a random subset for faster HP search.
-                       Test always uses full data for consistent final evaluation.
+        train_fraction: Fraction of data to use (default: 1.0).
+                       Values < 1.0 create random subsets for faster HP search.
+                       Applied to train, val, and test sets.
         **dataset_kwargs: Additional arguments for CricketDataset
                          (min_history, train_ratio, val_ratio, seed, etc.)
 
@@ -328,7 +328,7 @@ def create_dataloaders(
     val_dataset = CricketDataset(root, split='val', raw_data_dir=raw_data_dir, **dataset_kwargs)
     test_dataset = CricketDataset(root, split='test', raw_data_dir=raw_data_dir, **dataset_kwargs)
 
-    # Apply fraction to train/val data (test uses full data for consistent final evaluation)
+    # Apply fraction to all datasets for faster HP search
     if train_fraction < 1.0:
         seed = dataset_kwargs.get('seed', 42)
 
@@ -340,9 +340,15 @@ def create_dataloaders(
 
         # Subset validation data
         n_val = int(len(val_dataset) * train_fraction)
-        val_gen = torch.Generator().manual_seed(seed + 1)  # Different seed for val
+        val_gen = torch.Generator().manual_seed(seed + 1)
         val_indices = torch.randperm(len(val_dataset), generator=val_gen)[:n_val]
         val_dataset = Subset(val_dataset, val_indices.tolist())
+
+        # Subset test data
+        n_test = int(len(test_dataset) * train_fraction)
+        test_gen = torch.Generator().manual_seed(seed + 2)
+        test_indices = torch.randperm(len(test_dataset), generator=test_gen)[:n_test]
+        test_dataset = Subset(test_dataset, test_indices.tolist())
 
     train_loader = DataLoader(
         train_dataset,

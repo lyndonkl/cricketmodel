@@ -260,11 +260,11 @@ With 4 GPUs, run 4 Optuna workers in parallel - each worker uses one GPU and run
 
 ### Data Fraction for Faster HP Search
 
-By default, `hp_search.py` uses `--data-fraction 0.3` (30% of training data) to speed up each epoch by ~3x. This allows faster iteration during hyperparameter exploration while still finding good configurations.
+By default, `hp_search.py` uses `--data-fraction 0.05` (5% of data) to achieve ~30 minute trials. This allows faster iteration during hyperparameter exploration while still finding good configurations.
 
-- **Default:** `--data-fraction 0.3` (~30 min/epoch instead of ~90 min)
+- **Default:** `--data-fraction 0.05` (~30 min per trial)
 - **Full data:** Use `--data-fraction 1.0` if you want to search with the complete dataset
-- **Test set:** Always uses full data for consistent final evaluation
+- **Applied to:** Train, validation, and test sets (all subsetted equally)
 
 ### Phase 1: Coarse Search (4 GPUs)
 
@@ -359,9 +359,7 @@ set -e
 
 NUM_GPUS=4
 STAGGER_DELAY=15  # seconds between each GPU start to avoid SQLite race conditions
-# Note: hp_search.py defaults to --data-fraction 0.3 (30% of training data)
-# This speeds up each epoch ~3x while still finding good hyperparameters.
-# Use --data-fraction 1.0 if you want to search with the full dataset.
+DATA_FRACTION=0.05  # Use 5% of data for ~30 min trials (use 1.0 for full dataset)
 
 run_phase() {
     local phase=$1
@@ -376,10 +374,12 @@ run_phase() {
         if [ -z "$best_params" ]; then
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
                 --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
+                --data-fraction $DATA_FRACTION \
                 --wandb --device cuda --n-jobs 1 &
         else
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
                 --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
+                --data-fraction $DATA_FRACTION \
                 --best-params "$best_params" \
                 --wandb --device cuda --n-jobs 1 &
         fi

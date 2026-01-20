@@ -687,8 +687,8 @@ def parse_args():
     parser.add_argument(
         "--data-fraction",
         type=float,
-        default=0.3,
-        help="Fraction of training data to use for HP search (default: 0.3 for ~3x speedup)",
+        default=0.05,
+        help="Fraction of data to use for HP search (default: 0.05 for ~30 min trials)",
     )
 
     return parser.parse_args()
