@@ -478,28 +478,32 @@ def create_dataloaders_distributed(
 
 
 def compute_class_weights(
-    dataset: CricketDataset, cache: bool = True
+    dataset, cache: bool = True
 ) -> tuple[torch.Tensor, dict]:
     """
     Compute inverse frequency class weights for imbalanced data.
 
     Args:
-        dataset: CricketDataset to compute weights from
+        dataset: CricketDataset or Subset to compute weights from
         cache: If True, cache weights to disk and load from cache on subsequent calls
+               (only works with full CricketDataset, not Subset)
 
     Returns:
         Tuple of (weights tensor [num_classes], distribution dict)
     """
-    cache_path = os.path.join(dataset.processed_dir, 'class_weights.pt')
+    # Handle Subset wrapper (used when data_fraction < 1.0)
+    base_dataset = dataset.dataset if hasattr(dataset, 'dataset') else dataset
+    cache_path = os.path.join(base_dataset.processed_dir, 'class_weights.pt')
     class_names = ['Dot', 'Single', 'Two', 'Three', 'Four', 'Six', 'Wicket']
 
-    # Try to load from cache
-    if cache and os.path.exists(cache_path):
+    # Only use cache for full dataset, not subsets
+    is_subset = hasattr(dataset, 'dataset')
+    if cache and not is_subset and os.path.exists(cache_path):
         print(f"Loading cached class weights from {cache_path}")
         cached = torch.load(cache_path, weights_only=False)
         return cached['weights'], cached['distribution']
 
-    # Compute class weights
+    # Compute class weights from the actual dataset (may be subset)
     from collections import Counter
 
     class_counts = Counter()
@@ -525,8 +529,8 @@ def compute_class_weights(
         percentage = (count / total * 100) if total > 0 else 0
         distribution[class_names[c]] = {'count': count, 'percentage': percentage}
 
-    # Save to cache
-    if cache:
+    # Save to cache (only for full dataset, not subsets)
+    if cache and not is_subset:
         torch.save({'weights': weights_tensor, 'distribution': distribution}, cache_path)
         print(f"Cached class weights to {cache_path}")
 
