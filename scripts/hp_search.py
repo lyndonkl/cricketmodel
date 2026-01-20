@@ -754,7 +754,9 @@ def main():
     )
 
     train_dataset = train_loader.dataset
-    metadata = train_dataset.get_metadata()
+    # Handle Subset wrapper when using data_fraction < 1.0
+    base_dataset = train_dataset.dataset if hasattr(train_dataset, 'dataset') else train_dataset
+    metadata = base_dataset.get_metadata()
 
     print(f"Train samples: {len(train_dataset)}")
     print(f"Val samples: {len(val_loader.dataset)}")
