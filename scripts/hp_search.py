@@ -684,6 +684,12 @@ def parse_args():
         default="checkpoints/optuna",
         help="Base checkpoint directory",
     )
+    parser.add_argument(
+        "--data-fraction",
+        type=float,
+        default=0.3,
+        help="Fraction of training data to use for HP search (default: 0.3 for ~3x speedup)",
+    )
 
     return parser.parse_args()
 
@@ -744,6 +750,7 @@ def main():
         num_workers=num_workers,
         min_history=1,
         seed=args.seed,
+        train_fraction=args.data_fraction,
     )
 
     train_dataset = train_loader.dataset

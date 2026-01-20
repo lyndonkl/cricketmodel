@@ -15,6 +15,7 @@ from typing import Callable, List, Optional, Tuple
 import torch
 from torch_geometric.data import Dataset, HeteroData
 from torch_geometric.loader import DataLoader
+from torch.utils.data import Subset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
@@ -302,6 +303,7 @@ def create_dataloaders(
     batch_size: int = 64,
     num_workers: int = 4,
     raw_data_dir: Optional[str] = None,
+    train_fraction: float = 1.0,
     **dataset_kwargs
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
@@ -313,6 +315,9 @@ def create_dataloaders(
         num_workers: Number of worker processes
         raw_data_dir: Directory containing raw JSON match files (optional).
                       If not provided, defaults to {root}/raw/matches/
+        train_fraction: Fraction of training/validation data to use (default: 1.0).
+                       Values < 1.0 create a random subset for faster HP search.
+                       Test always uses full data for consistent final evaluation.
         **dataset_kwargs: Additional arguments for CricketDataset
                          (min_history, train_ratio, val_ratio, seed, etc.)
 
@@ -322,6 +327,22 @@ def create_dataloaders(
     train_dataset = CricketDataset(root, split='train', raw_data_dir=raw_data_dir, **dataset_kwargs)
     val_dataset = CricketDataset(root, split='val', raw_data_dir=raw_data_dir, **dataset_kwargs)
     test_dataset = CricketDataset(root, split='test', raw_data_dir=raw_data_dir, **dataset_kwargs)
+
+    # Apply fraction to train/val data (test uses full data for consistent final evaluation)
+    if train_fraction < 1.0:
+        seed = dataset_kwargs.get('seed', 42)
+
+        # Subset training data
+        n_train = int(len(train_dataset) * train_fraction)
+        train_gen = torch.Generator().manual_seed(seed)
+        train_indices = torch.randperm(len(train_dataset), generator=train_gen)[:n_train]
+        train_dataset = Subset(train_dataset, train_indices.tolist())
+
+        # Subset validation data
+        n_val = int(len(val_dataset) * train_fraction)
+        val_gen = torch.Generator().manual_seed(seed + 1)  # Different seed for val
+        val_indices = torch.randperm(len(val_dataset), generator=val_gen)[:n_val]
+        val_dataset = Subset(val_dataset, val_indices.tolist())
 
     train_loader = DataLoader(
         train_dataset,

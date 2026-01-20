@@ -258,6 +258,14 @@ With 4 GPUs, run 4 Optuna workers in parallel - each worker uses one GPU and run
 - Optuna's TPE sampler coordinates trial selection across workers
 - ~4x faster than single-GPU (4 trials run simultaneously)
 
+### Data Fraction for Faster HP Search
+
+By default, `hp_search.py` uses `--data-fraction 0.3` (30% of training data) to speed up each epoch by ~3x. This allows faster iteration during hyperparameter exploration while still finding good configurations.
+
+- **Default:** `--data-fraction 0.3` (~30 min/epoch instead of ~90 min)
+- **Full data:** Use `--data-fraction 1.0` if you want to search with the complete dataset
+- **Test set:** Always uses full data for consistent final evaluation
+
 ### Phase 1: Coarse Search (4 GPUs)
 
 ```bash
@@ -351,6 +359,9 @@ set -e
 
 NUM_GPUS=4
 STAGGER_DELAY=15  # seconds between each GPU start to avoid SQLite race conditions
+# Note: hp_search.py defaults to --data-fraction 0.3 (30% of training data)
+# This speeds up each epoch ~3x while still finding good hyperparameters.
+# Use --data-fraction 1.0 if you want to search with the full dataset.
 
 run_phase() {
     local phase=$1
