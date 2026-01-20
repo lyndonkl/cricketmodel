@@ -11,13 +11,23 @@ NUM_GPUS=4
 STAGGER_DELAY=15  # seconds between each GPU start to avoid SQLite race conditions
 DATA_FRACTION=0.05  # Use 5% of data for ~30 min trials (use 1.0 for full dataset)
 
+# Set file descriptor limit for PyTorch multiprocessing
+ulimit -n 65535
+
+# Clean up previous Optuna database
+rm -f optuna_studies.db
+
 run_phase() {
     local phase=$1
     local trials_per_gpu=$2
     local epochs=$3
     local best_params=$4
 
+    # Shared study name so all GPUs coordinate trials
+    local study_name="cricket_gnn_${phase}_$(date +%Y%m%d_%H%M%S)"
+
     echo "=== Running $phase with $NUM_GPUS GPUs (staggered start) ==="
+    echo "Study name: $study_name"
 
     for gpu in $(seq 0 $((NUM_GPUS-1))); do
         echo "Starting GPU $gpu..."
@@ -25,11 +35,13 @@ run_phase() {
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
                 --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
                 --data-fraction $DATA_FRACTION \
+                --study-name "$study_name" \
                 --wandb --device cuda --n-jobs 1 &
         else
             CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
                 --phase $phase --n-trials $trials_per_gpu --epochs $epochs \
                 --data-fraction $DATA_FRACTION \
+                --study-name "$study_name" \
                 --best-params "$best_params" \
                 --wandb --device cuda --n-jobs 1 &
         fi
