@@ -15,8 +15,10 @@ BATCH_SIZE=256  # Larger batch size for faster epochs (default was 64)
 # Set file descriptor limit for PyTorch multiprocessing
 ulimit -n 65535
 
-# Clean up previous Optuna database
+# Clean up previous Optuna database and checkpoints
 rm -f optuna_studies.db
+rm -rf checkpoints/optuna/*
+echo "Cleaned up previous Optuna studies and checkpoints"
 
 run_phase() {
     local phase=$1
@@ -54,23 +56,23 @@ run_phase() {
     echo "=== $phase complete! ==="
 }
 
-# Phase 1: 12 trials (3 per GPU)
-run_phase "phase1_coarse" 3 25 ""
+# Phase 1: 12 trials (3 per GPU), 10 epochs (enough to rank configs with early stopping)
+run_phase "phase1_coarse" 3 10 ""
 PHASE1_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase1_coarse_*/best_params.json | head -1)
 echo "Phase 1 best: $PHASE1_BEST"
 
 # Phase 2: 12 trials (3 per GPU)
-run_phase "phase2_architecture" 3 25 "$PHASE1_BEST"
+run_phase "phase2_architecture" 3 10 "$PHASE1_BEST"
 PHASE2_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase2_architecture_*/best_params.json | head -1)
 echo "Phase 2 best: $PHASE2_BEST"
 
 # Phase 3: 16 trials (4 per GPU)
-run_phase "phase3_training" 4 30 "$PHASE2_BEST"
+run_phase "phase3_training" 4 10 "$PHASE2_BEST"
 PHASE3_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase3_training_*/best_params.json | head -1)
 echo "Phase 3 best: $PHASE3_BEST"
 
 # Phase 4: 12 trials (3 per GPU)
-run_phase "phase4_loss" 3 30 "$PHASE3_BEST"
+run_phase "phase4_loss" 3 10 "$PHASE3_BEST"
 PHASE4_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase4_loss_*/best_params.json | head -1)
 echo "Phase 4 best: $PHASE4_BEST"
 
