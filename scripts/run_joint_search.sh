@@ -11,9 +11,9 @@ echo "Running from: $(pwd)"
 
 NUM_GPUS=6
 STAGGER_DELAY=15          # seconds between each GPU start to avoid SQLite race conditions
-DATA_FRACTION=0.02        # 2% of data - ~3.5 hour total search time
+DATA_FRACTION=0.02        # 2% of data for fast iteration
 BATCH_SIZE=1024           # Larger batch for faster epochs (4090 has 24GB VRAM)
-TRIALS_PER_GPU=25         # More trials needed for larger search space (150 total)
+TRIALS_PER_GPU=15         # 90 total trials across 6 GPUs (~2 hour search)
 EPOCHS=10
 
 # Set file descriptor limit for PyTorch multiprocessing
