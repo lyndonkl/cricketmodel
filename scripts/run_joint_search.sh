@@ -65,6 +65,7 @@ echo "=== Training final model with torchrun (4 GPUs) ==="
 torchrun --standalone --nproc_per_node=4 train.py \
     --config "$BEST_PARAMS" \
     --epochs 100 \
+    --batch-size 1024 \
     --wandb \
     --wandb-project cricket-gnn-final
 
