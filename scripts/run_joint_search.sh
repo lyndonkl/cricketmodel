@@ -11,7 +11,7 @@ echo "Running from: $(pwd)"
 
 NUM_GPUS=4
 STAGGER_DELAY=15          # seconds between each GPU start to avoid SQLite race conditions
-DATA_FRACTION=0.05        # 5% of data - trials complete in ~1 min with batch 1024
+DATA_FRACTION=0.02        # 2% of data - ~3.5 hour total search time
 BATCH_SIZE=1024           # Larger batch for faster epochs (4090 has 24GB VRAM)
 TRIALS_PER_GPU=25         # More trials needed for larger search space (100 total)
 EPOCHS=10
