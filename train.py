@@ -286,6 +286,9 @@ def main():
     if args.config is not None:
         if os.path.exists(args.config):
             config = load_config_file(args.config)
+            # Handle best_params.json format from HP search (params nested under 'best_params')
+            if 'best_params' in config:
+                config = config['best_params']
             merge_config_with_args(args, config)
             print(f"Loaded config from: {args.config}")
         else:
