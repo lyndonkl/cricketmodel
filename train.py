@@ -236,6 +236,11 @@ def parse_args():
         action="store_true",
         help="Force CPU usage (required for DDP with torchrun on non-CUDA systems)"
     )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable Automatic Mixed Precision (AMP) for faster training on CUDA"
+    )
 
     return parser.parse_args()
 
@@ -363,6 +368,7 @@ def main():
                 "patience": args.patience,
                 "world_size": world_size,
                 "device": str(device),
+                "amp": args.amp,
             }
         )
         print("WandB logging enabled")
@@ -524,6 +530,7 @@ def main():
         patience=args.patience,
         checkpoint_dir=args.checkpoint_dir,
         focal_gamma=args.focal_gamma,
+        use_amp=args.amp,
     )
 
     trainer = Trainer(

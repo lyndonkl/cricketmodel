@@ -59,13 +59,14 @@ echo ""
 echo "Best params: $BEST_PARAMS"
 cat "$BEST_PARAMS"
 
-# Train final model with all 6 GPUs using DDP
+# Train final model with all 6 GPUs using DDP + AMP
 echo ""
-echo "=== Training final model with torchrun (6 GPUs) ==="
+echo "=== Training final model with torchrun (6 GPUs, AMP enabled) ==="
 torchrun --standalone --nproc_per_node=6 train.py \
     --config "$BEST_PARAMS" \
     --epochs 100 \
     --batch-size 1024 \
+    --amp \
     --wandb \
     --wandb-project cricket-gnn-final
 

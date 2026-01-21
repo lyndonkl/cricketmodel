@@ -59,6 +59,9 @@ class TrainingConfig:
     use_focal_loss: bool = True  # Use Focal Loss for class imbalance
     focal_gamma: float = 2.0  # Focal loss focusing parameter
 
+    # Mixed precision
+    use_amp: bool = False  # Enable Automatic Mixed Precision (CUDA only)
+
 
 class Trainer:
     """
@@ -210,6 +213,17 @@ class Trainer:
             'lr': [],
         }
 
+        # AMP (Automatic Mixed Precision) setup
+        self.use_amp = config.use_amp and torch.cuda.is_available()
+        if self.use_amp:
+            self.scaler = torch.amp.GradScaler('cuda')
+            if self.is_main:
+                print("AMP enabled: using mixed precision training")
+        else:
+            self.scaler = None
+            if config.use_amp and not torch.cuda.is_available() and self.is_main:
+                print("Warning: AMP requested but CUDA not available, running in FP32")
+
         # Create checkpoint dir (only on main process)
         if self.is_main:
             os.makedirs(config.checkpoint_dir, exist_ok=True)
@@ -235,21 +249,40 @@ class Trainer:
         for batch_idx, batch in enumerate(loader):
             batch = batch.to(self.device)
 
-            # Forward pass
+            # Forward pass with optional AMP autocast
             self.optimizer.zero_grad()
-            logits = self.model(batch)
-            loss = self.criterion(logits, batch.y)
 
-            # Backward pass
-            loss.backward()
+            if self.use_amp:
+                with torch.amp.autocast('cuda'):
+                    logits = self.model(batch)
+                    loss = self.criterion(logits, batch.y)
 
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.max_grad_norm
-            )
+                # Backward pass with scaler
+                self.scaler.scale(loss).backward()
 
-            self.optimizer.step()
+                # Gradient clipping (unscale first for correct norm)
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.max_grad_norm
+                )
+
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                logits = self.model(batch)
+                loss = self.criterion(logits, batch.y)
+
+                # Backward pass
+                loss.backward()
+
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.max_grad_norm
+                )
+
+                self.optimizer.step()
 
             # Metrics
             total_loss += loss.item() * batch.y.size(0)
@@ -504,7 +537,7 @@ class Trainer:
         if hasattr(self.model, 'module'):
             model_to_save = self.model.module
 
-        torch.save({
+        checkpoint_dict = {
             'epoch': self.epoch,
             'global_step': self.global_step,
             'model_state_dict': model_to_save.state_dict(),
@@ -513,7 +546,13 @@ class Trainer:
             'best_val_loss': self.best_val_loss,
             'best_val_acc': self.best_val_acc,
             'config': asdict(self.config),
-        }, path)
+        }
+
+        # Save scaler state if using AMP
+        if self.scaler is not None:
+            checkpoint_dict['scaler_state_dict'] = self.scaler.state_dict()
+
+        torch.save(checkpoint_dict, path)
 
     def load_checkpoint(self, filename: str):
         """Load model checkpoint."""
@@ -528,6 +567,10 @@ class Trainer:
         self.global_step = checkpoint['global_step']
         self.best_val_loss = checkpoint['best_val_loss']
         self.best_val_acc = checkpoint['best_val_acc']
+
+        # Load scaler state if available and using AMP
+        if self.scaler is not None and 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
         print(f"Loaded checkpoint from epoch {self.epoch + 1}")
 
