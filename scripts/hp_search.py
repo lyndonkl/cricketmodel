@@ -369,6 +369,15 @@ def create_objective(
 
         except optuna.TrialPruned:
             raise
+        except RuntimeError as e:
+            # Handle CUDA out of memory errors gracefully
+            if "out of memory" in str(e).lower():
+                print(f"  Trial {trial.number} failed with OOM error - returning worst score")
+                torch.cuda.empty_cache()
+                trial.set_user_attr("oom_error", True)
+                return float("-inf")  # Return worst score so trial is not selected
+            print(f"  Trial {trial.number} failed with error: {e}")
+            raise
         except Exception as e:
             print(f"  Trial {trial.number} failed with error: {e}")
             raise
@@ -524,6 +533,57 @@ def run_phase(
             show_progress_bar=True,
             n_jobs=n_jobs,
         )
+
+        # Log Optuna visualizations to WandB after optimization completes
+        if use_wandb:
+            try:
+                import wandb
+                import optuna.visualization as vis
+
+                print("\nGenerating Optuna visualizations for WandB...")
+
+                # Optimization history - shows best value over trials
+                try:
+                    fig_history = vis.plot_optimization_history(study)
+                    wandb.log({"optimization_history": fig_history})
+                except Exception as e:
+                    print(f"  Warning: Could not generate optimization history: {e}")
+
+                # Parameter importance - which HPs matter most
+                try:
+                    fig_importance = vis.plot_param_importances(study)
+                    wandb.log({"param_importances": fig_importance})
+                except Exception as e:
+                    print(f"  Warning: Could not generate param importances: {e}")
+
+                # Parallel coordinate - visualize HP combinations
+                try:
+                    fig_parallel = vis.plot_parallel_coordinate(study)
+                    wandb.log({"parallel_coordinate": fig_parallel})
+                except Exception as e:
+                    print(f"  Warning: Could not generate parallel coordinate: {e}")
+
+                # Contour plot for parameter interactions
+                try:
+                    fig_contour = vis.plot_contour(study)
+                    wandb.log({"param_contour": fig_contour})
+                except Exception as e:
+                    print(f"  Warning: Could not generate contour plot: {e}")
+
+                # Slice plot - parameter value distributions
+                try:
+                    fig_slice = vis.plot_slice(study)
+                    wandb.log({"param_slice": fig_slice})
+                except Exception as e:
+                    print(f"  Warning: Could not generate slice plot: {e}")
+
+                print("Optuna visualizations logged to WandB")
+
+            except ImportError:
+                print("Warning: Could not import optuna.visualization for WandB logging")
+            except Exception as e:
+                print(f"Warning: Could not generate some visualizations: {e}")
+
     finally:
         if use_wandb:
             try:

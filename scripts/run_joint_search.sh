@@ -12,8 +12,8 @@ echo "Running from: $(pwd)"
 NUM_GPUS=4
 STAGGER_DELAY=15          # seconds between each GPU start to avoid SQLite race conditions
 DATA_FRACTION=0.02        # Same as phased approach
-BATCH_SIZE=512            # Larger batch for faster epochs
-TRIALS_PER_GPU=15         # More trials needed for larger search space
+BATCH_SIZE=1024           # Larger batch for faster epochs (4090 has 24GB VRAM)
+TRIALS_PER_GPU=25         # More trials needed for larger search space (100 total)
 EPOCHS=10
 
 # Set file descriptor limit for PyTorch multiprocessing
