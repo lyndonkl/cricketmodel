@@ -9,11 +9,11 @@ set -e
 cd "$(dirname "$0")/.."
 echo "Running from: $(pwd)"
 
-NUM_GPUS=4
+NUM_GPUS=6
 STAGGER_DELAY=15          # seconds between each GPU start to avoid SQLite race conditions
 DATA_FRACTION=0.02        # 2% of data - ~3.5 hour total search time
 BATCH_SIZE=1024           # Larger batch for faster epochs (4090 has 24GB VRAM)
-TRIALS_PER_GPU=25         # More trials needed for larger search space (100 total)
+TRIALS_PER_GPU=25         # More trials needed for larger search space (150 total)
 EPOCHS=10
 
 # Set file descriptor limit for PyTorch multiprocessing
@@ -59,10 +59,10 @@ echo ""
 echo "Best params: $BEST_PARAMS"
 cat "$BEST_PARAMS"
 
-# Train final model with all 4 GPUs using DDP
+# Train final model with all 6 GPUs using DDP
 echo ""
-echo "=== Training final model with torchrun (4 GPUs) ==="
-torchrun --standalone --nproc_per_node=4 train.py \
+echo "=== Training final model with torchrun (6 GPUs) ==="
+torchrun --standalone --nproc_per_node=6 train.py \
     --config "$BEST_PARAMS" \
     --epochs 100 \
     --batch-size 1024 \
