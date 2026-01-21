@@ -183,6 +183,12 @@ def parse_args():
         help="Early stopping patience"
     )
     parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=2.0,
+        help="Focal loss gamma parameter (higher = more focus on hard examples)"
+    )
+    parser.add_argument(
         "--checkpoint-dir",
         type=str,
         default="checkpoints",
@@ -256,6 +262,7 @@ def merge_config_with_args(args, config: dict):
         'weight_decay': 'weight_decay',
         'batch_size': 'batch_size',
         'model_class': 'model_class',
+        'focal_gamma': 'focal_gamma',
     }
 
     # Get the defaults from argparse
@@ -268,6 +275,7 @@ def merge_config_with_args(args, config: dict):
         'weight_decay': 0.01,
         'batch_size': 64,
         'model_class': 'CricketHeteroGNN',
+        'focal_gamma': 2.0,
     }
 
     for config_key, arg_attr in key_mapping.items():
@@ -515,6 +523,7 @@ def main():
         epochs=args.epochs,
         patience=args.patience,
         checkpoint_dir=args.checkpoint_dir,
+        focal_gamma=args.focal_gamma,
     )
 
     trainer = Trainer(
