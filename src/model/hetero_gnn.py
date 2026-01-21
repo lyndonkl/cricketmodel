@@ -799,10 +799,17 @@ class CricketHeteroGNNFull(nn.Module):
             wicket_buffer = data['wicket_buffer'].x  # [batch, 2]
             condition = torch.cat([phase_state, chase_state, wicket_buffer], dim=-1)  # [batch, 14]
 
+            # Extract batch indices for each node type (for FiLM graph->node expansion)
+            batch_dict = {}
+            for node_type in x_dict.keys():
+                if hasattr(data[node_type], 'batch') and data[node_type].batch is not None:
+                    batch_dict[node_type] = data[node_type].batch
+
             for conv_block in self.conv_stack:
                 x_dict = conv_block(
                     x_dict, edge_index_dict, condition,
-                    edge_attr_dict if edge_attr_dict else None
+                    edge_attr_dict if edge_attr_dict else None,
+                    batch_dict=batch_dict,
                 )
         else:
             for conv_block in self.conv_stack:

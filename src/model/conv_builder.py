@@ -76,23 +76,35 @@ class FiLMLayer(nn.Module):
             # Set gamma bias to 1 (first half of output)
             self.film_generator[-1].bias[:hidden_dim].fill_(1.0)
 
-    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        condition: torch.Tensor,
+        batch: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Apply FiLM modulation.
 
         Args:
             x: Features to modulate [num_nodes, hidden_dim]
-            condition: Conditioning signal [1, condition_dim] or [num_nodes, condition_dim]
+            condition: Conditioning signal [batch_size, condition_dim]
+            batch: Optional batch indices [num_nodes] mapping each node to its graph.
+                   Used to expand graph-level conditioning to node-level.
 
         Returns:
             Modulated features [num_nodes, hidden_dim]
         """
         # Generate gamma and beta
-        film_params = self.film_generator(condition)  # [batch, hidden_dim * 2]
-        gamma, beta = film_params.chunk(2, dim=-1)    # Each: [batch, hidden_dim]
+        film_params = self.film_generator(condition)  # [batch_size, hidden_dim * 2]
+        gamma, beta = film_params.chunk(2, dim=-1)    # Each: [batch_size, hidden_dim]
 
-        # Broadcast condition to match number of nodes if needed
-        if gamma.shape[0] == 1 and x.shape[0] > 1:
+        # Expand graph-level conditioning to node-level using batch indices
+        if batch is not None and gamma.shape[0] != x.shape[0]:
+            # Use batch tensor to index: [batch_size, dim] -> [num_nodes, dim]
+            gamma = gamma[batch]
+            beta = beta[batch]
+        elif gamma.shape[0] == 1 and x.shape[0] > 1:
+            # Fallback: broadcast single condition to all nodes
             gamma = gamma.expand(x.shape[0], -1)
             beta = beta.expand(x.shape[0], -1)
 
@@ -388,6 +400,7 @@ class PhaseModulatedConvBlock(nn.Module):
         edge_index_dict: Dict[EdgeType, 'torch.Tensor'],
         condition: 'torch.Tensor',
         edge_attr_dict: Optional[Dict[EdgeType, 'torch.Tensor']] = None,
+        batch_dict: Optional[Dict[str, 'torch.Tensor']] = None,
     ) -> Dict[str, 'torch.Tensor']:
         """
         Forward pass with enhanced situation-conditioned FiLM modulation.
@@ -395,9 +408,12 @@ class PhaseModulatedConvBlock(nn.Module):
         Args:
             x_dict: Dict of node features {node_type: [num_nodes, hidden_dim]}
             edge_index_dict: Dict of edge indices {edge_type: [2, num_edges]}
-            condition: Concatenated situation features [1, condition_dim] or [batch, condition_dim]
+            condition: Concatenated situation features [batch_size, condition_dim]
                        (phase_state + chase_state + wicket_buffer)
             edge_attr_dict: Optional dict of edge attributes
+            batch_dict: Optional dict mapping node types to batch indices
+                        {node_type: [num_nodes]} for expanding graph-level
+                        conditioning to node-level
 
         Returns:
             Updated x_dict with same structure
@@ -421,9 +437,10 @@ class PhaseModulatedConvBlock(nn.Module):
             if node_type in self.norms:
                 h = self.norms[node_type](h)
 
-            # FiLM modulation
+            # FiLM modulation (with batch indices for graph->node expansion)
             if node_type in self.film_layers:
-                h = self.film_layers[node_type](h, condition)
+                batch = batch_dict.get(node_type) if batch_dict else None
+                h = self.film_layers[node_type](h, condition, batch=batch)
 
             # Dropout
             h = self.dropout(h)
