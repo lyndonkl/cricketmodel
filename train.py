@@ -107,6 +107,12 @@ def parse_args():
         help="Number of data loading workers per GPU"
     )
     parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=2,
+        help="Number of batches each worker prefetches ahead (default: 2)"
+    )
+    parser.add_argument(
         "--ollama-workers",
         type=int,
         default=4,
@@ -387,6 +393,7 @@ def main():
             raw_data_dir=args.data_dir,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
             rank=rank,
             world_size=world_size,
             min_history=1,
@@ -399,6 +406,7 @@ def main():
             raw_data_dir=args.data_dir,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
             min_history=1,
             seed=args.seed,
             ollama_workers=args.ollama_workers,
