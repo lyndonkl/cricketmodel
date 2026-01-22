@@ -101,20 +101,13 @@ def parse_args():
         help="Batch size per GPU (effective batch = batch_size * num_gpus)"
     )
     # DataLoader worker configuration
-    # For small batch counts (~88 batches total), 4 workers with prefetch 2 is plenty.
-    # More workers add overhead without benefit. With persistent_workers=True,
-    # workers stay alive between epochs, eliminating spawn overhead.
+    # With persistent_workers=True, workers stay alive between epochs, eliminating spawn overhead.
+    # GPU prefetching is handled by PrefetchLoader in trainer.py for async data transfer.
     parser.add_argument(
         "--num-workers",
         type=int,
         default=4,
         help="Number of data loading workers per GPU (4 is optimal for most cases)"
-    )
-    parser.add_argument(
-        "--prefetch-factor",
-        type=int,
-        default=2,
-        help="Batches each worker prefetches ahead (default: 2, higher uses more memory)"
     )
     parser.add_argument(
         "--ollama-workers",
@@ -398,7 +391,6 @@ def main():
             raw_data_dir=args.data_dir,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
-            prefetch_factor=args.prefetch_factor,
             rank=rank,
             world_size=world_size,
             min_history=1,
@@ -411,7 +403,6 @@ def main():
             raw_data_dir=args.data_dir,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
-            prefetch_factor=args.prefetch_factor,
             min_history=1,
             seed=args.seed,
             ollama_workers=args.ollama_workers,
