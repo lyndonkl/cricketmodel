@@ -258,3 +258,65 @@ def reduce_tensor(tensor: torch.Tensor, average: bool = True) -> torch.Tensor:
         rt /= get_world_size()
 
     return rt
+
+
+def gather_predictions(
+    labels: list,
+    preds: list,
+    probs,
+    device: torch.device
+) -> tuple:
+    """
+    Gather predictions from all processes for distributed evaluation.
+
+    When using DistributedSampler for validation/test, each GPU processes
+    a subset of the data. This function gathers all predictions to rank 0
+    for computing global metrics.
+
+    Args:
+        labels: List of ground truth labels from this process
+        preds: List of predictions from this process
+        probs: Numpy array of probabilities from this process
+        device: Device tensors are on (used for synchronization)
+
+    Returns:
+        Tuple of (all_labels, all_preds, all_probs) on rank 0,
+        or (None, None, None) on other ranks.
+
+    Example:
+        # After local evaluation
+        if is_distributed:
+            all_labels, all_preds, all_probs = gather_predictions(
+                labels, preds, probs, device
+            )
+            if is_main:
+                metrics = compute_metrics(all_labels, all_preds, all_probs)
+    """
+    import numpy as np
+
+    if not is_distributed():
+        return labels, preds, probs
+
+    world_size = get_world_size()
+
+    # Gather all predictions to all processes using all_gather_object
+    # This handles variable-length lists automatically
+    gathered_labels = [None] * world_size
+    gathered_preds = [None] * world_size
+    gathered_probs = [None] * world_size
+
+    dist.all_gather_object(gathered_labels, labels)
+    dist.all_gather_object(gathered_preds, preds)
+    dist.all_gather_object(gathered_probs, probs.tolist())  # Convert to list for gathering
+
+    # Only rank 0 needs to aggregate and return the full results
+    if get_rank() == 0:
+        # Flatten the gathered lists
+        all_labels = [label for sublist in gathered_labels for label in sublist]
+        all_preds = [pred for sublist in gathered_preds for pred in sublist]
+        # Reconstruct probability array
+        all_probs_list = [prob for sublist in gathered_probs for prob in sublist]
+        all_probs = np.array(all_probs_list)
+        return all_labels, all_preds, all_probs
+
+    return None, None, None
