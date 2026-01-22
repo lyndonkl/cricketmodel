@@ -8,7 +8,7 @@ and prediction head for ball outcome prediction.
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 from torch_geometric.utils import softmax as scatter_softmax
 from torch_geometric.nn import global_add_pool
@@ -68,11 +68,18 @@ class CricketHeteroGNN(nn.Module):
     1. Node Encoders: Project each node type to common hidden_dim
     2. Message Passing: Stack of HeteroConvBlocks
     3. Readout: Extract query node representation
-    4. Prediction: MLP classifier
+    4. Prediction: Multi-head output (7-class main + binary auxiliary heads)
 
     The model uses the query node as a learnable aggregation point.
     After message passing, information from all context nodes flows
     to the query node, which is then used for prediction.
+
+    Multi-head architecture:
+    - Main head: 7-class outcome prediction (Dot, Single, Two, Three, Four, Six, Wicket)
+    - Boundary head: Binary prediction for Four/Six
+    - Wicket head: Binary prediction for Wicket
+
+    Subclasses should override `get_readout()` to customize the readout mechanism.
     """
 
     def __init__(self, config: ModelConfig):
@@ -106,7 +113,7 @@ class CricketHeteroGNN(nn.Module):
             dropout=config.dropout,
         )
 
-        # === Prediction Head ===
+        # === Main Prediction Head (7-class) ===
         self.predictor = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.LayerNorm(config.hidden_dim),
@@ -119,15 +126,50 @@ class CricketHeteroGNN(nn.Module):
             nn.Linear(config.hidden_dim // 2, config.num_classes),
         )
 
-    def forward(self, data) -> torch.Tensor:
+        # === Binary Auxiliary Heads ===
+        # Boundary head: predicts if next ball is a Four or Six
+        self.boundary_head = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim // 2, 1),
+        )
+
+        # Wicket head: predicts if next ball is a wicket
+        self.wicket_head = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim // 2, 1),
+        )
+
+    def get_readout(self, data, x_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Forward pass.
+        Get readout representation for prediction.
+
+        Override this method in subclasses to customize readout mechanism.
+
+        Args:
+            data: HeteroData or batched HeteroData
+            x_dict: Node representations after message passing
+
+        Returns:
+            Readout tensor [batch_size, hidden_dim]
+        """
+        return x_dict['query']
+
+    def forward(self, data) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass with multi-head output.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Logits [batch_size, num_classes]
+            Dict with keys:
+            - 'main': 7-class logits [batch_size, num_classes]
+            - 'boundary': binary logits [batch_size, 1]
+            - 'wicket': binary logits [batch_size, 1]
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -144,13 +186,15 @@ class CricketHeteroGNN(nn.Module):
         for conv_block in self.conv_stack:
             x_dict = conv_block(x_dict, edge_index_dict, edge_attr_dict if edge_attr_dict else None)
 
-        # 3. Readout from query nodes
-        query_repr = x_dict['query']  # [batch_size, hidden_dim]
+        # 3. Get readout representation (subclasses can override get_readout)
+        readout = self.get_readout(data, x_dict)
 
-        # 4. Predict
-        logits = self.predictor(query_repr)
-
-        return logits
+        # 4. Multi-head predictions
+        return {
+            'main': self.predictor(readout),           # [batch_size, 7]
+            'boundary': self.boundary_head(readout),   # [batch_size, 1]
+            'wicket': self.wicket_head(readout),       # [batch_size, 1]
+        }
 
     def get_attention_weights(
         self,
@@ -205,6 +249,8 @@ class CricketHeteroGNNWithPooling(CricketHeteroGNN):
     Instead of relying solely on the query node, this variant
     also performs explicit pooling over ball nodes and combines
     the result with the query representation.
+
+    Inherits multi-head architecture from base class.
     """
 
     def __init__(self, config: ModelConfig):
@@ -225,77 +271,50 @@ class CricketHeteroGNNWithPooling(CricketHeteroGNN):
             nn.Dropout(config.dropout),
         )
 
-    def forward(self, data) -> torch.Tensor:
+    def get_readout(self, data, x_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Forward pass with ball pooling.
+        Get readout with attention-based ball pooling.
 
         Uses attention-based pooling over ball nodes with proper batch handling.
         For batched HeteroData, pools balls within each sample separately using
         scatter operations, then combines with query representation.
 
         Args:
-            data: HeteroData or batched HeteroData. When batched, data['ball'].batch
-                  contains the sample index for each ball node.
+            data: HeteroData or batched HeteroData
+            x_dict: Node representations after message passing
 
         Returns:
-            Logits [batch_size, num_classes]
+            Combined representation [batch_size, hidden_dim]
         """
-        # 1. Encode all nodes
-        x_dict = self.encoders.encode_nodes(data)
-
-        # 2. Message passing with edge attributes
-        edge_index_dict = data.edge_index_dict
-
-        # Extract edge attributes if available
-        edge_attr_dict = {}
-        for edge_type in edge_index_dict.keys():
-            if hasattr(data[edge_type], 'edge_attr') and data[edge_type].edge_attr is not None:
-                edge_attr_dict[edge_type] = data[edge_type].edge_attr
-
-        for conv_block in self.conv_stack:
-            x_dict = conv_block(x_dict, edge_index_dict, edge_attr_dict if edge_attr_dict else None)
-
-        # 3. Query representation
         query_repr = x_dict['query']  # [batch_size, hidden_dim]
         batch_size = query_repr.shape[0]
 
-        # 4. Pool ball nodes with attention (proper batch handling)
         ball_repr = x_dict['ball']  # [total_balls, hidden_dim]
 
         if ball_repr.shape[0] > 0:
             # Get batch assignment for each ball node
-            # In batched HeteroData, data['ball'].batch tells us which sample each ball belongs to
             if hasattr(data['ball'], 'batch') and data['ball'].batch is not None:
-                ball_batch = data['ball'].batch  # [total_balls] with values 0..batch_size-1
+                ball_batch = data['ball'].batch
             else:
-                # Single sample case - all balls belong to batch 0
                 ball_batch = torch.zeros(ball_repr.shape[0], dtype=torch.long, device=ball_repr.device)
 
             # Compute attention scores
-            attn_scores = self.ball_attention(ball_repr).squeeze(-1)  # [total_balls]
+            attn_scores = self.ball_attention(ball_repr).squeeze(-1)
 
-            # Softmax within each sample (not globally)
-            # scatter_softmax groups by ball_batch and applies softmax within each group
-            attn_weights = scatter_softmax(attn_scores, ball_batch, dim=0)  # [total_balls]
+            # Softmax within each sample
+            attn_weights = scatter_softmax(attn_scores, ball_batch, dim=0)
 
             # Weighted ball representations
-            weighted_balls = attn_weights.unsqueeze(-1) * ball_repr  # [total_balls, hidden_dim]
+            weighted_balls = attn_weights.unsqueeze(-1) * ball_repr
 
-            # Sum within each sample using PyG's global pooling
-            # global_add_pool sums nodes belonging to the same graph in the batch
-            pooled_balls = global_add_pool(weighted_balls, ball_batch, size=batch_size)  # [batch_size, hidden_dim]
+            # Sum within each sample
+            pooled_balls = global_add_pool(weighted_balls, ball_batch, size=batch_size)
         else:
-            # No balls at all - use zeros
             pooled_balls = torch.zeros_like(query_repr)
 
-        # 5. Combine
+        # Combine query and pooled balls
         combined = torch.cat([query_repr, pooled_balls], dim=-1)
-        combined = self.combiner(combined)
-
-        # 6. Predict
-        logits = self.predictor(combined)
-
-        return logits
+        return self.combiner(combined)
 
 
 class CricketHeteroGNNHybrid(CricketHeteroGNN):
@@ -311,6 +330,8 @@ class CricketHeteroGNNHybrid(CricketHeteroGNN):
 
     This respects the GDL principle that the prediction task level should match
     the structural level of the phenomenon being predicted.
+
+    Inherits multi-head architecture from base class.
     """
 
     def __init__(self, config: ModelConfig):
@@ -350,58 +371,35 @@ class CricketHeteroGNNHybrid(CricketHeteroGNN):
             nn.Sigmoid(),
         )
 
-    def forward(self, data) -> torch.Tensor:
+    def get_readout(self, data, x_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Forward pass with hybrid matchup + query readout.
+        Get readout with hybrid matchup + query aggregation.
 
         Args:
             data: HeteroData or batched HeteroData
+            x_dict: Node representations after message passing
 
         Returns:
-            Logits [batch_size, num_classes]
+            Combined representation [batch_size, hidden_dim]
         """
-        # 1. Encode all nodes
-        x_dict = self.encoders.encode_nodes(data)
-
-        # 2. Message passing with edge attributes
-        edge_index_dict = data.edge_index_dict
-
-        # Extract edge attributes if available
-        edge_attr_dict = {}
-        for edge_type in edge_index_dict.keys():
-            if hasattr(data[edge_type], 'edge_attr') and data[edge_type].edge_attr is not None:
-                edge_attr_dict[edge_type] = data[edge_type].edge_attr
-
-        for conv_block in self.conv_stack:
-            x_dict = conv_block(x_dict, edge_index_dict, edge_attr_dict if edge_attr_dict else None)
-
-        # 3. Matchup interaction (edge-level)
-        # The core prediction depends on striker-bowler interaction
-        striker = x_dict['striker_identity']  # [batch_size, hidden_dim]
-        bowler = x_dict['bowler_identity']    # [batch_size, hidden_dim]
-        nonstriker = x_dict['nonstriker_identity']  # [batch_size, hidden_dim] (P1.1)
+        # Matchup interaction (edge-level)
+        striker = x_dict['striker_identity']
+        bowler = x_dict['bowler_identity']
+        nonstriker = x_dict['nonstriker_identity']
 
         # Base matchup from striker-bowler interaction
-        base_matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))  # [batch_size, hidden_dim]
+        base_matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
 
-        # P1.1: Non-striker gate modulates matchup for running outcomes
-        # Gate output is [0,1], so (1 + 0.1*gate) gives small multiplicative modulation
-        ns_gate = self.nonstriker_gate(nonstriker)  # [batch_size, hidden_dim]
+        # Non-striker gate modulates matchup for running outcomes
+        ns_gate = self.nonstriker_gate(nonstriker)
         matchup = base_matchup * (1.0 + 0.1 * ns_gate)
 
-        # 4. Context aggregation (graph-level)
-        # Query has aggregated global context: venue, phase, momentum, etc.
-        query = self.query_proj(x_dict['query'])  # [batch_size, hidden_dim]
+        # Context aggregation (graph-level)
+        query = self.query_proj(x_dict['query'])
 
-        # 5. Combine matchup + context
-        # Matchup is modulated by context (pressure, phase, momentum)
-        combined = torch.cat([matchup, query], dim=-1)  # [batch_size, 2*hidden_dim]
-        combined = self.combiner(combined)  # [batch_size, hidden_dim]
-
-        # 6. Predict
-        logits = self.predictor(combined)
-
-        return logits
+        # Combine matchup + context
+        combined = torch.cat([matchup, query], dim=-1)
+        return self.combiner(combined)
 
 
 class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
@@ -418,6 +416,8 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
 
     The same underlying graph structure is used, but the model can learn
     to weight information differently based on phase context.
+
+    Inherits multi-head architecture from base class.
     """
 
     def __init__(self, config: ModelConfig):
@@ -462,15 +462,15 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
             nn.Sigmoid(),
         )
 
-    def forward(self, data) -> torch.Tensor:
+    def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with phase-conditioned message passing.
+        Forward pass with phase-conditioned message passing and multi-head output.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Logits [batch_size, num_classes]
+            Dict with 'main', 'boundary', 'wicket' keys
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -493,29 +493,15 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
                 edge_attr_dict if edge_attr_dict else None
             )
 
-        # 4. Matchup interaction (edge-level)
-        striker = x_dict['striker_identity']
-        bowler = x_dict['bowler_identity']
-        nonstriker = x_dict['nonstriker_identity']  # P1.1
+        # 4. Get readout using hybrid method (inherited from CricketHeteroGNNHybrid)
+        readout = self.get_readout(data, x_dict)
 
-        # Base matchup from striker-bowler interaction
-        base_matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
-
-        # P1.1: Non-striker gate modulates matchup for running outcomes
-        ns_gate = self.nonstriker_gate(nonstriker)
-        matchup = base_matchup * (1.0 + 0.1 * ns_gate)
-
-        # 5. Context aggregation (graph-level)
-        query = self.query_proj(x_dict['query'])
-
-        # 6. Combine matchup + context
-        combined = torch.cat([matchup, query], dim=-1)
-        combined = self.combiner(combined)
-
-        # 7. Predict
-        logits = self.predictor(combined)
-
-        return logits
+        # 5. Multi-head predictions
+        return {
+            'main': self.predictor(readout),
+            'boundary': self.boundary_head(readout),
+            'wicket': self.wicket_head(readout),
+        }
 
 
 class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
@@ -533,12 +519,14 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
 
     The chase state injection allows the model to learn different decision boundaries
     for chasing scenarios (e.g., higher risk tolerance when behind required rate).
+
+    Inherits multi-head architecture from base class (boundary/wicket heads).
     """
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
 
-        # First innings head (standard)
+        # First innings head (standard) - replaces self.predictor for 1st innings
         self.first_innings_head = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.LayerNorm(config.hidden_dim),
@@ -566,18 +554,18 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
             nn.Linear(config.hidden_dim // 2, config.num_classes),
         )
 
-    def forward(self, data) -> torch.Tensor:
+    def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with innings-conditional prediction heads.
+        Forward pass with innings-conditional prediction heads and multi-head output.
 
-        Routes to first or second innings head based on is_chase flag.
+        Routes main head to first or second innings head based on is_chase flag.
         Supports batched data with mixed innings (applies correct head per sample).
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Logits [batch_size, num_classes]
+            Dict with 'main', 'boundary', 'wicket' keys
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -594,59 +582,47 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
         for conv_block in self.conv_stack:
             x_dict = conv_block(x_dict, edge_index_dict, edge_attr_dict if edge_attr_dict else None)
 
-        # 3. Matchup interaction (edge-level)
-        striker = x_dict['striker_identity']
-        bowler = x_dict['bowler_identity']
-        nonstriker = x_dict['nonstriker_identity']  # P1.1
+        # 3. Get readout using hybrid method (inherited from CricketHeteroGNNHybrid)
+        readout = self.get_readout(data, x_dict)
 
-        # Base matchup from striker-bowler interaction
-        base_matchup = self.matchup_mlp(torch.cat([striker, bowler], dim=-1))
-
-        # P1.1: Non-striker gate modulates matchup for running outcomes
-        ns_gate = self.nonstriker_gate(nonstriker)
-        matchup = base_matchup * (1.0 + 0.1 * ns_gate)
-
-        # 4. Context aggregation (graph-level)
-        query = self.query_proj(x_dict['query'])
-
-        # 5. Combine matchup + context
-        combined = torch.cat([matchup, query], dim=-1)
-        combined = self.combiner(combined)
-
-        # 6. Get chase state for second innings routing
-        chase_state = data['chase_state'].x  # [batch_size, 3]
+        # 4. Get chase state for second innings routing
+        chase_state = data['chase_state'].x  # [batch_size, 7]
         is_chase = data.is_chase  # [batch_size] bool tensor
 
         # Ensure is_chase is 1D
         if is_chase.dim() > 1:
             is_chase = is_chase.squeeze(-1)
 
-        # 7. Compute both predictions
-        first_innings_logits = self.first_innings_head(combined)
+        # 5. Compute innings-conditional main logits
+        first_innings_logits = self.first_innings_head(readout)
 
         # Second innings: inject chase state
-        combined_with_chase = torch.cat([combined, chase_state], dim=-1)
-        second_innings_logits = self.second_innings_head(combined_with_chase)
+        readout_with_chase = torch.cat([readout, chase_state], dim=-1)
+        second_innings_logits = self.second_innings_head(readout_with_chase)
 
-        # 8. Select appropriate logits based on innings
-        # Use is_chase as mask to select between heads
+        # Select appropriate logits based on innings
         is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_logits)
-        logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
+        main_logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
 
-        return logits
+        # 6. Multi-head predictions (boundary/wicket use same readout for both innings)
+        return {
+            'main': main_logits,
+            'boundary': self.boundary_head(readout),
+            'wicket': self.wicket_head(readout),
+        }
 
     def forward_with_head_info(self, data) -> tuple:
         """
         Forward pass that also returns which head was used (for debugging/analysis).
 
         Returns:
-            Tuple of (logits, is_chase_mask)
+            Tuple of (outputs_dict, is_chase_mask)
         """
-        logits = self.forward(data)
+        outputs = self.forward(data)
         is_chase = data.is_chase
         if is_chase.dim() > 1:
             is_chase = is_chase.squeeze(-1)
-        return logits, is_chase
+        return outputs, is_chase
 
 
 class CricketHeteroGNNFull(nn.Module):
@@ -657,6 +633,7 @@ class CricketHeteroGNNFull(nn.Module):
     2. Hybrid matchup + query readout
     3. Phase-modulated message passing (FiLM)
     4. Innings-conditional prediction heads
+    5. Multi-head prediction (7-class main + binary boundary/wicket)
 
     This is the recommended production model that incorporates all
     GDL-informed architectural decisions.
@@ -727,6 +704,23 @@ class CricketHeteroGNNFull(nn.Module):
             nn.Sigmoid(),
         )
 
+        # === Binary Auxiliary Heads ===
+        # Boundary head: predicts if next ball is a Four or Six
+        self.boundary_head = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim // 2, 1),
+        )
+
+        # Wicket head: predicts if next ball is a wicket
+        self.wicket_head = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim // 2, 1),
+        )
+
         # === Innings-Conditional Prediction Heads ===
         if config.use_innings_conditional:
             # First innings head (standard)
@@ -770,15 +764,15 @@ class CricketHeteroGNNFull(nn.Module):
                 nn.Linear(config.hidden_dim // 2, config.num_classes),
             )
 
-    def forward(self, data) -> torch.Tensor:
+    def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with all enhancements.
+        Forward pass with all enhancements and multi-head output.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Logits [batch_size, num_classes]
+            Dict with 'main', 'boundary', 'wicket' keys
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -831,26 +825,31 @@ class CricketHeteroGNNFull(nn.Module):
         matchup = base_matchup * (1.0 + 0.1 * ns_gate)
 
         query = self.query_proj(x_dict['query'])
-        combined = torch.cat([matchup, query], dim=-1)
-        combined = self.combiner(combined)
+        readout = torch.cat([matchup, query], dim=-1)
+        readout = self.combiner(readout)
 
-        # 4. Prediction (innings-conditional or single head)
+        # 4. Main prediction (innings-conditional or single head)
         if self.config.use_innings_conditional:
             chase_state = data['chase_state'].x
             is_chase = data.is_chase
             if is_chase.dim() > 1:
                 is_chase = is_chase.squeeze(-1)
 
-            first_innings_logits = self.first_innings_head(combined)
-            combined_with_chase = torch.cat([combined, chase_state], dim=-1)
-            second_innings_logits = self.second_innings_head(combined_with_chase)
+            first_innings_logits = self.first_innings_head(readout)
+            readout_with_chase = torch.cat([readout, chase_state], dim=-1)
+            second_innings_logits = self.second_innings_head(readout_with_chase)
 
             is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_logits)
-            logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
+            main_logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
         else:
-            logits = self.predictor(combined)
+            main_logits = self.predictor(readout)
 
-        return logits
+        # 5. Multi-head predictions
+        return {
+            'main': main_logits,
+            'boundary': self.boundary_head(readout),
+            'wicket': self.wicket_head(readout),
+        }
 
     @classmethod
     def from_dataset_metadata(

@@ -220,3 +220,160 @@ def compute_class_weights_effective_samples(
     # Normalize
     weights = weights / weights.sum() * len(class_counts)
     return weights
+
+
+class MultiHeadLoss(nn.Module):
+    """
+    Combined loss for multi-head prediction (7-class main + binary auxiliary heads).
+
+    This loss combines:
+    1. Main 7-class loss (Focal or CrossEntropy) for outcome prediction
+    2. Binary boundary loss for Four/Six detection
+    3. Binary wicket loss for wicket detection
+
+    The binary heads are auxiliary tasks that help the model learn better
+    representations for critical outcomes (boundaries and wickets).
+
+    Binary targets are derived from 7-class labels at loss computation time:
+    - Boundary: class 4 (Four) or class 5 (Six)
+    - Wicket: class 6 (Wicket)
+
+    Args:
+        main_criterion: Loss function for 7-class prediction (e.g., FocalLoss)
+        boundary_weight: Weight for boundary binary loss (default: 0.3)
+        wicket_weight: Weight for wicket binary loss (default: 0.5)
+                      Higher because wickets are rare but critical
+    """
+
+    def __init__(
+        self,
+        main_criterion: nn.Module,
+        boundary_weight: float = 0.3,
+        wicket_weight: float = 0.5,
+    ):
+        super().__init__()
+        self.main_criterion = main_criterion
+        self.boundary_weight = boundary_weight
+        self.wicket_weight = wicket_weight
+        self.bce = nn.BCEWithLogitsLoss()
+
+    def forward(
+        self,
+        outputs: dict,
+        targets: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute combined multi-head loss.
+
+        Args:
+            outputs: Dict with keys 'main', 'boundary', 'wicket'
+                    - main: [batch_size, 7] logits
+                    - boundary: [batch_size, 1] logits
+                    - wicket: [batch_size, 1] logits
+            targets: Ground truth class labels [batch_size]
+
+        Returns:
+            Combined loss value (scalar)
+        """
+        # Main 7-class loss
+        main_loss = self.main_criterion(outputs['main'], targets)
+
+        # Derive binary targets from 7-class labels
+        # Boundary: Four (4) or Six (5)
+        boundary_target = ((targets == 4) | (targets == 5)).float()
+        # Wicket: class 6
+        wicket_target = (targets == 6).float()
+
+        # Binary losses
+        boundary_logits = outputs['boundary'].squeeze(-1)  # [batch_size]
+        wicket_logits = outputs['wicket'].squeeze(-1)  # [batch_size]
+
+        boundary_loss = self.bce(boundary_logits, boundary_target)
+        wicket_loss = self.bce(wicket_logits, wicket_target)
+
+        # Combined loss
+        total_loss = (
+            main_loss +
+            self.boundary_weight * boundary_loss +
+            self.wicket_weight * wicket_loss
+        )
+
+        return total_loss
+
+    def forward_with_breakdown(
+        self,
+        outputs: dict,
+        targets: torch.Tensor
+    ) -> tuple:
+        """
+        Compute loss with individual components for logging.
+
+        Returns:
+            Tuple of (total_loss, main_loss, boundary_loss, wicket_loss)
+        """
+        main_loss = self.main_criterion(outputs['main'], targets)
+
+        boundary_target = ((targets == 4) | (targets == 5)).float()
+        wicket_target = (targets == 6).float()
+
+        boundary_logits = outputs['boundary'].squeeze(-1)
+        wicket_logits = outputs['wicket'].squeeze(-1)
+
+        boundary_loss = self.bce(boundary_logits, boundary_target)
+        wicket_loss = self.bce(wicket_logits, wicket_target)
+
+        total_loss = (
+            main_loss +
+            self.boundary_weight * boundary_loss +
+            self.wicket_weight * wicket_loss
+        )
+
+        return total_loss, main_loss, boundary_loss, wicket_loss
+
+
+def compute_binary_head_metrics(
+    outputs: dict,
+    targets: torch.Tensor
+) -> dict:
+    """
+    Compute metrics for binary auxiliary heads.
+
+    Args:
+        outputs: Model outputs dict with 'boundary' and 'wicket' keys
+        targets: Ground truth 7-class labels
+
+    Returns:
+        Dict with boundary_accuracy, wicket_recall, wicket_precision
+    """
+    with torch.no_grad():
+        # Boundary metrics
+        boundary_target = ((targets == 4) | (targets == 5))
+        boundary_pred = outputs['boundary'].squeeze(-1) > 0  # sigmoid > 0.5
+
+        boundary_correct = (boundary_pred == boundary_target).float().mean()
+
+        # Wicket metrics
+        wicket_target = (targets == 6)
+        wicket_pred = outputs['wicket'].squeeze(-1) > 0
+
+        # Recall: of actual wickets, how many did we predict?
+        true_wickets = wicket_target.sum()
+        if true_wickets > 0:
+            correct_wickets = (wicket_pred & wicket_target).sum()
+            wicket_recall = (correct_wickets / true_wickets).item()
+        else:
+            wicket_recall = 0.0
+
+        # Precision: of predicted wickets, how many were correct?
+        pred_wickets = wicket_pred.sum()
+        if pred_wickets > 0:
+            correct_wickets = (wicket_pred & wicket_target).sum()
+            wicket_precision = (correct_wickets / pred_wickets).item()
+        else:
+            wicket_precision = 0.0
+
+    return {
+        'boundary_accuracy': boundary_correct.item(),
+        'wicket_recall': wicket_recall,
+        'wicket_precision': wicket_precision,
+    }

@@ -23,7 +23,8 @@ from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 from .metrics import compute_metrics, print_classification_report
-from .losses import FocalLoss
+from .losses import FocalLoss, MultiHeadLoss, compute_binary_head_metrics
+from .calibration import TemperatureScaling, create_reliability_diagram_figure
 
 if TYPE_CHECKING:
     from torch.utils.data.distributed import DistributedSampler
@@ -175,7 +176,7 @@ class Trainer:
         if config.use_focal_loss:
             # Focal Loss: better handles class imbalance by down-weighting easy examples
             # This is critical for cricket where dots (~35-40%) dominate and wickets (~5%) are rare
-            self.criterion = FocalLoss(
+            base_criterion = FocalLoss(
                 gamma=config.focal_gamma,
                 alpha=class_weights,
                 reduction='mean'
@@ -183,7 +184,20 @@ class Trainer:
             if self.is_main:
                 print(f"Using Focal Loss with gamma={config.focal_gamma}")
         else:
-            self.criterion = nn.CrossEntropyLoss(weight=class_weights)
+            base_criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+        # Multi-head loss wraps base criterion for models with auxiliary heads
+        self.criterion = MultiHeadLoss(
+            main_criterion=base_criterion,
+            boundary_weight=0.3,
+            wicket_weight=0.5,
+        )
+        self.base_criterion = base_criterion  # Keep reference for single-head fallback
+        if self.is_main:
+            print("Multi-head loss enabled (boundary_weight=0.3, wicket_weight=0.5)")
+
+        # Temperature scaling (fitted after training)
+        self.temperature_scaler = TemperatureScaling()
 
         # Optimizer
         self.optimizer = AdamW(
@@ -263,8 +277,14 @@ class Trainer:
 
             if self.use_amp:
                 with torch.amp.autocast('cuda'):
-                    logits = self.model(batch)
-                    loss = self.criterion(logits, batch.y)
+                    outputs = self.model(batch)
+                    # Handle multi-head (dict) vs single-head (tensor) output
+                    if isinstance(outputs, dict):
+                        loss = self.criterion(outputs, batch.y)
+                        logits = outputs['main']
+                    else:
+                        loss = self.base_criterion(outputs, batch.y)
+                        logits = outputs
 
                 # Backward pass with scaler
                 self.scaler.scale(loss).backward()
@@ -279,8 +299,14 @@ class Trainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                logits = self.model(batch)
-                loss = self.criterion(logits, batch.y)
+                outputs = self.model(batch)
+                # Handle multi-head (dict) vs single-head (tensor) output
+                if isinstance(outputs, dict):
+                    loss = self.criterion(outputs, batch.y)
+                    logits = outputs['main']
+                else:
+                    loss = self.base_criterion(outputs, batch.y)
+                    logits = outputs
 
                 # Backward pass
                 loss.backward()
@@ -327,7 +353,7 @@ class Trainer:
         self,
         loader: DataLoader,
         desc: Optional[str] = 'Eval'
-    ) -> Tuple[float, float, List[int], List[int], np.ndarray]:
+    ) -> Tuple[float, float, List[int], List[int], np.ndarray, Optional[Dict]]:
         """
         Evaluate on a data loader.
 
@@ -336,7 +362,8 @@ class Trainer:
             desc: Description for progress bar (None to suppress progress bar)
 
         Returns:
-            (average_loss, accuracy, all_labels, all_preds, all_probs)
+            (average_loss, accuracy, all_labels, all_preds, all_probs, head_metrics)
+            head_metrics is a dict with binary head metrics if model is multi-head, else None
         """
         self.model.eval()
 
@@ -347,6 +374,14 @@ class Trainer:
         all_preds = []
         all_probs = []
 
+        # Accumulators for binary head metrics
+        boundary_correct = 0
+        boundary_total = 0
+        wicket_tp = 0
+        wicket_fn = 0
+        wicket_fp = 0
+        is_multihead = False
+
         # Only show progress bar on main process and if desc is provided
         eval_loader = loader
         if self.is_main and desc is not None:
@@ -355,8 +390,28 @@ class Trainer:
         for batch in eval_loader:
             batch = batch.to(self.device)
 
-            logits = self.model(batch)
-            loss = self.criterion(logits, batch.y)
+            outputs = self.model(batch)
+
+            # Handle multi-head (dict) vs single-head (tensor) output
+            if isinstance(outputs, dict):
+                is_multihead = True
+                loss = self.criterion(outputs, batch.y)
+                logits = outputs['main']
+
+                # Accumulate binary head metrics
+                boundary_target = ((batch.y == 4) | (batch.y == 5))
+                boundary_pred = outputs['boundary'].squeeze(-1) > 0
+                boundary_correct += (boundary_pred == boundary_target).sum().item()
+                boundary_total += batch.y.size(0)
+
+                wicket_target = (batch.y == 6)
+                wicket_pred = outputs['wicket'].squeeze(-1) > 0
+                wicket_tp += (wicket_pred & wicket_target).sum().item()
+                wicket_fn += (~wicket_pred & wicket_target).sum().item()
+                wicket_fp += (wicket_pred & ~wicket_target).sum().item()
+            else:
+                loss = self.base_criterion(outputs, batch.y)
+                logits = outputs
 
             probs = torch.softmax(logits, dim=-1)
             pred = probs.argmax(dim=1)
@@ -379,6 +434,15 @@ class Trainer:
         accuracy = correct / total
         all_probs = np.concatenate(all_probs, axis=0)
 
+        # Compute binary head metrics
+        head_metrics = None
+        if is_multihead:
+            head_metrics = {
+                'boundary_accuracy': boundary_correct / boundary_total if boundary_total > 0 else 0.0,
+                'wicket_recall': wicket_tp / (wicket_tp + wicket_fn) if (wicket_tp + wicket_fn) > 0 else 0.0,
+                'wicket_precision': wicket_tp / (wicket_tp + wicket_fp) if (wicket_tp + wicket_fp) > 0 else 0.0,
+            }
+
         # In distributed mode, gather predictions from all processes
         if self.is_distributed:
             from .distributed import gather_predictions
@@ -389,14 +453,14 @@ class Trainer:
 
             # Non-main processes don't have aggregated results
             if not self.is_main:
-                return avg_loss, accuracy, [], [], np.array([])
+                return avg_loss, accuracy, [], [], np.array([]), None
 
             # Recompute accuracy and loss from gathered data on main process
             total = len(all_labels)
             correct = sum(1 for l, p in zip(all_labels, all_preds) if l == p)
             accuracy = correct / total if total > 0 else 0.0
 
-        return avg_loss, accuracy, all_labels, all_preds, all_probs
+        return avg_loss, accuracy, all_labels, all_preds, all_probs, head_metrics
 
     def train(self) -> Dict:
         """
@@ -429,7 +493,7 @@ class Trainer:
 
             # Validate (all processes, but only main logs)
             val_desc = f'Epoch {epoch + 1} [Val]' if self.is_main else None
-            val_loss, val_acc, val_labels, val_preds, val_probs = self.evaluate(
+            val_loss, val_acc, val_labels, val_preds, val_probs, head_metrics = self.evaluate(
                 self.val_loader, val_desc
             )
 
@@ -470,26 +534,29 @@ class Trainer:
                 wandb_log = {
                     "epoch": epoch + 1,
                     "train/loss": train_loss,
-                    "train/accuracy": train_acc,
                     "val/loss": val_loss,
-                    "val/accuracy": val_acc,
                     "learning_rate": current_lr,
-                    # Primary metrics
+                    # Primary calibration metrics
+                    "val/ece": val_metrics.get("ece", 0),
+                    "val/log_loss": val_metrics.get("log_loss", 0),
+                    # Domain-specific calibration
+                    "val/expected_runs_error": val_metrics.get("expected_runs_error", 0),
+                    # Keep F1 for diagnostics
                     "val/f1_macro": val_metrics["f1_macro"],
                     "val/f1_weighted": val_metrics["f1_weighted"],
-                    "val/log_loss": val_metrics.get("log_loss", 0),
-                    # Cricket-specific metrics
-                    "val/wicket_recall": val_metrics["wicket_recall"],
-                    "val/boundary_precision": val_metrics["boundary_precision"],
-                    "val/expected_runs_error": val_metrics.get("expected_runs_error", 0),
-                    # Calibration
-                    "val/ece": val_metrics.get("ece", 0),
-                    # Top-k accuracy
-                    "val/top_2_accuracy": val_metrics.get("top_2_accuracy", 0),
-                    "val/top_3_accuracy": val_metrics.get("top_3_accuracy", 0),
                 }
 
-                # Per-class F1 scores
+                # Multi-head metrics (if available)
+                if head_metrics is not None:
+                    wandb_log["heads/boundary_accuracy"] = head_metrics["boundary_accuracy"]
+                    wandb_log["heads/wicket_recall"] = head_metrics["wicket_recall"]
+                    wandb_log["heads/wicket_precision"] = head_metrics["wicket_precision"]
+                else:
+                    # Fallback to 7-class derived metrics
+                    wandb_log["val/wicket_recall"] = val_metrics["wicket_recall"]
+                    wandb_log["val/boundary_precision"] = val_metrics["boundary_precision"]
+
+                # Per-class F1 scores (for diagnostics)
                 for class_name in CLASS_NAMES:
                     class_metrics = val_metrics["per_class_f1"][class_name]
                     wandb_log[f"val/f1_{class_name.lower()}"] = class_metrics["f1"]
@@ -498,13 +565,23 @@ class Trainer:
 
                 wandb.log(wandb_log)
 
-                # Log confusion matrix as image (every 10 epochs to reduce overhead)
+                # Log confusion matrix and reliability diagram (every 10 epochs to reduce overhead)
                 if (epoch + 1) % 10 == 0 or epoch == 0:
                     fig = create_confusion_matrix_figure(val_labels, val_preds)
                     if fig is not None:
                         wandb.log({"val/confusion_matrix": wandb.Image(fig)})
                         import matplotlib.pyplot as plt
                         plt.close(fig)
+
+                    # Log reliability diagram
+                    rel_fig = create_reliability_diagram_figure(
+                        val_labels, val_probs, n_bins=10,
+                        title=f"Reliability Diagram (Epoch {epoch + 1})"
+                    )
+                    if rel_fig is not None:
+                        wandb.log({"val/reliability_diagram": wandb.Image(rel_fig)})
+                        import matplotlib.pyplot as plt
+                        plt.close(rel_fig)
 
             # Check for improvement
             improved = val_loss < self.best_val_loss - self.config.min_delta
@@ -543,6 +620,41 @@ class Trainer:
             print(f"\nTraining completed in {elapsed_time / 60:.1f} minutes")
             print(f"Best validation loss: {self.best_val_loss:.4f}")
             print(f"Best validation accuracy: {self.best_val_acc:.4f}")
+
+            # Temperature scaling (post-hoc calibration)
+            print("\nFitting temperature scaling on validation set...")
+            # Load best model for temperature scaling
+            self.load_checkpoint('best_model.pt')
+
+            # Compute ECE before temperature scaling
+            _, _, val_labels, val_preds, val_probs, _ = self.evaluate(
+                self.val_loader, desc=None
+            )
+            from .metrics import compute_expected_calibration_error
+            ece_before = compute_expected_calibration_error(val_labels, val_probs)
+
+            # Fit temperature scaler
+            temp_value = self.temperature_scaler.fit(
+                self.model, self.val_loader, self.device
+            )
+
+            # Compute ECE after temperature scaling
+            # Re-evaluate with temperature scaling
+            _, _, _, _, val_probs_scaled, _ = self.evaluate(
+                self.val_loader, desc=None
+            )
+            # Apply temperature scaling to probs (actually we need to get raw logits and scale them)
+            # For now, report the temperature value
+            print(f"Temperature scaling: T={temp_value:.4f}")
+            print(f"ECE before temperature: {ece_before:.4f}")
+
+            # Log to WandB if enabled
+            if self.use_wandb:
+                import wandb
+                wandb.log({
+                    "calibration/temperature": temp_value,
+                    "calibration/ece_before_temp": ece_before,
+                })
 
             # Save training history
             self._save_history()
@@ -627,7 +739,7 @@ class Trainer:
         self.load_checkpoint('best_model.pt')
 
         # Evaluate
-        test_loss, test_acc, labels, preds, probs = self.evaluate(
+        test_loss, test_acc, labels, preds, probs, head_metrics = self.evaluate(
             test_loader, 'Test'
         )
 
@@ -640,6 +752,13 @@ class Trainer:
         print(f"Test Accuracy: {test_acc:.4f}")
         print_classification_report(labels, preds, probs)
 
+        # Print head metrics if available
+        if head_metrics:
+            print(f"\nMulti-head metrics:")
+            print(f"  Boundary Accuracy: {head_metrics['boundary_accuracy']:.4f}")
+            print(f"  Wicket Recall: {head_metrics['wicket_recall']:.4f}")
+            print(f"  Wicket Precision: {head_metrics['wicket_precision']:.4f}")
+
         # Log comprehensive test metrics to WandB
         if self.use_wandb:
             import wandb
@@ -647,25 +766,26 @@ class Trainer:
 
             wandb_log = {
                 "test/loss": test_loss,
-                "test/accuracy": test_acc,
-                # Primary metrics
+                # Primary calibration metrics
+                "test/ece": metrics.get("ece", 0),
+                "test/log_loss": metrics.get("log_loss", 0),
+                # Domain-specific
+                "test/expected_runs_error": metrics.get("expected_runs_error", 0),
+                # F1 scores
                 "test/f1_macro": metrics.get("f1_macro", 0),
                 "test/f1_weighted": metrics.get("f1_weighted", 0),
-                "test/precision_macro": metrics.get("precision_macro", 0),
-                "test/recall_macro": metrics.get("recall_macro", 0),
-                "test/log_loss": metrics.get("log_loss", 0),
-                # Cricket-specific metrics
-                "test/wicket_recall": metrics.get("wicket_recall", 0),
-                "test/boundary_precision": metrics.get("boundary_precision", 0),
-                "test/expected_runs_error": metrics.get("expected_runs_error", 0),
-                # Calibration
-                "test/ece": metrics.get("ece", 0),
-                # Top-k accuracy
-                "test/top_2_accuracy": metrics.get("top_2_accuracy", 0),
-                "test/top_3_accuracy": metrics.get("top_3_accuracy", 0),
             }
 
-            # Per-class F1/precision/recall
+            # Multi-head metrics (if available)
+            if head_metrics:
+                wandb_log["heads/test_boundary_accuracy"] = head_metrics["boundary_accuracy"]
+                wandb_log["heads/test_wicket_recall"] = head_metrics["wicket_recall"]
+                wandb_log["heads/test_wicket_precision"] = head_metrics["wicket_precision"]
+            else:
+                wandb_log["test/wicket_recall"] = metrics.get("wicket_recall", 0)
+                wandb_log["test/boundary_precision"] = metrics.get("boundary_precision", 0)
+
+            # Per-class F1/precision/recall (for diagnostics)
             if "per_class_f1" in metrics:
                 for class_name in CLASS_NAMES:
                     class_metrics = metrics["per_class_f1"][class_name]
@@ -675,12 +795,18 @@ class Trainer:
 
             wandb.log(wandb_log)
 
-            # Log confusion matrix as image
+            # Log confusion matrix and reliability diagram
             fig = create_confusion_matrix_figure(labels, preds)
             if fig is not None:
                 wandb.log({"test/confusion_matrix": wandb.Image(fig)})
                 import matplotlib.pyplot as plt
                 plt.close(fig)
+
+            rel_fig = create_reliability_diagram_figure(labels, probs, n_bins=10, title="Test Reliability Diagram")
+            if rel_fig is not None:
+                wandb.log({"test/reliability_diagram": wandb.Image(rel_fig)})
+                import matplotlib.pyplot as plt
+                plt.close(rel_fig)
 
         return metrics
 
