@@ -304,7 +304,6 @@ def create_dataloaders(
     num_workers: int = 4,
     raw_data_dir: Optional[str] = None,
     train_fraction: float = 1.0,
-    prefetch_factor: int = 2,
     **dataset_kwargs
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
@@ -319,8 +318,6 @@ def create_dataloaders(
         train_fraction: Fraction of data to use (default: 1.0).
                        Values < 1.0 create random subsets for faster HP search.
                        Applied to train, val, and test sets.
-        prefetch_factor: Number of batches each worker prefetches ahead (default: 2).
-                        Higher values keep GPU fed but use more memory.
         **dataset_kwargs: Additional arguments for CricketDataset
                          (min_history, train_ratio, val_ratio, seed, etc.)
 
@@ -353,11 +350,9 @@ def create_dataloaders(
         test_indices = torch.randperm(len(test_dataset), generator=test_gen)[:n_test]
         test_dataset = Subset(test_dataset, test_indices.tolist())
 
-    # prefetch_factor and persistent_workers require num_workers > 0
     # persistent_workers keeps workers alive between epochs, eliminating spawn overhead
     worker_kwargs = {}
     if num_workers > 0:
-        worker_kwargs['prefetch_factor'] = prefetch_factor
         worker_kwargs['persistent_workers'] = True
 
     train_loader = DataLoader(
@@ -397,7 +392,6 @@ def create_dataloaders_distributed(
     raw_data_dir: Optional[str] = None,
     rank: int = 0,
     world_size: int = 1,
-    prefetch_factor: int = 2,
     **dataset_kwargs
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[DistributedSampler],
            Optional[DistributedSampler], Optional[DistributedSampler]]:
@@ -420,8 +414,6 @@ def create_dataloaders_distributed(
         raw_data_dir: Directory containing raw JSON match files
         rank: Global rank of current process (0 to world_size-1)
         world_size: Total number of processes
-        prefetch_factor: Number of batches each worker prefetches ahead (default: 2).
-                        Higher values keep GPU fed but use more memory.
         **dataset_kwargs: Additional arguments for CricketDataset
                          (min_history, train_ratio, val_ratio, seed, etc.)
 
@@ -483,11 +475,9 @@ def create_dataloaders_distributed(
             drop_last=False,
         )
 
-    # prefetch_factor and persistent_workers require num_workers > 0
     # persistent_workers keeps workers alive between epochs, eliminating spawn overhead
     worker_kwargs = {}
     if num_workers > 0:
-        worker_kwargs['prefetch_factor'] = prefetch_factor
         worker_kwargs['persistent_workers'] = True
 
     train_loader = DataLoader(

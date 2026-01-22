@@ -159,6 +159,14 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
 
+        # GPU prefetching - async transfer of next batch while current processes
+        if str(self.device).startswith('cuda'):
+            from torch_geometric.loader import PrefetchLoader
+            self.train_loader = PrefetchLoader(self.train_loader, device=self.device)
+            self.val_loader = PrefetchLoader(self.val_loader, device=self.device)
+            if self.is_main:
+                print("GPU prefetching enabled")
+
         # Loss
         if class_weights is not None:
             class_weights = class_weights.to(self.device)
@@ -607,6 +615,11 @@ class Trainer:
         Returns:
             Dict with test metrics
         """
+        # Wrap with prefetch if on GPU
+        if str(self.device).startswith('cuda'):
+            from torch_geometric.loader import PrefetchLoader
+            test_loader = PrefetchLoader(test_loader, device=self.device)
+
         print("\nEvaluating on test set...")
 
         # Load best model
