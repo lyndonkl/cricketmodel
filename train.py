@@ -100,17 +100,21 @@ def parse_args():
         default=64,
         help="Batch size per GPU (effective batch = batch_size * num_gpus)"
     )
+    # DataLoader worker configuration
+    # For small batch counts (~88 batches total), 4 workers with prefetch 2 is plenty.
+    # More workers add overhead without benefit. With persistent_workers=True,
+    # workers stay alive between epochs, eliminating spawn overhead.
     parser.add_argument(
         "--num-workers",
         type=int,
         default=4,
-        help="Number of data loading workers per GPU"
+        help="Number of data loading workers per GPU (4 is optimal for most cases)"
     )
     parser.add_argument(
         "--prefetch-factor",
         type=int,
         default=2,
-        help="Number of batches each worker prefetches ahead (default: 2)"
+        help="Batches each worker prefetches ahead (default: 2, higher uses more memory)"
     )
     parser.add_argument(
         "--ollama-workers",
@@ -388,7 +392,8 @@ def main():
         print(f"Processed cache: {args.processed_dir}")
 
     if ddp_enabled:
-        train_loader, val_loader, test_loader, train_sampler = create_dataloaders_distributed(
+        (train_loader, val_loader, test_loader,
+         train_sampler, val_sampler, test_sampler) = create_dataloaders_distributed(
             root=args.processed_dir,
             raw_data_dir=args.data_dir,
             batch_size=args.batch_size,
@@ -412,6 +417,8 @@ def main():
             ollama_workers=args.ollama_workers,
         )
         train_sampler = None
+        val_sampler = None
+        test_sampler = None
 
     # Access datasets for metadata and stats
     train_dataset = train_loader.dataset

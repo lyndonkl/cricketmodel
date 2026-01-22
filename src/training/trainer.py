@@ -370,6 +370,23 @@ class Trainer:
         accuracy = correct / total
         all_probs = np.concatenate(all_probs, axis=0)
 
+        # In distributed mode, gather predictions from all processes
+        if self.is_distributed:
+            from .distributed import gather_predictions
+
+            all_labels, all_preds, all_probs = gather_predictions(
+                all_labels, all_preds, all_probs, self.device
+            )
+
+            # Non-main processes don't have aggregated results
+            if not self.is_main:
+                return avg_loss, accuracy, [], [], np.array([])
+
+            # Recompute accuracy and loss from gathered data on main process
+            total = len(all_labels)
+            correct = sum(1 for l, p in zip(all_labels, all_preds) if l == p)
+            accuracy = correct / total if total > 0 else 0.0
+
         return avg_loss, accuracy, all_labels, all_preds, all_probs
 
     def train(self) -> Dict:

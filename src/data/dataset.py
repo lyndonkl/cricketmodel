@@ -353,8 +353,12 @@ def create_dataloaders(
         test_indices = torch.randperm(len(test_dataset), generator=test_gen)[:n_test]
         test_dataset = Subset(test_dataset, test_indices.tolist())
 
-    # prefetch_factor requires num_workers > 0
-    prefetch_kwargs = {'prefetch_factor': prefetch_factor} if num_workers > 0 else {}
+    # prefetch_factor and persistent_workers require num_workers > 0
+    # persistent_workers keeps workers alive between epochs, eliminating spawn overhead
+    worker_kwargs = {}
+    if num_workers > 0:
+        worker_kwargs['prefetch_factor'] = prefetch_factor
+        worker_kwargs['persistent_workers'] = True
 
     train_loader = DataLoader(
         train_dataset,
@@ -362,7 +366,7 @@ def create_dataloaders(
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
-        **prefetch_kwargs,
+        **worker_kwargs,
     )
 
     val_loader = DataLoader(
@@ -371,7 +375,7 @@ def create_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
-        **prefetch_kwargs,
+        **worker_kwargs,
     )
 
     test_loader = DataLoader(
@@ -380,7 +384,7 @@ def create_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
-        **prefetch_kwargs,
+        **worker_kwargs,
     )
 
     return train_loader, val_loader, test_loader
@@ -395,7 +399,8 @@ def create_dataloaders_distributed(
     world_size: int = 1,
     prefetch_factor: int = 2,
     **dataset_kwargs
-) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[DistributedSampler]]:
+) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[DistributedSampler],
+           Optional[DistributedSampler], Optional[DistributedSampler]]:
     """
     Create train, validation, and test dataloaders with DDP support.
 
@@ -406,7 +411,7 @@ def create_dataloaders_distributed(
     - DistributedSampler ensures each GPU gets unique data
     - shuffle=False in DataLoader when using sampler (sampler handles shuffling)
     - drop_last=True ensures all GPUs have same batch count
-    - Returns train_sampler so set_epoch() can be called each epoch
+    - Returns all samplers so set_epoch() can be called each epoch
 
     Args:
         root: Root directory for processed data cache
@@ -421,18 +426,19 @@ def create_dataloaders_distributed(
                          (min_history, train_ratio, val_ratio, seed, etc.)
 
     Returns:
-        Tuple of (train_loader, val_loader, test_loader, train_sampler)
-        train_sampler is returned so set_epoch() can be called each epoch
-        for proper shuffling in DDP mode.
+        Tuple of (train_loader, val_loader, test_loader, train_sampler, val_sampler, test_sampler)
+        Samplers are returned so set_epoch() can be called each epoch for proper shuffling.
+        Val/test samplers enable distributed evaluation for significant speedup.
 
     Example:
         # In train.py with DDP
-        train_loader, val_loader, test_loader, train_sampler = create_dataloaders_distributed(
+        loaders = create_dataloaders_distributed(
             root="data/processed",
             batch_size=64,
             rank=rank,
             world_size=world_size,
         )
+        train_loader, val_loader, test_loader, train_sampler, val_sampler, test_sampler = loaders
 
         # In training loop
         for epoch in range(epochs):
@@ -444,8 +450,10 @@ def create_dataloaders_distributed(
     val_dataset = CricketDataset(root, split='val', raw_data_dir=raw_data_dir, **dataset_kwargs)
     test_dataset = CricketDataset(root, split='test', raw_data_dir=raw_data_dir, **dataset_kwargs)
 
-    # Create distributed sampler for training data
+    # Create distributed samplers for all splits
     train_sampler = None
+    val_sampler = None
+    test_sampler = None
     shuffle_train = True
 
     if world_size > 1:
@@ -458,8 +466,29 @@ def create_dataloaders_distributed(
         )
         shuffle_train = False  # Sampler handles shuffling
 
-    # prefetch_factor requires num_workers > 0
-    prefetch_kwargs = {'prefetch_factor': prefetch_factor} if num_workers > 0 else {}
+        # Val/test samplers for distributed evaluation (significant speedup)
+        # drop_last=False to keep all samples for accurate metrics
+        val_sampler = DistributedSampler(
+            val_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
+        test_sampler = DistributedSampler(
+            test_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
+
+    # prefetch_factor and persistent_workers require num_workers > 0
+    # persistent_workers keeps workers alive between epochs, eliminating spawn overhead
+    worker_kwargs = {}
+    if num_workers > 0:
+        worker_kwargs['prefetch_factor'] = prefetch_factor
+        worker_kwargs['persistent_workers'] = True
 
     train_loader = DataLoader(
         train_dataset,
@@ -469,30 +498,31 @@ def create_dataloaders_distributed(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True if world_size > 1 else False,
-        **prefetch_kwargs,
+        **worker_kwargs,
     )
 
-    # Validation and test don't need distributed sampling
-    # (we could add it for faster eval, but metrics must be gathered)
+    # Validation and test use distributed sampling for faster evaluation
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=val_sampler,
         num_workers=num_workers,
         pin_memory=True,
-        **prefetch_kwargs,
+        **worker_kwargs,
     )
 
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=test_sampler,
         num_workers=num_workers,
         pin_memory=True,
-        **prefetch_kwargs,
+        **worker_kwargs,
     )
 
-    return train_loader, val_loader, test_loader, train_sampler
+    return train_loader, val_loader, test_loader, train_sampler, val_sampler, test_sampler
 
 
 def compute_class_weights(
