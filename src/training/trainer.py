@@ -155,7 +155,8 @@ class Trainer:
                     find_unused_parameters=True,
                 )
 
-        # Data
+        # Data - store batch_size before wrapping (PrefetchLoader doesn't expose it)
+        self.batch_size = train_loader.batch_size
         self.train_loader = train_loader
         self.val_loader = val_loader
 
@@ -410,7 +411,7 @@ class Trainer:
             print(f"Val batches: {len(self.val_loader)}")
             if self.is_distributed:
                 print(f"World size: {self.world_size}")
-                print(f"Effective batch size: {self.train_loader.batch_size * self.world_size}")
+                print(f"Effective batch size: {self.batch_size * self.world_size}")
             print()
 
         start_time = time.time()
