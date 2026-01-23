@@ -345,19 +345,12 @@ def create_objective(
             trainer.load_checkpoint("best_model.pt")
             test_loss, test_head_metrics = trainer.evaluate(test_loader, desc=None)
 
-            # Use combination of boundary accuracy and wicket recall as objective
-            # Wicket recall is weighted higher because it's the harder problem
-            objective_score = (
-                0.3 * test_head_metrics["boundary_accuracy"] +
-                0.7 * test_head_metrics["wicket_recall"]
-            )
-
             print(f"\n  Trial {trial.number} completed:")
+            print(f"    Best Val Loss: {trainer.best_val_loss:.4f}")
             print(f"    Test Loss: {test_loss:.4f}")
             print(f"    Boundary Accuracy: {test_head_metrics['boundary_accuracy']:.4f}")
             print(f"    Wicket Recall: {test_head_metrics['wicket_recall']:.4f}")
             print(f"    Wicket Precision: {test_head_metrics['wicket_precision']:.4f}")
-            print(f"    Objective Score: {objective_score:.4f}")
 
             # 9. Store additional metrics as trial attributes
             trial.set_user_attr("model_class", model_class_name)
@@ -368,7 +361,8 @@ def create_objective(
             trial.set_user_attr("best_val_loss", trainer.best_val_loss)
             trial.set_user_attr("epochs_trained", epoch + 1)
 
-            return objective_score
+            # Return best validation loss as objective (minimizing)
+            return trainer.best_val_loss
 
         except optuna.TrialPruned:
             raise
@@ -378,7 +372,7 @@ def create_objective(
                 print(f"  Trial {trial.number} failed with OOM error - returning worst score")
                 torch.cuda.empty_cache()
                 trial.set_user_attr("oom_error", True)
-                return float("-inf")  # Return worst score so trial is not selected
+                return float("inf")  # Return worst score (high loss) so trial is not selected
             print(f"  Trial {trial.number} failed with error: {e}")
             raise
         except Exception as e:
@@ -474,7 +468,7 @@ def run_phase(
         storage=storage,
         sampler=sampler,
         pruner=pruner,
-        direction="maximize",  # Maximize F1 macro
+        direction="minimize",  # Minimize validation loss
         load_if_exists=True,
     )
 
