@@ -113,20 +113,7 @@ class CricketHeteroGNN(nn.Module):
             dropout=config.dropout,
         )
 
-        # === Main Prediction Head (7-class) ===
-        self.predictor = nn.Sequential(
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.LayerNorm(config.hidden_dim),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-            nn.LayerNorm(config.hidden_dim // 2),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim // 2, config.num_classes),
-        )
-
-        # === Binary Auxiliary Heads ===
+        # === Binary Prediction Heads ===
         # Boundary head: predicts if next ball is a Four or Six
         self.boundary_head = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim // 2),
@@ -160,16 +147,15 @@ class CricketHeteroGNN(nn.Module):
 
     def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with multi-head output.
+        Forward pass with binary prediction heads.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
             Dict with keys:
-            - 'main': 7-class logits [batch_size, num_classes]
-            - 'boundary': binary logits [batch_size, 1]
-            - 'wicket': binary logits [batch_size, 1]
+            - 'boundary': binary logits [batch_size, 1] for Four/Six prediction
+            - 'wicket': binary logits [batch_size, 1] for wicket prediction
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -189,9 +175,8 @@ class CricketHeteroGNN(nn.Module):
         # 3. Get readout representation (subclasses can override get_readout)
         readout = self.get_readout(data, x_dict)
 
-        # 4. Multi-head predictions
+        # 4. Binary predictions
         return {
-            'main': self.predictor(readout),           # [batch_size, 7]
             'boundary': self.boundary_head(readout),   # [batch_size, 1]
             'wicket': self.wicket_head(readout),       # [batch_size, 1]
         }
@@ -464,13 +449,13 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
 
     def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with phase-conditioned message passing and multi-head output.
+        Forward pass with phase-conditioned message passing and binary heads.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Dict with 'main', 'boundary', 'wicket' keys
+            Dict with 'boundary', 'wicket' keys
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -496,9 +481,8 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
         # 4. Get readout using hybrid method (inherited from CricketHeteroGNNHybrid)
         readout = self.get_readout(data, x_dict)
 
-        # 5. Multi-head predictions
+        # 5. Binary predictions
         return {
-            'main': self.predictor(readout),
             'boundary': self.boundary_head(readout),
             'wicket': self.wicket_head(readout),
         }
@@ -604,9 +588,8 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
         is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_logits)
         main_logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
 
-        # 6. Multi-head predictions (boundary/wicket use same readout for both innings)
+        # 6. Binary predictions (boundary/wicket use same readout for both innings)
         return {
-            'main': main_logits,
             'boundary': self.boundary_head(readout),
             'wicket': self.wicket_head(readout),
         }
@@ -766,13 +749,13 @@ class CricketHeteroGNNFull(nn.Module):
 
     def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with all enhancements and multi-head output.
+        Forward pass with all enhancements and binary heads.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Dict with 'main', 'boundary', 'wicket' keys
+            Dict with 'boundary', 'wicket' keys
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -828,25 +811,8 @@ class CricketHeteroGNNFull(nn.Module):
         readout = torch.cat([matchup, query], dim=-1)
         readout = self.combiner(readout)
 
-        # 4. Main prediction (innings-conditional or single head)
-        if self.config.use_innings_conditional:
-            chase_state = data['chase_state'].x
-            is_chase = data.is_chase
-            if is_chase.dim() > 1:
-                is_chase = is_chase.squeeze(-1)
-
-            first_innings_logits = self.first_innings_head(readout)
-            readout_with_chase = torch.cat([readout, chase_state], dim=-1)
-            second_innings_logits = self.second_innings_head(readout_with_chase)
-
-            is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_logits)
-            main_logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
-        else:
-            main_logits = self.predictor(readout)
-
-        # 5. Multi-head predictions
+        # 4. Binary predictions
         return {
-            'main': main_logits,
             'boundary': self.boundary_head(readout),
             'wicket': self.wicket_head(readout),
         }

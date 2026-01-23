@@ -222,40 +222,105 @@ def compute_class_weights_effective_samples(
     return weights
 
 
-class MultiHeadLoss(nn.Module):
+class BinaryFocalLoss(nn.Module):
     """
-    Combined loss for multi-head prediction (7-class main + binary auxiliary heads).
+    Binary Focal Loss for handling class imbalance in binary classification.
+
+    Focal Loss down-weights easy examples and focuses on hard examples.
+    For binary classification: FL = -α * (1-p)^γ * log(p) for positive class
+                               FL = -(1-α) * p^γ * log(1-p) for negative class
+
+    Args:
+        alpha: Weight for positive class (default: 0.25).
+               Set to positive class frequency for balanced weighting.
+        gamma: Focusing parameter (default: 2.0).
+               Higher gamma = more focus on hard examples.
+        reduction: 'mean' | 'sum' | 'none' (default: 'mean')
+    """
+
+    def __init__(
+        self,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
+        reduction: str = 'mean'
+    ):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Compute binary focal loss.
+
+        Args:
+            logits: Model predictions [batch_size] (raw logits, not sigmoid)
+            targets: Ground truth binary labels [batch_size] (0 or 1)
+
+        Returns:
+            Focal loss value
+        """
+        # Compute probabilities
+        probs = torch.sigmoid(logits)
+
+        # Compute focal weights
+        # For positive class (target=1): weight = alpha * (1-p)^gamma
+        # For negative class (target=0): weight = (1-alpha) * p^gamma
+        p_t = probs * targets + (1 - probs) * (1 - targets)
+        alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+        focal_weight = alpha_t * (1 - p_t) ** self.gamma
+
+        # Binary cross-entropy (without reduction)
+        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+
+        # Apply focal weight
+        focal_loss = focal_weight * bce
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
+class BinaryHeadLoss(nn.Module):
+    """
+    Combined loss for binary prediction heads (boundary + wicket).
+
+    Uses Binary Focal Loss to handle class imbalance in each head.
 
     This loss combines:
-    1. Main 7-class loss (Focal or CrossEntropy) for outcome prediction
-    2. Binary boundary loss for Four/Six detection
-    3. Binary wicket loss for wicket detection
-
-    The binary heads are auxiliary tasks that help the model learn better
-    representations for critical outcomes (boundaries and wickets).
+    1. Binary boundary loss for Four/Six detection
+    2. Binary wicket loss for wicket detection
 
     Binary targets are derived from 7-class labels at loss computation time:
     - Boundary: class 4 (Four) or class 5 (Six)
     - Wicket: class 6 (Wicket)
 
     Args:
-        main_criterion: Loss function for 7-class prediction (e.g., FocalLoss)
-        boundary_weight: Weight for boundary binary loss (default: 0.3)
-        wicket_weight: Weight for wicket binary loss (default: 0.5)
-                      Higher because wickets are rare but critical
+        boundary_alpha: Positive class weight for boundary (default: 0.15).
+                       Should be set to boundary rate from class distribution.
+        wicket_alpha: Positive class weight for wicket (default: 0.05).
+                     Should be set to wicket rate from class distribution.
+        gamma: Focal loss focusing parameter (default: 2.0)
+        boundary_weight: Weight for boundary loss in combined loss (default: 1.0)
+        wicket_weight: Weight for wicket loss in combined loss (default: 1.0)
     """
 
     def __init__(
         self,
-        main_criterion: nn.Module,
-        boundary_weight: float = 0.3,
-        wicket_weight: float = 0.5,
+        boundary_alpha: float = 0.15,
+        wicket_alpha: float = 0.05,
+        gamma: float = 2.0,
+        boundary_weight: float = 1.0,
+        wicket_weight: float = 1.0,
     ):
         super().__init__()
-        self.main_criterion = main_criterion
         self.boundary_weight = boundary_weight
         self.wicket_weight = wicket_weight
-        self.bce = nn.BCEWithLogitsLoss()
+        self.boundary_focal = BinaryFocalLoss(alpha=boundary_alpha, gamma=gamma)
+        self.wicket_focal = BinaryFocalLoss(alpha=wicket_alpha, gamma=gamma)
 
     def forward(
         self,
@@ -263,37 +328,32 @@ class MultiHeadLoss(nn.Module):
         targets: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute combined multi-head loss.
+        Compute combined binary head loss.
 
         Args:
-            outputs: Dict with keys 'main', 'boundary', 'wicket'
-                    - main: [batch_size, 7] logits
+            outputs: Dict with keys 'boundary', 'wicket'
                     - boundary: [batch_size, 1] logits
                     - wicket: [batch_size, 1] logits
-            targets: Ground truth class labels [batch_size]
+            targets: Ground truth class labels [batch_size] (7-class)
 
         Returns:
             Combined loss value (scalar)
         """
-        # Main 7-class loss
-        main_loss = self.main_criterion(outputs['main'], targets)
-
         # Derive binary targets from 7-class labels
         # Boundary: Four (4) or Six (5)
         boundary_target = ((targets == 4) | (targets == 5)).float()
         # Wicket: class 6
         wicket_target = (targets == 6).float()
 
-        # Binary losses
+        # Binary focal losses
         boundary_logits = outputs['boundary'].squeeze(-1)  # [batch_size]
         wicket_logits = outputs['wicket'].squeeze(-1)  # [batch_size]
 
-        boundary_loss = self.bce(boundary_logits, boundary_target)
-        wicket_loss = self.bce(wicket_logits, wicket_target)
+        boundary_loss = self.boundary_focal(boundary_logits, boundary_target)
+        wicket_loss = self.wicket_focal(wicket_logits, wicket_target)
 
         # Combined loss
         total_loss = (
-            main_loss +
             self.boundary_weight * boundary_loss +
             self.wicket_weight * wicket_loss
         )
@@ -309,26 +369,23 @@ class MultiHeadLoss(nn.Module):
         Compute loss with individual components for logging.
 
         Returns:
-            Tuple of (total_loss, main_loss, boundary_loss, wicket_loss)
+            Tuple of (total_loss, boundary_loss, wicket_loss)
         """
-        main_loss = self.main_criterion(outputs['main'], targets)
-
         boundary_target = ((targets == 4) | (targets == 5)).float()
         wicket_target = (targets == 6).float()
 
         boundary_logits = outputs['boundary'].squeeze(-1)
         wicket_logits = outputs['wicket'].squeeze(-1)
 
-        boundary_loss = self.bce(boundary_logits, boundary_target)
-        wicket_loss = self.bce(wicket_logits, wicket_target)
+        boundary_loss = self.boundary_focal(boundary_logits, boundary_target)
+        wicket_loss = self.wicket_focal(wicket_logits, wicket_target)
 
         total_loss = (
-            main_loss +
             self.boundary_weight * boundary_loss +
             self.wicket_weight * wicket_loss
         )
 
-        return total_loss, main_loss, boundary_loss, wicket_loss
+        return total_loss, boundary_loss, wicket_loss
 
 
 def compute_binary_head_metrics(

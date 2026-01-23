@@ -7,14 +7,14 @@ from .metrics import (
     plot_confusion_matrix,
 )
 from .calibration import (
-    TemperatureScaling,
     compute_ece_from_tensors,
     compute_reliability_data,
     create_reliability_diagram_figure,
 )
 from .losses import (
     FocalLoss,
-    MultiHeadLoss,
+    BinaryFocalLoss,
+    BinaryHeadLoss,
     compute_binary_head_metrics,
 )
 from .distributed import (
@@ -40,13 +40,13 @@ __all__ = [
     "print_classification_report",
     "plot_confusion_matrix",
     # Calibration
-    "TemperatureScaling",
     "compute_ece_from_tensors",
     "compute_reliability_data",
     "create_reliability_diagram_figure",
     # Losses
     "FocalLoss",
-    "MultiHeadLoss",
+    "BinaryFocalLoss",
+    "BinaryHeadLoss",
     "compute_binary_head_metrics",
     # DDP utilities
     "is_distributed",
