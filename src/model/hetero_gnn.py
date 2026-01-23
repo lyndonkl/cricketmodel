@@ -538,6 +538,14 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
             nn.Linear(config.hidden_dim // 2, config.num_classes),
         )
 
+        # Chase projection: projects readout+chase_state back to hidden_dim for binary heads
+        # This allows the same binary heads to be used for both innings
+        self.chase_projection = nn.Sequential(
+            nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
+            nn.LayerNorm(config.hidden_dim),
+            nn.GELU(),
+        )
+
     def forward(self, data) -> Dict[str, torch.Tensor]:
         """
         Forward pass with innings-conditional prediction heads and multi-head output.
@@ -577,21 +585,28 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
         if is_chase.dim() > 1:
             is_chase = is_chase.squeeze(-1)
 
-        # 5. Compute innings-conditional main logits
-        first_innings_logits = self.first_innings_head(readout)
+        # 5. Compute innings-conditional binary predictions
+        # First innings: use readout directly
+        first_innings_boundary = self.boundary_head(readout)
+        first_innings_wicket = self.wicket_head(readout)
 
-        # Second innings: inject chase state
+        # Second innings: inject chase state into readout
         readout_with_chase = torch.cat([readout, chase_state], dim=-1)
-        second_innings_logits = self.second_innings_head(readout_with_chase)
+        # Project back to original dimension for binary heads
+        readout_chase_proj = self.chase_projection(readout_with_chase)
+        second_innings_boundary = self.boundary_head(readout_chase_proj)
+        second_innings_wicket = self.wicket_head(readout_chase_proj)
 
-        # Select appropriate logits based on innings
-        is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_logits)
-        main_logits = torch.where(is_chase_expanded, second_innings_logits, first_innings_logits)
+        # Select appropriate predictions based on innings
+        is_chase_boundary = is_chase.unsqueeze(-1).expand_as(first_innings_boundary)
+        is_chase_wicket = is_chase.unsqueeze(-1).expand_as(first_innings_wicket)
 
-        # 6. Binary predictions (boundary/wicket use same readout for both innings)
+        boundary_logits = torch.where(is_chase_boundary, second_innings_boundary, first_innings_boundary)
+        wicket_logits = torch.where(is_chase_wicket, second_innings_wicket, first_innings_wicket)
+
         return {
-            'boundary': self.boundary_head(readout),
-            'wicket': self.wicket_head(readout),
+            'boundary': boundary_logits,
+            'wicket': wicket_logits,
         }
 
     def forward_with_head_info(self, data) -> tuple:
@@ -733,6 +748,13 @@ class CricketHeteroGNNFull(nn.Module):
                 nn.Dropout(config.dropout),
                 nn.Linear(config.hidden_dim // 2, config.num_classes),
             )
+
+            # Chase projection for binary heads
+            self.chase_projection = nn.Sequential(
+                nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
+                nn.LayerNorm(config.hidden_dim),
+                nn.GELU(),
+            )
         else:
             # Single prediction head
             self.predictor = nn.Sequential(
@@ -811,11 +833,41 @@ class CricketHeteroGNNFull(nn.Module):
         readout = torch.cat([matchup, query], dim=-1)
         readout = self.combiner(readout)
 
-        # 4. Binary predictions
-        return {
-            'boundary': self.boundary_head(readout),
-            'wicket': self.wicket_head(readout),
-        }
+        # 4. Binary predictions (innings-conditional if enabled)
+        if self.config.use_innings_conditional:
+            chase_state = data['chase_state'].x  # [batch_size, 7]
+            is_chase = data.is_chase  # [batch_size] bool tensor
+
+            # Ensure is_chase is 1D
+            if is_chase.dim() > 1:
+                is_chase = is_chase.squeeze(-1)
+
+            # First innings: use readout directly
+            first_innings_boundary = self.boundary_head(readout)
+            first_innings_wicket = self.wicket_head(readout)
+
+            # Second innings: inject chase state
+            readout_with_chase = torch.cat([readout, chase_state], dim=-1)
+            readout_chase_proj = self.chase_projection(readout_with_chase)
+            second_innings_boundary = self.boundary_head(readout_chase_proj)
+            second_innings_wicket = self.wicket_head(readout_chase_proj)
+
+            # Select based on innings
+            is_chase_boundary = is_chase.unsqueeze(-1).expand_as(first_innings_boundary)
+            is_chase_wicket = is_chase.unsqueeze(-1).expand_as(first_innings_wicket)
+
+            boundary_logits = torch.where(is_chase_boundary, second_innings_boundary, first_innings_boundary)
+            wicket_logits = torch.where(is_chase_wicket, second_innings_wicket, first_innings_wicket)
+
+            return {
+                'boundary': boundary_logits,
+                'wicket': wicket_logits,
+            }
+        else:
+            return {
+                'boundary': self.boundary_head(readout),
+                'wicket': self.wicket_head(readout),
+            }
 
     @classmethod
     def from_dataset_metadata(
