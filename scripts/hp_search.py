@@ -181,6 +181,7 @@ def create_objective(
     test_loader,
     metadata: Dict,
     class_weights: Optional[torch.Tensor],
+    class_distribution: Optional[Dict[str, Dict]],
     device: torch.device,
     search_space: Dict[str, Dict],
     base_params: Dict[str, Any],
@@ -197,6 +198,7 @@ def create_objective(
         test_loader: Test data loader (pre-loaded)
         metadata: Dataset metadata with entity counts
         class_weights: Pre-computed class weights tensor
+        class_distribution: Class distribution dict for binary focal loss alphas
         device: Device to train on
         search_space: Hyperparameter search space for this phase
         base_params: Base hyperparameters (from previous phases or defaults)
@@ -272,6 +274,7 @@ def create_objective(
             val_loader=val_loader,
             config=training_config,
             class_weights=trial_class_weights,
+            class_distribution=class_distribution,
             device=device,
             use_wandb=False,  # WandB handled at study level
         )
@@ -289,10 +292,10 @@ def create_objective(
                 trainer.epoch = epoch
 
                 # Train one epoch
-                train_loss, train_acc = trainer.train_epoch()
+                train_loss = trainer.train_epoch()
 
                 # Validate
-                val_loss, val_acc, val_labels, val_preds, val_probs = trainer.evaluate(
+                val_loss, head_metrics = trainer.evaluate(
                     val_loader, desc=None  # Suppress progress bar for cleaner output
                 )
 
@@ -306,9 +309,7 @@ def create_objective(
 
                 # Record history
                 trainer.history["train_loss"].append(train_loss)
-                trainer.history["train_acc"].append(train_acc)
                 trainer.history["val_loss"].append(val_loss)
-                trainer.history["val_acc"].append(val_acc)
                 trainer.history["lr"].append(current_lr)
 
                 # Report to Optuna for pruning (using validation loss as intermediate value)
@@ -323,7 +324,6 @@ def create_objective(
                 improved = val_loss < trainer.best_val_loss - training_config.min_delta
                 if improved:
                     trainer.best_val_loss = val_loss
-                    trainer.best_val_acc = val_acc
                     trainer.patience_counter = 0
                     trainer.save_checkpoint("best_model.pt")
                 else:
@@ -333,7 +333,7 @@ def create_objective(
                 if (epoch + 1) % 5 == 0:
                     print(
                         f"  Epoch {epoch + 1}: train_loss={train_loss:.4f}, "
-                        f"val_loss={val_loss:.4f}, val_acc={val_acc:.4f}"
+                        f"val_loss={val_loss:.4f}, boundary_acc={head_metrics['boundary_accuracy']:.4f}"
                     )
 
                 # Early stopping
@@ -342,30 +342,27 @@ def create_objective(
                     break
 
             # 8. Evaluate on test set with best model
-            from src.training.metrics import compute_metrics
-
             trainer.load_checkpoint("best_model.pt")
-            test_loss, test_acc, test_labels, test_preds, test_probs = trainer.evaluate(
-                test_loader, desc=None
-            )
-            test_metrics = compute_metrics(test_labels, test_preds, test_probs)
-
-            f1_macro = test_metrics["f1_macro"]
+            test_loss, test_head_metrics = trainer.evaluate(test_loader, desc=None)
 
             print(f"\n  Trial {trial.number} completed:")
-            print(f"    Test F1 Macro: {f1_macro:.4f}")
-            print(f"    Test F1 Weighted: {test_metrics['f1_weighted']:.4f}")
-            print(f"    Test Accuracy: {test_acc:.4f}")
+            print(f"    Best Val Loss: {trainer.best_val_loss:.4f}")
+            print(f"    Test Loss: {test_loss:.4f}")
+            print(f"    Boundary Accuracy: {test_head_metrics['boundary_accuracy']:.4f}")
+            print(f"    Wicket Recall: {test_head_metrics['wicket_recall']:.4f}")
+            print(f"    Wicket Precision: {test_head_metrics['wicket_precision']:.4f}")
 
             # 9. Store additional metrics as trial attributes
             trial.set_user_attr("model_class", model_class_name)
-            trial.set_user_attr("test_f1_weighted", test_metrics["f1_weighted"])
-            trial.set_user_attr("test_accuracy", test_acc)
+            trial.set_user_attr("test_boundary_accuracy", test_head_metrics["boundary_accuracy"])
+            trial.set_user_attr("test_wicket_recall", test_head_metrics["wicket_recall"])
+            trial.set_user_attr("test_wicket_precision", test_head_metrics["wicket_precision"])
             trial.set_user_attr("test_loss", test_loss)
             trial.set_user_attr("best_val_loss", trainer.best_val_loss)
             trial.set_user_attr("epochs_trained", epoch + 1)
 
-            return f1_macro
+            # Return best validation loss as objective (minimizing)
+            return trainer.best_val_loss
 
         except optuna.TrialPruned:
             raise
@@ -375,7 +372,7 @@ def create_objective(
                 print(f"  Trial {trial.number} failed with OOM error - returning worst score")
                 torch.cuda.empty_cache()
                 trial.set_user_attr("oom_error", True)
-                return float("-inf")  # Return worst score so trial is not selected
+                return float("inf")  # Return worst score (high loss) so trial is not selected
             print(f"  Trial {trial.number} failed with error: {e}")
             raise
         except Exception as e:
@@ -398,6 +395,7 @@ def run_phase(
     test_loader,
     metadata: Dict,
     class_weights: Optional[torch.Tensor],
+    class_distribution: Optional[Dict[str, Dict]],
     device: torch.device,
     base_config: Dict[str, Any],
     base_params: Dict[str, Any],
@@ -420,6 +418,7 @@ def run_phase(
         test_loader: Test data loader
         metadata: Dataset metadata
         class_weights: Pre-computed class weights
+        class_distribution: Class distribution dict for binary focal loss alphas
         device: Device to train on
         base_config: Base training config
         base_params: Base hyperparameters
@@ -469,7 +468,7 @@ def run_phase(
         storage=storage,
         sampler=sampler,
         pruner=pruner,
-        direction="maximize",  # Maximize F1 macro
+        direction="minimize",  # Minimize validation loss
         load_if_exists=True,
     )
 
@@ -480,6 +479,7 @@ def run_phase(
         test_loader=test_loader,
         metadata=metadata,
         class_weights=class_weights,
+        class_distribution=class_distribution,
         device=device,
         search_space=search_space,
         base_params=base_params,
@@ -842,6 +842,7 @@ def main():
         test_loader=test_loader,
         metadata=metadata,
         class_weights=class_weights,
+        class_distribution=class_distribution,
         device=device,
         base_config=base_config,
         base_params=base_params,

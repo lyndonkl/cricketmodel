@@ -6,6 +6,11 @@ from .metrics import (
     print_classification_report,
     plot_confusion_matrix,
 )
+from .losses import (
+    FocalLoss,
+    BinaryFocalLoss,
+    BinaryHeadLoss,
+)
 from .distributed import (
     is_distributed,
     is_main_process,
@@ -28,6 +33,10 @@ __all__ = [
     "compute_metrics",
     "print_classification_report",
     "plot_confusion_matrix",
+    # Losses
+    "FocalLoss",
+    "BinaryFocalLoss",
+    "BinaryHeadLoss",
     # DDP utilities
     "is_distributed",
     "is_main_process",

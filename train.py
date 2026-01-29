@@ -501,6 +501,7 @@ def main():
                 val_loader=val_loader,
                 config=training_config,
                 class_weights=class_weights,
+                class_distribution=class_distribution,
                 device=device,
                 force_cpu=args.force_cpu,
             )
@@ -545,6 +546,7 @@ def main():
         val_loader=val_loader,
         config=training_config,
         class_weights=class_weights,
+        class_distribution=class_distribution,
         device=device,
         force_cpu=args.force_cpu,
         train_sampler=train_sampler,
