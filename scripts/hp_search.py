@@ -344,8 +344,14 @@ def create_objective(
                 if (epoch + 1) % 5 == 0:
                     print(
                         f"  Epoch {epoch + 1}: train_loss={train_loss:.4f}, "
-                        f"val_loss={val_loss:.4f}, boundary_acc={head_metrics['boundary_accuracy']:.4f}, "
-                        f"boundary_recall={head_metrics['boundary_recall']:.4f}"
+                        f"val_loss={val_loss:.4f}, "
+                        f"boundary[acc={head_metrics['boundary_accuracy']:.4f} "
+                        f"rec={head_metrics['boundary_recall']:.4f} "
+                        f"prec={head_metrics['boundary_precision']:.4f} "
+                        f"f1={head_metrics['boundary_f1']:.4f}], "
+                        f"wicket[rec={head_metrics['wicket_recall']:.4f} "
+                        f"prec={head_metrics['wicket_precision']:.4f} "
+                        f"f1={head_metrics['wicket_f1']:.4f}]"
                     )
 
                 # Early stopping
