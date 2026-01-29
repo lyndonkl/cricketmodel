@@ -1,6 +1,6 @@
 # RunPod Training Guide
 
-This guide walks you through setting up RunPod for hyperparameter search and model training with the Cricket GNN.
+This guide walks you through setting up RunPod for hyperparameter search and model training with the `CricketHeteroGNNFull` model. The model uses binary prediction heads (boundary detection + wicket detection) with Binary Focal Loss for class imbalance handling.
 
 ---
 
@@ -120,15 +120,15 @@ Now that your data is uploaded, create a GPU pod and attach the network volume.
 
 ### Select GPU
 
-For multi-GPU hyperparameter search (4 GPUs recommended):
+For multi-GPU hyperparameter search (7 GPUs recommended):
 
 | Configuration | VRAM | Price/hr | Best For |
 |---------------|------|----------|----------|
-| 4x RTX 3090 | 4x 24 GB | ~$1.20 | Budget multi-GPU |
-| 4x RTX 4090 | 4x 24 GB | ~$1.80 | Good balance |
-| 4x A100 40GB | 4x 40 GB | ~$3.20 | Maximum speed |
+| 7x RTX 3090 | 7x 24 GB | ~$2.10 | Budget multi-GPU |
+| 7x RTX 4090 | 7x 24 GB | ~$3.15 | Good balance |
+| 7x A100 40GB | 7x 40 GB | ~$5.60 | Maximum speed |
 
-**Why 4 GPUs?** Run 4 HP trials in parallel (one per GPU), completing searches ~4x faster.
+**Why 7 GPUs?** Run 7 HP trials in parallel (one per GPU), completing searches ~7x faster.
 
 ### Attach Network Volume
 
@@ -227,14 +227,14 @@ ls -la data/processed/*.pt | head -5
 ### Install Dependencies
 
 ```bash
-# Install matching versions
-pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu121
-pip install torch-geometric==2.7.0
+# Install PyTorch (use version matching your CUDA driver)
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install torch-geometric
 pip install optuna optuna-integration[wandb] wandb
 pip install tqdm pyyaml scikit-learn plotly
 
 # Verify
-python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
+python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 ```
 
 ### Login to WandB
@@ -246,129 +246,60 @@ wandb login
 
 ---
 
-## 7. Run Hyperparameter Search (All 4 Phases)
+## 7. Run Hyperparameter Search
+
+### Model and Search Strategy
+
+The search uses the `full_model_only` phase which fixes the model to `CricketHeteroGNNFull` and searches the following hyperparameters using Optuna with Bayesian optimization (TPE sampler):
+
+| Hyperparameter | Search Range |
+|----------------|-------------|
+| `hidden_dim` | 64-256, step 32 |
+| `num_layers` | 2-5 |
+| `num_heads` | 2, 4, 8 |
+| `lr` | 1e-4 to 2e-3 (log scale) |
+| `dropout` | 0.0-0.3 |
+| `weight_decay` | 1e-5 to 0.1 (log scale) |
+| `focal_gamma` | 0.0-3.0 |
+
+The objective is to **minimize validation loss**. Trials are pruned early using Optuna's MedianPruner.
 
 ### Multi-GPU Strategy: Parallel Workers
 
-With 4 GPUs, run 4 Optuna workers in parallel - each worker uses one GPU and runs trials independently. All workers share the same SQLite database and coordinate automatically via Optuna's distributed optimization.
+With 7 GPUs, run 7 Optuna workers in parallel - each worker uses one GPU and runs trials independently. All workers share the same SQLite database and coordinate automatically via Optuna's distributed optimization.
 
 **Why this works:**
 - Each worker sets `CUDA_VISIBLE_DEVICES` to use only one GPU
 - All workers connect to the same Optuna study (SQLite storage)
 - Optuna's TPE sampler coordinates trial selection across workers
-- ~4x faster than single-GPU (4 trials run simultaneously)
+- ~7x faster than single-GPU (7 trials run simultaneously)
 
-### Data Fraction for Faster HP Search
+### Run the Search
 
-By default, `hp_search.py` uses `--data-fraction 0.05` (5% of data) to achieve ~30 minute trials. This allows faster iteration during hyperparameter exploration while still finding good configurations.
-
-- **Default:** `--data-fraction 0.05` (~30 min per trial)
-- **Full data:** Use `--data-fraction 1.0` if you want to search with the complete dataset
-- **Applied to:** Train, validation, and test sets (all subsetted equally)
-
-### Phase 1: Coarse Search (4 GPUs)
-
-```bash
-# Run 4 parallel workers, one per GPU
-for gpu in 0 1 2 3; do
-    CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
-        --phase phase1_coarse \
-        --n-trials 10 \
-        --epochs 25 \
-        --wandb \
-        --device cuda \
-        --n-jobs 1 &
-done
-wait
-echo "Phase 1 complete!"
-```
-
-**Expected time:** ~30 min (vs ~2 hours with single GPU)
-
-### Phase 2: Architecture Tuning (4 GPUs)
-
-```bash
-PHASE1_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase1_coarse_*/best_params.json | head -1)
-echo "Using Phase 1 results: $PHASE1_BEST"
-
-for gpu in 0 1 2 3; do
-    CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
-        --phase phase2_architecture \
-        --n-trials 12 \
-        --epochs 25 \
-        --best-params "$PHASE1_BEST" \
-        --wandb \
-        --device cuda \
-        --n-jobs 1 &
-done
-wait
-echo "Phase 2 complete!"
-```
-
-### Phase 3: Training Dynamics (4 GPUs)
-
-```bash
-PHASE2_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase2_architecture_*/best_params.json | head -1)
-echo "Using Phase 2 results: $PHASE2_BEST"
-
-for gpu in 0 1 2 3; do
-    CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
-        --phase phase3_training \
-        --n-trials 15 \
-        --epochs 30 \
-        --best-params "$PHASE2_BEST" \
-        --wandb \
-        --device cuda \
-        --n-jobs 1 &
-done
-wait
-echo "Phase 3 complete!"
-```
-
-### Phase 4: Loss Function (4 GPUs)
-
-```bash
-PHASE3_BEST=$(ls -t checkpoints/optuna/cricket_gnn_phase3_training_*/best_params.json | head -1)
-echo "Using Phase 3 results: $PHASE3_BEST"
-
-for gpu in 0 1 2 3; do
-    CUDA_VISIBLE_DEVICES=$gpu python scripts/hp_search.py \
-        --phase phase4_loss \
-        --n-trials 10 \
-        --epochs 30 \
-        --best-params "$PHASE3_BEST" \
-        --wandb \
-        --device cuda \
-        --n-jobs 1 &
-done
-wait
-echo "Phase 4 complete!"
-```
-
-### Run All Phases in Sequence (Unattended)
-
-Create a script to run all 4 phases with 4 GPUs. **Important:** Create and run this script from the cricketmodel directory.
-
-**Note:** The script uses staggered starts (15 second delay between each GPU) to avoid SQLite database race conditions when multiple processes try to create the Optuna study tables simultaneously.
-
-The script is included in the repo at `scripts/run_all_phases.sh` with execute permissions already set.
+The search script is included in the repo at `scripts/run_full_model_search.sh`.
 
 ```bash
 cd /workspace/cricketmodel
-git pull  # Get the latest version with the script
+git pull  # Get the latest version
+
+# Run with 7 GPUs (default is 6, override with NUM_GPUS)
+NUM_GPUS=7 ./scripts/run_full_model_search.sh
 ```
 
-**Configuration** (edit the script if needed):
-- `NUM_GPUS=4` - Number of GPUs to use
-- `DATA_FRACTION=0.05` - Use 5% of data for ~30 min trials (use 1.0 for full dataset)
+**Default configuration:**
+- `NUM_GPUS=6` - Override with env var (e.g., `NUM_GPUS=7`)
+- `TRIALS_PER_GPU=15` - Total trials = NUM_GPUS x 15 (105 with 7 GPUs)
+- `EPOCHS=10` - Epochs per trial
+- `DATA_FRACTION=0.02` - 2% of data for fast iteration
+- `BATCH_SIZE=1024` - Large batch for fast epochs on 24GB VRAM GPUs
 - `STAGGER_DELAY=15` - Seconds between GPU starts to avoid SQLite race conditions
 
-**Before running**, set the file descriptor limit and clean up any previous runs:
-
-```bash
-ulimit -n 65535
-rm -f optuna_studies.db
-```
+The script automatically:
+1. Cleans up previous Optuna studies and checkpoints
+2. Creates a base params file fixing `model_class=CricketHeteroGNNFull`
+3. Launches one Optuna worker per GPU with staggered starts
+4. Logs to WandB for real-time monitoring
+5. Saves best parameters to `checkpoints/optuna/cricket_gnn_full_model_*/best_params.json`
 
 ### Running Long Jobs (Survives Disconnection)
 
@@ -378,7 +309,7 @@ rm -f optuna_studies.db
 
 ```bash
 cd /workspace/cricketmodel
-nohup ./run_all_phases.sh > hp_search.log 2>&1 &
+nohup bash -c 'NUM_GPUS=7 ./scripts/run_full_model_search.sh' > hp_search.log 2>&1 &
 echo $! > run.pid  # Save process ID
 ```
 
@@ -390,7 +321,7 @@ screen -S training
 
 # Navigate to project and run
 cd /workspace/cricketmodel
-./run_all_phases.sh
+NUM_GPUS=7 ./scripts/run_full_model_search.sh
 
 # Detach: Press Ctrl+A, then D
 # Reconnect later: screen -r training
@@ -404,7 +335,7 @@ tmux new -s training
 
 # Navigate to project and run
 cd /workspace/cricketmodel
-./run_all_phases.sh
+NUM_GPUS=7 ./scripts/run_full_model_search.sh
 
 # Detach: Press Ctrl+B, then D
 # Reconnect later: tmux attach -t training
@@ -426,40 +357,42 @@ nvidia-smi -l 1  # Updates every second
 **Best monitoring: WandB Dashboard**
 
 Since we use `--wandb`, you can monitor all trials in real-time at [wandb.ai](https://wandb.ai). You'll see:
-- Live training curves
+- Live training curves (validation loss per epoch)
 - Trial comparisons
 - GPU utilization
 - Hyperparameter importance (after enough trials)
+- Optuna visualizations (optimization history, parameter importance, parallel coordinate, contour plots)
 
 ---
 
 ## 8. Train Final Model with Best Parameters
 
-After HP search completes, train the final model using `torchrun` for distributed training across all 4 GPUs:
+After HP search completes, train the final model using `torchrun` for distributed training across all 7 GPUs:
 
 ```bash
-# Get the final best params (from Phase 4)
-BEST_PARAMS=$(ls -t checkpoints/optuna/cricket_gnn_phase4_loss_*/best_params.json | head -1)
+# Get the best params from the search
+BEST_PARAMS=$(ls -t checkpoints/optuna/cricket_gnn_full_model_*/best_params.json | head -1)
 
 # View best parameters
 cat $BEST_PARAMS
 
-# Train final model with torchrun on 4 GPUs
-torchrun --standalone --nproc_per_node=4 train.py \
+# Train final model with torchrun on 7 GPUs
+torchrun --standalone --nproc_per_node=7 train.py \
     --config $BEST_PARAMS \
     --epochs 100 \
+    --batch-size 1024 \
     --wandb \
     --wandb-project cricket-gnn-final
 ```
 
 **torchrun options:**
-- `--nproc_per_node=4` - Use exactly 4 GPUs (explicit)
+- `--nproc_per_node=7` - Use exactly 7 GPUs (explicit)
 - `--nproc_per_node=gpu` - Use all available GPUs (auto-detect)
 - `--standalone` - Single-node training (no multi-machine coordination)
 
 **Why torchrun?**
-- Proper DDP setup - all 4 GPUs train the same model in parallel
-- ~4x faster training than single GPU
+- Proper DDP setup - all 7 GPUs train the same model in parallel
+- ~7x faster training than single GPU
 - Automatic gradient synchronization across GPUs
 - Better error handling and process management
 
@@ -512,16 +445,16 @@ To resume later:
 
 ---
 
-## Cost Estimate (4x RTX 4090)
+## Cost Estimate (7x RTX 4090)
 
 | Item | Cost |
 |------|------|
 | Network Volume (150GB) | ~$10.50/month |
-| HP Search (4x RTX 4090, ~2 hrs) | ~$3.60 |
-| Final Training (4x RTX 4090, ~1 hr) | ~$1.80 |
-| **Total** | **~$16** |
+| HP Search (7x RTX 4090, ~2 hrs) | ~$6.30 |
+| Final Training (7x RTX 4090, ~1 hr) | ~$3.15 |
+| **Total** | **~$20** |
 
-**Note:** Multi-GPU is ~4x faster but same total GPU-hours cost. You pay for wall-clock time, so 4 GPUs for 1 hour = 1 GPU for 4 hours in cost.
+**Note:** Multi-GPU is ~7x faster but same total GPU-hours cost. You pay for wall-clock time, so 7 GPUs for 1 hour = 1 GPU for 7 hours in cost.
 
 ---
 
