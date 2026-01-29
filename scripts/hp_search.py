@@ -344,7 +344,8 @@ def create_objective(
                 if (epoch + 1) % 5 == 0:
                     print(
                         f"  Epoch {epoch + 1}: train_loss={train_loss:.4f}, "
-                        f"val_loss={val_loss:.4f}, boundary_acc={head_metrics['boundary_accuracy']:.4f}"
+                        f"val_loss={val_loss:.4f}, boundary_acc={head_metrics['boundary_accuracy']:.4f}, "
+                        f"boundary_recall={head_metrics['boundary_recall']:.4f}"
                     )
 
                 # Early stopping
@@ -360,12 +361,18 @@ def create_objective(
             print(f"    Best Val Loss: {trainer.best_val_loss:.4f}")
             print(f"    Test Loss: {test_loss:.4f}")
             print(f"    Boundary Accuracy: {test_head_metrics['boundary_accuracy']:.4f}")
+            print(f"    Boundary Recall: {test_head_metrics['boundary_recall']:.4f}")
+            print(f"    Boundary Precision: {test_head_metrics['boundary_precision']:.4f}")
+            print(f"    Boundary F1: {test_head_metrics['boundary_f1']:.4f}")
             print(f"    Wicket Recall: {test_head_metrics['wicket_recall']:.4f}")
             print(f"    Wicket Precision: {test_head_metrics['wicket_precision']:.4f}")
 
             # 9. Store additional metrics as trial attributes
             trial.set_user_attr("model_class", model_class_name)
             trial.set_user_attr("test_boundary_accuracy", test_head_metrics["boundary_accuracy"])
+            trial.set_user_attr("test_boundary_recall", test_head_metrics["boundary_recall"])
+            trial.set_user_attr("test_boundary_precision", test_head_metrics["boundary_precision"])
+            trial.set_user_attr("test_boundary_f1", test_head_metrics["boundary_f1"])
             trial.set_user_attr("test_wicket_recall", test_head_metrics["wicket_recall"])
             trial.set_user_attr("test_wicket_precision", test_head_metrics["wicket_precision"])
             trial.set_user_attr("test_loss", test_loss)

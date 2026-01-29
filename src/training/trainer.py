@@ -345,6 +345,9 @@ class Trainer:
         # Accumulators for binary head metrics
         boundary_correct = 0
         boundary_total = 0
+        boundary_tp = 0
+        boundary_fn = 0
+        boundary_fp = 0
         wicket_tp = 0
         wicket_fn = 0
         wicket_fp = 0
@@ -365,6 +368,9 @@ class Trainer:
             boundary_pred = outputs['boundary'].squeeze(-1) > 0
             boundary_correct += (boundary_pred == boundary_target).sum().item()
             boundary_total += batch.y.size(0)
+            boundary_tp += (boundary_pred & boundary_target).sum().item()
+            boundary_fn += (~boundary_pred & boundary_target).sum().item()
+            boundary_fp += (boundary_pred & ~boundary_target).sum().item()
 
             wicket_target = (batch.y == 6)
             wicket_pred = outputs['wicket'].squeeze(-1) > 0
@@ -383,8 +389,17 @@ class Trainer:
         avg_loss = total_loss / total
 
         # Compute binary head metrics
+        boundary_recall = boundary_tp / (boundary_tp + boundary_fn) if (boundary_tp + boundary_fn) > 0 else 0.0
+        boundary_precision = boundary_tp / (boundary_tp + boundary_fp) if (boundary_tp + boundary_fp) > 0 else 0.0
+        boundary_f1 = (
+            2 * (boundary_precision * boundary_recall) / (boundary_precision + boundary_recall)
+            if (boundary_precision + boundary_recall) > 0 else 0.0
+        )
         head_metrics = {
             'boundary_accuracy': boundary_correct / boundary_total if boundary_total > 0 else 0.0,
+            'boundary_recall': boundary_recall,
+            'boundary_precision': boundary_precision,
+            'boundary_f1': boundary_f1,
             'wicket_recall': wicket_tp / (wicket_tp + wicket_fn) if (wicket_tp + wicket_fn) > 0 else 0.0,
             'wicket_precision': wicket_tp / (wicket_tp + wicket_fp) if (wicket_tp + wicket_fp) > 0 else 0.0,
         }
@@ -397,10 +412,16 @@ class Trainer:
 
             # Aggregate head metrics
             boundary_acc_tensor = torch.tensor([head_metrics['boundary_accuracy']], device=self.device)
+            boundary_recall_tensor = torch.tensor([head_metrics['boundary_recall']], device=self.device)
+            boundary_precision_tensor = torch.tensor([head_metrics['boundary_precision']], device=self.device)
+            boundary_f1_tensor = torch.tensor([head_metrics['boundary_f1']], device=self.device)
             wicket_recall_tensor = torch.tensor([head_metrics['wicket_recall']], device=self.device)
             wicket_precision_tensor = torch.tensor([head_metrics['wicket_precision']], device=self.device)
 
             head_metrics['boundary_accuracy'] = reduce_tensor(boundary_acc_tensor).item()
+            head_metrics['boundary_recall'] = reduce_tensor(boundary_recall_tensor).item()
+            head_metrics['boundary_precision'] = reduce_tensor(boundary_precision_tensor).item()
+            head_metrics['boundary_f1'] = reduce_tensor(boundary_f1_tensor).item()
             head_metrics['wicket_recall'] = reduce_tensor(wicket_recall_tensor).item()
             head_metrics['wicket_precision'] = reduce_tensor(wicket_precision_tensor).item()
 
@@ -459,7 +480,7 @@ class Trainer:
                 print(f"\nEpoch {epoch + 1}/{self.config.epochs}")
                 print(f"  Train Loss: {train_loss:.4f}")
                 print(f"  Val Loss:   {val_loss:.4f}")
-                print(f"  Boundary Acc: {head_metrics['boundary_accuracy']:.4f}")
+                print(f"  Boundary Acc: {head_metrics['boundary_accuracy']:.4f}  Recall: {head_metrics['boundary_recall']:.4f}  Precision: {head_metrics['boundary_precision']:.4f}  F1: {head_metrics['boundary_f1']:.4f}")
                 print(f"  Wicket Recall: {head_metrics['wicket_recall']:.4f}  Precision: {head_metrics['wicket_precision']:.4f}")
                 print(f"  LR: {current_lr:.6f}")
 
@@ -474,6 +495,9 @@ class Trainer:
                     "learning_rate": current_lr,
                     # Binary head metrics
                     "heads/boundary_accuracy": head_metrics["boundary_accuracy"],
+                    "heads/boundary_recall": head_metrics["boundary_recall"],
+                    "heads/boundary_precision": head_metrics["boundary_precision"],
+                    "heads/boundary_f1": head_metrics["boundary_f1"],
                     "heads/wicket_recall": head_metrics["wicket_recall"],
                     "heads/wicket_precision": head_metrics["wicket_precision"],
                 }
@@ -603,6 +627,9 @@ class Trainer:
         metrics = {
             'loss': test_loss,
             'boundary_accuracy': head_metrics['boundary_accuracy'],
+            'boundary_recall': head_metrics['boundary_recall'],
+            'boundary_precision': head_metrics['boundary_precision'],
+            'boundary_f1': head_metrics['boundary_f1'],
             'wicket_recall': head_metrics['wicket_recall'],
             'wicket_precision': head_metrics['wicket_precision'],
         }
@@ -610,6 +637,9 @@ class Trainer:
         # Print report
         print(f"\nTest Loss: {test_loss:.4f}")
         print(f"Boundary Accuracy: {head_metrics['boundary_accuracy']:.4f}")
+        print(f"Boundary Recall: {head_metrics['boundary_recall']:.4f}")
+        print(f"Boundary Precision: {head_metrics['boundary_precision']:.4f}")
+        print(f"Boundary F1: {head_metrics['boundary_f1']:.4f}")
         print(f"Wicket Recall: {head_metrics['wicket_recall']:.4f}")
         print(f"Wicket Precision: {head_metrics['wicket_precision']:.4f}")
 
@@ -620,6 +650,9 @@ class Trainer:
             wandb_log = {
                 "test/loss": test_loss,
                 "heads/test_boundary_accuracy": head_metrics["boundary_accuracy"],
+                "heads/test_boundary_recall": head_metrics["boundary_recall"],
+                "heads/test_boundary_precision": head_metrics["boundary_precision"],
+                "heads/test_boundary_f1": head_metrics["boundary_f1"],
                 "heads/test_wicket_recall": head_metrics["wicket_recall"],
                 "heads/test_wicket_precision": head_metrics["wicket_precision"],
             }
