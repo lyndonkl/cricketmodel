@@ -1,0 +1,27 @@
+{
+  "study_name": "cricket_gnn_full_model_20260129_183758",
+  "phase": "full_model_only",
+  "best_trial": 39,
+  "best_f1_macro": 0.01735898715523539,
+  "best_params": {
+    "hidden_dim": 64,
+    "num_layers": 4,
+    "num_heads": 8,
+    "lr": 0.0019524803221404106,
+    "dropout": 0.21639716606542475,
+    "weight_decay": 0.0014268905034866093,
+    "focal_gamma": 2.9880495952423067
+  },
+  "best_trial_user_attrs": {
+    "best_val_loss": 0.01735898715523539,
+    "epochs_trained": 8,
+    "model_class": "CricketHeteroGNNFull",
+    "test_boundary_accuracy": 0.8671480144404332,
+    "test_loss": 0.018000505622543583,
+    "test_wicket_precision": 0.0,
+    "test_wicket_recall": 0.0
+  },
+  "n_trials": 105,
+  "n_complete": 42,
+  "n_pruned": 63
+}
