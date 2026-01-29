@@ -403,6 +403,9 @@ class Trainer:
             'wicket_recall': wicket_tp / (wicket_tp + wicket_fn) if (wicket_tp + wicket_fn) > 0 else 0.0,
             'wicket_precision': wicket_tp / (wicket_tp + wicket_fp) if (wicket_tp + wicket_fp) > 0 else 0.0,
         }
+        wr = head_metrics['wicket_recall']
+        wp = head_metrics['wicket_precision']
+        head_metrics['wicket_f1'] = 2 * (wp * wr) / (wp + wr) if (wp + wr) > 0 else 0.0
 
         # In DDP, aggregate metrics across all processes
         if self.is_distributed:
@@ -417,6 +420,7 @@ class Trainer:
             boundary_f1_tensor = torch.tensor([head_metrics['boundary_f1']], device=self.device)
             wicket_recall_tensor = torch.tensor([head_metrics['wicket_recall']], device=self.device)
             wicket_precision_tensor = torch.tensor([head_metrics['wicket_precision']], device=self.device)
+            wicket_f1_tensor = torch.tensor([head_metrics['wicket_f1']], device=self.device)
 
             head_metrics['boundary_accuracy'] = reduce_tensor(boundary_acc_tensor).item()
             head_metrics['boundary_recall'] = reduce_tensor(boundary_recall_tensor).item()
@@ -424,6 +428,7 @@ class Trainer:
             head_metrics['boundary_f1'] = reduce_tensor(boundary_f1_tensor).item()
             head_metrics['wicket_recall'] = reduce_tensor(wicket_recall_tensor).item()
             head_metrics['wicket_precision'] = reduce_tensor(wicket_precision_tensor).item()
+            head_metrics['wicket_f1'] = reduce_tensor(wicket_f1_tensor).item()
 
         return avg_loss, head_metrics
 
@@ -481,7 +486,7 @@ class Trainer:
                 print(f"  Train Loss: {train_loss:.4f}")
                 print(f"  Val Loss:   {val_loss:.4f}")
                 print(f"  Boundary Acc: {head_metrics['boundary_accuracy']:.4f}  Recall: {head_metrics['boundary_recall']:.4f}  Precision: {head_metrics['boundary_precision']:.4f}  F1: {head_metrics['boundary_f1']:.4f}")
-                print(f"  Wicket Recall: {head_metrics['wicket_recall']:.4f}  Precision: {head_metrics['wicket_precision']:.4f}")
+                print(f"  Wicket Recall: {head_metrics['wicket_recall']:.4f}  Precision: {head_metrics['wicket_precision']:.4f}  F1: {head_metrics['wicket_f1']:.4f}")
                 print(f"  LR: {current_lr:.6f}")
 
             # Log to WandB (main process only)
@@ -500,6 +505,7 @@ class Trainer:
                     "heads/boundary_f1": head_metrics["boundary_f1"],
                     "heads/wicket_recall": head_metrics["wicket_recall"],
                     "heads/wicket_precision": head_metrics["wicket_precision"],
+                    "heads/wicket_f1": head_metrics["wicket_f1"],
                 }
 
                 wandb.log(wandb_log)
@@ -632,6 +638,7 @@ class Trainer:
             'boundary_f1': head_metrics['boundary_f1'],
             'wicket_recall': head_metrics['wicket_recall'],
             'wicket_precision': head_metrics['wicket_precision'],
+            'wicket_f1': head_metrics['wicket_f1'],
         }
 
         # Print report
@@ -642,6 +649,7 @@ class Trainer:
         print(f"Boundary F1: {head_metrics['boundary_f1']:.4f}")
         print(f"Wicket Recall: {head_metrics['wicket_recall']:.4f}")
         print(f"Wicket Precision: {head_metrics['wicket_precision']:.4f}")
+        print(f"Wicket F1: {head_metrics['wicket_f1']:.4f}")
 
         # Log to WandB
         if self.use_wandb:
@@ -655,6 +663,7 @@ class Trainer:
                 "heads/test_boundary_f1": head_metrics["boundary_f1"],
                 "heads/test_wicket_recall": head_metrics["wicket_recall"],
                 "heads/test_wicket_precision": head_metrics["wicket_precision"],
+                "heads/test_wicket_f1": head_metrics["wicket_f1"],
             }
 
             wandb.log(wandb_log)

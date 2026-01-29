@@ -366,6 +366,7 @@ def create_objective(
             print(f"    Boundary F1: {test_head_metrics['boundary_f1']:.4f}")
             print(f"    Wicket Recall: {test_head_metrics['wicket_recall']:.4f}")
             print(f"    Wicket Precision: {test_head_metrics['wicket_precision']:.4f}")
+            print(f"    Wicket F1: {test_head_metrics['wicket_f1']:.4f}")
 
             # 9. Store additional metrics as trial attributes
             trial.set_user_attr("model_class", model_class_name)
@@ -375,6 +376,7 @@ def create_objective(
             trial.set_user_attr("test_boundary_f1", test_head_metrics["boundary_f1"])
             trial.set_user_attr("test_wicket_recall", test_head_metrics["wicket_recall"])
             trial.set_user_attr("test_wicket_precision", test_head_metrics["wicket_precision"])
+            trial.set_user_attr("test_wicket_f1", test_head_metrics["wicket_f1"])
             trial.set_user_attr("test_loss", test_loss)
             trial.set_user_attr("best_val_loss", trainer.best_val_loss)
             trial.set_user_attr("epochs_trained", epoch + 1)
