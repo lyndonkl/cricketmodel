@@ -140,6 +140,17 @@ SEARCH_SPACES = {
         "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
         "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
     },
+    "full_model_only": {
+        # Hyperparameter search for CricketHeteroGNNFull model only
+        # Fixes model_class to Full and searches other hyperparameters
+        "hidden_dim": {"type": "int", "low": 64, "high": 256, "step": 32},
+        "num_layers": {"type": "int", "low": 2, "high": 5},
+        "num_heads": {"type": "categorical", "values": [2, 4, 8]},
+        "lr": {"type": "float", "low": 1e-4, "high": 2e-3, "log": True},
+        "dropout": {"type": "float", "low": 0.0, "high": 0.3},
+        "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
+        "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
+    },
 }
 
 # Default hyperparameter values (used when not being searched)
