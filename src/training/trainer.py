@@ -21,7 +21,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
-from .losses import BinaryHeadLoss
+from .losses import ScoreRegressionLoss
 
 if TYPE_CHECKING:
     from torch.utils.data.distributed import DistributedSampler
@@ -169,30 +169,10 @@ class Trainer:
             if self.is_main:
                 print("GPU prefetching enabled")
 
-        # Loss - Binary heads with focal loss for class imbalance
-        # Compute binary alpha values from class distribution
-        boundary_alpha = 0.15  # Default: ~15% boundaries
-        wicket_alpha = 0.05    # Default: ~5% wickets
-
-        if class_distribution is not None:
-            # Derive alpha from actual class distribution
-            four_pct = class_distribution.get('Four', {}).get('percentage', 0) / 100
-            six_pct = class_distribution.get('Six', {}).get('percentage', 0) / 100
-            wicket_pct = class_distribution.get('Wicket', {}).get('percentage', 0) / 100
-            boundary_alpha = four_pct + six_pct
-            wicket_alpha = wicket_pct
-            if self.is_main:
-                print(f"Binary alpha from distribution: boundary={boundary_alpha:.3f}, wicket={wicket_alpha:.3f}")
-
-        self.criterion = BinaryHeadLoss(
-            boundary_alpha=boundary_alpha,
-            wicket_alpha=wicket_alpha,
-            gamma=config.focal_gamma,
-            boundary_weight=1.0,
-            wicket_weight=1.0,
-        )
+        # Loss - Huber (Smooth L1) loss for score regression
+        self.criterion = ScoreRegressionLoss(delta=10.0)
         if self.is_main:
-            print(f"Using Binary Focal Loss with gamma={config.focal_gamma}")
+            print("Using Huber (SmoothL1) loss for score regression (delta=10.0)")
 
         # Optimizer
         self.optimizer = AdamW(
@@ -327,30 +307,26 @@ class Trainer:
         desc: Optional[str] = 'Eval'
     ) -> Tuple[float, Dict]:
         """
-        Evaluate on a data loader.
+        Evaluate on a data loader with regression metrics.
 
         Args:
             loader: DataLoader to evaluate on
             desc: Description for progress bar (None to suppress progress bar)
 
         Returns:
-            (average_loss, head_metrics)
-            head_metrics is a dict with binary head metrics (boundary_accuracy, wicket_recall, wicket_precision)
+            (average_loss, metrics)
+            metrics dict contains: mae, rmse, r_squared
         """
         self.model.eval()
 
         total_loss = 0.0
         total = 0
 
-        # Accumulators for binary head metrics
-        boundary_correct = 0
-        boundary_total = 0
-        boundary_tp = 0
-        boundary_fn = 0
-        boundary_fp = 0
-        wicket_tp = 0
-        wicket_fn = 0
-        wicket_fp = 0
+        # Regression accumulators
+        total_se = 0.0     # sum of squared errors
+        total_ae = 0.0     # sum of absolute errors
+        sum_targets = 0.0
+        sum_sq_targets = 0.0
 
         # Only show progress bar on main process and if desc is provided
         eval_loader = loader
@@ -363,20 +339,13 @@ class Trainer:
             outputs = self.model(batch)
             loss = self.criterion(outputs, batch.y)
 
-            # Accumulate binary head metrics
-            boundary_target = ((batch.y == 4) | (batch.y == 5))
-            boundary_pred = outputs['boundary'].squeeze(-1) > 0
-            boundary_correct += (boundary_pred == boundary_target).sum().item()
-            boundary_total += batch.y.size(0)
-            boundary_tp += (boundary_pred & boundary_target).sum().item()
-            boundary_fn += (~boundary_pred & boundary_target).sum().item()
-            boundary_fp += (boundary_pred & ~boundary_target).sum().item()
-
-            wicket_target = (batch.y == 6)
-            wicket_pred = outputs['wicket'].squeeze(-1) > 0
-            wicket_tp += (wicket_pred & wicket_target).sum().item()
-            wicket_fn += (~wicket_pred & wicket_target).sum().item()
-            wicket_fp += (wicket_pred & ~wicket_target).sum().item()
+            # Accumulate regression metrics
+            score_pred = outputs['score'].squeeze(-1)
+            targets = batch.y.float()
+            total_se += ((score_pred - targets) ** 2).sum().item()
+            total_ae += (score_pred - targets).abs().sum().item()
+            sum_targets += targets.sum().item()
+            sum_sq_targets += (targets ** 2).sum().item()
 
             total_loss += loss.item() * batch.y.size(0)
             total += batch.y.size(0)
@@ -388,24 +357,18 @@ class Trainer:
 
         avg_loss = total_loss / total
 
-        # Compute binary head metrics
-        boundary_recall = boundary_tp / (boundary_tp + boundary_fn) if (boundary_tp + boundary_fn) > 0 else 0.0
-        boundary_precision = boundary_tp / (boundary_tp + boundary_fp) if (boundary_tp + boundary_fp) > 0 else 0.0
-        boundary_f1 = (
-            2 * (boundary_precision * boundary_recall) / (boundary_precision + boundary_recall)
-            if (boundary_precision + boundary_recall) > 0 else 0.0
-        )
+        # Compute regression metrics
+        mae = total_ae / total
+        rmse = (total_se / total) ** 0.5
+        mean_target = sum_targets / total
+        ss_tot = sum_sq_targets - total * mean_target ** 2
+        r_squared = 1 - (total_se / ss_tot) if ss_tot > 0 else 0.0
+
         head_metrics = {
-            'boundary_accuracy': boundary_correct / boundary_total if boundary_total > 0 else 0.0,
-            'boundary_recall': boundary_recall,
-            'boundary_precision': boundary_precision,
-            'boundary_f1': boundary_f1,
-            'wicket_recall': wicket_tp / (wicket_tp + wicket_fn) if (wicket_tp + wicket_fn) > 0 else 0.0,
-            'wicket_precision': wicket_tp / (wicket_tp + wicket_fp) if (wicket_tp + wicket_fp) > 0 else 0.0,
+            'mae': mae,
+            'rmse': rmse,
+            'r_squared': r_squared,
         }
-        wr = head_metrics['wicket_recall']
-        wp = head_metrics['wicket_precision']
-        head_metrics['wicket_f1'] = 2 * (wp * wr) / (wp + wr) if (wp + wr) > 0 else 0.0
 
         # In DDP, aggregate metrics across all processes
         if self.is_distributed:
@@ -413,22 +376,13 @@ class Trainer:
             avg_loss_tensor = torch.tensor([avg_loss], device=self.device)
             avg_loss = reduce_tensor(avg_loss_tensor).item()
 
-            # Aggregate head metrics
-            boundary_acc_tensor = torch.tensor([head_metrics['boundary_accuracy']], device=self.device)
-            boundary_recall_tensor = torch.tensor([head_metrics['boundary_recall']], device=self.device)
-            boundary_precision_tensor = torch.tensor([head_metrics['boundary_precision']], device=self.device)
-            boundary_f1_tensor = torch.tensor([head_metrics['boundary_f1']], device=self.device)
-            wicket_recall_tensor = torch.tensor([head_metrics['wicket_recall']], device=self.device)
-            wicket_precision_tensor = torch.tensor([head_metrics['wicket_precision']], device=self.device)
-            wicket_f1_tensor = torch.tensor([head_metrics['wicket_f1']], device=self.device)
+            mae_tensor = torch.tensor([mae], device=self.device)
+            rmse_tensor = torch.tensor([rmse], device=self.device)
+            r2_tensor = torch.tensor([r_squared], device=self.device)
 
-            head_metrics['boundary_accuracy'] = reduce_tensor(boundary_acc_tensor).item()
-            head_metrics['boundary_recall'] = reduce_tensor(boundary_recall_tensor).item()
-            head_metrics['boundary_precision'] = reduce_tensor(boundary_precision_tensor).item()
-            head_metrics['boundary_f1'] = reduce_tensor(boundary_f1_tensor).item()
-            head_metrics['wicket_recall'] = reduce_tensor(wicket_recall_tensor).item()
-            head_metrics['wicket_precision'] = reduce_tensor(wicket_precision_tensor).item()
-            head_metrics['wicket_f1'] = reduce_tensor(wicket_f1_tensor).item()
+            head_metrics['mae'] = reduce_tensor(mae_tensor).item()
+            head_metrics['rmse'] = reduce_tensor(rmse_tensor).item()
+            head_metrics['r_squared'] = reduce_tensor(r2_tensor).item()
 
         return avg_loss, head_metrics
 
@@ -485,8 +439,7 @@ class Trainer:
                 print(f"\nEpoch {epoch + 1}/{self.config.epochs}")
                 print(f"  Train Loss: {train_loss:.4f}")
                 print(f"  Val Loss:   {val_loss:.4f}")
-                print(f"  Boundary Acc: {head_metrics['boundary_accuracy']:.4f}  Recall: {head_metrics['boundary_recall']:.4f}  Precision: {head_metrics['boundary_precision']:.4f}  F1: {head_metrics['boundary_f1']:.4f}")
-                print(f"  Wicket Recall: {head_metrics['wicket_recall']:.4f}  Precision: {head_metrics['wicket_precision']:.4f}  F1: {head_metrics['wicket_f1']:.4f}")
+                print(f"  MAE: {head_metrics['mae']:.2f}  RMSE: {head_metrics['rmse']:.2f}  R²: {head_metrics['r_squared']:.4f}")
                 print(f"  LR: {current_lr:.6f}")
 
             # Log to WandB (main process only)
@@ -498,14 +451,9 @@ class Trainer:
                     "train/loss": train_loss,
                     "val/loss": val_loss,
                     "learning_rate": current_lr,
-                    # Binary head metrics
-                    "heads/boundary_accuracy": head_metrics["boundary_accuracy"],
-                    "heads/boundary_recall": head_metrics["boundary_recall"],
-                    "heads/boundary_precision": head_metrics["boundary_precision"],
-                    "heads/boundary_f1": head_metrics["boundary_f1"],
-                    "heads/wicket_recall": head_metrics["wicket_recall"],
-                    "heads/wicket_precision": head_metrics["wicket_precision"],
-                    "heads/wicket_f1": head_metrics["wicket_f1"],
+                    "metrics/mae": head_metrics["mae"],
+                    "metrics/rmse": head_metrics["rmse"],
+                    "metrics/r_squared": head_metrics["r_squared"],
                 }
 
                 wandb.log(wandb_log)
@@ -608,13 +556,13 @@ class Trainer:
 
     def test(self, test_loader: DataLoader) -> Dict:
         """
-        Evaluate on test set with detailed metrics.
+        Evaluate on test set with detailed regression metrics.
 
         Args:
             test_loader: Test data loader
 
         Returns:
-            Dict with test metrics (binary head metrics)
+            Dict with test metrics (mae, rmse, r_squared)
         """
         # Wrap with prefetch if on GPU
         if str(self.device).startswith('cuda'):
@@ -632,24 +580,16 @@ class Trainer:
         # Build metrics dict
         metrics = {
             'loss': test_loss,
-            'boundary_accuracy': head_metrics['boundary_accuracy'],
-            'boundary_recall': head_metrics['boundary_recall'],
-            'boundary_precision': head_metrics['boundary_precision'],
-            'boundary_f1': head_metrics['boundary_f1'],
-            'wicket_recall': head_metrics['wicket_recall'],
-            'wicket_precision': head_metrics['wicket_precision'],
-            'wicket_f1': head_metrics['wicket_f1'],
+            'mae': head_metrics['mae'],
+            'rmse': head_metrics['rmse'],
+            'r_squared': head_metrics['r_squared'],
         }
 
         # Print report
         print(f"\nTest Loss: {test_loss:.4f}")
-        print(f"Boundary Accuracy: {head_metrics['boundary_accuracy']:.4f}")
-        print(f"Boundary Recall: {head_metrics['boundary_recall']:.4f}")
-        print(f"Boundary Precision: {head_metrics['boundary_precision']:.4f}")
-        print(f"Boundary F1: {head_metrics['boundary_f1']:.4f}")
-        print(f"Wicket Recall: {head_metrics['wicket_recall']:.4f}")
-        print(f"Wicket Precision: {head_metrics['wicket_precision']:.4f}")
-        print(f"Wicket F1: {head_metrics['wicket_f1']:.4f}")
+        print(f"MAE: {head_metrics['mae']:.2f}")
+        print(f"RMSE: {head_metrics['rmse']:.2f}")
+        print(f"R²: {head_metrics['r_squared']:.4f}")
 
         # Log to WandB
         if self.use_wandb:
@@ -657,13 +597,9 @@ class Trainer:
 
             wandb_log = {
                 "test/loss": test_loss,
-                "heads/test_boundary_accuracy": head_metrics["boundary_accuracy"],
-                "heads/test_boundary_recall": head_metrics["boundary_recall"],
-                "heads/test_boundary_precision": head_metrics["boundary_precision"],
-                "heads/test_boundary_f1": head_metrics["boundary_f1"],
-                "heads/test_wicket_recall": head_metrics["wicket_recall"],
-                "heads/test_wicket_precision": head_metrics["wicket_precision"],
-                "heads/test_wicket_f1": head_metrics["wicket_f1"],
+                "test/mae": head_metrics["mae"],
+                "test/rmse": head_metrics["rmse"],
+                "test/r_squared": head_metrics["r_squared"],
             }
 
             wandb.log(wandb_log)

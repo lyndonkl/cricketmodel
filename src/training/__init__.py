@@ -8,6 +8,7 @@ from .metrics import (
 )
 from .losses import (
     FocalLoss,
+    ScoreRegressionLoss,
     BinaryFocalLoss,
     BinaryHeadLoss,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "plot_confusion_matrix",
     # Losses
     "FocalLoss",
+    "ScoreRegressionLoss",
     "BinaryFocalLoss",
     "BinaryHeadLoss",
     # DDP utilities

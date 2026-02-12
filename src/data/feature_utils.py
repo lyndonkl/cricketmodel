@@ -753,6 +753,43 @@ def compute_ball_features(delivery: Dict) -> List[float]:
 BALL_FEATURE_DIM = 18
 
 
+def compute_score_ahead_target(
+    all_deliveries: List[Dict],
+    ball_idx: int,
+    lookahead_overs: int = 5
+) -> float:
+    """Compute runs to be scored between current ball and target over boundary.
+
+    Args:
+        all_deliveries: All deliveries in the innings (flattened)
+        ball_idx: Current ball index (the ball we're predicting FROM)
+        lookahead_overs: Number of overs to look ahead (default 5)
+
+    Returns:
+        Delta runs (float) = score_at_target - current_score
+    """
+    current_over = all_deliveries[ball_idx]['_over']
+
+    # Determine target over boundary
+    if current_over < lookahead_overs:
+        target_over_boundary = lookahead_overs  # First 5 overs -> target end of over 4
+    elif current_over >= 20 - lookahead_overs:
+        target_over_boundary = 20  # Last 5 overs -> target end of innings
+    else:
+        target_over_boundary = current_over + lookahead_overs
+
+    # Current score = runs from deliveries 0 to ball_idx-1
+    current_score = sum(d['runs']['total'] for d in all_deliveries[:ball_idx])
+
+    # Score at target = runs from all deliveries where _over < target_over_boundary
+    score_at_target = sum(
+        d['runs']['total'] for d in all_deliveries
+        if d['_over'] < target_over_boundary
+    )
+
+    return float(score_at_target - current_score)
+
+
 def outcome_to_class(delivery: Dict) -> int:
     """
     Convert delivery outcome to class label.

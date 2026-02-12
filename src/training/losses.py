@@ -222,6 +222,28 @@ def compute_class_weights_effective_samples(
     return weights
 
 
+class ScoreRegressionLoss(nn.Module):
+    """Huber (Smooth L1) loss for score-ahead regression.
+
+    Uses SmoothL1Loss with configurable beta (delta) threshold:
+    - MSE behavior for errors < delta (small errors)
+    - MAE behavior for errors >= delta (robust to outliers)
+
+    This makes training robust to outlier innings (collapses, massive hitting).
+
+    Args:
+        delta: Threshold for switching from MSE to MAE behavior (default: 10.0)
+    """
+
+    def __init__(self, delta: float = 10.0):
+        super().__init__()
+        self.loss = nn.SmoothL1Loss(beta=delta)
+
+    def forward(self, outputs: dict, targets: torch.Tensor) -> torch.Tensor:
+        score_pred = outputs['score'].squeeze(-1)  # [batch_size]
+        return self.loss(score_pred, targets.float())
+
+
 class BinaryFocalLoss(nn.Module):
     """
     Binary Focal Loss for handling class imbalance in binary classification.

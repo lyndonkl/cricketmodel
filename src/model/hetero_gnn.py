@@ -44,7 +44,7 @@ class ModelConfig:
     dropout: float = 0.1
 
     # Task
-    num_classes: int = 7  # Dot, Single, Two, Three, Four, Six, Wicket
+    num_classes: int = 1  # Score regression (single output)
 
     # Model variants
     use_hybrid_readout: bool = True  # Use matchup + query hybrid readout
@@ -68,16 +68,11 @@ class CricketHeteroGNN(nn.Module):
     1. Node Encoders: Project each node type to common hidden_dim
     2. Message Passing: Stack of HeteroConvBlocks
     3. Readout: Extract query node representation
-    4. Prediction: Multi-head output (7-class main + binary auxiliary heads)
+    4. Prediction: Score regression head (runs scored in next 5 overs)
 
     The model uses the query node as a learnable aggregation point.
     After message passing, information from all context nodes flows
     to the query node, which is then used for prediction.
-
-    Multi-head architecture:
-    - Main head: 7-class outcome prediction (Dot, Single, Two, Three, Four, Six, Wicket)
-    - Boundary head: Binary prediction for Four/Six
-    - Wicket head: Binary prediction for Wicket
 
     Subclasses should override `get_readout()` to customize the readout mechanism.
     """
@@ -113,17 +108,8 @@ class CricketHeteroGNN(nn.Module):
             dropout=config.dropout,
         )
 
-        # === Binary Prediction Heads ===
-        # Boundary head: predicts if next ball is a Four or Six
-        self.boundary_head = nn.Sequential(
-            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim // 2, 1),
-        )
-
-        # Wicket head: predicts if next ball is a wicket
-        self.wicket_head = nn.Sequential(
+        # === Score Regression Head ===
+        self.score_head = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(config.dropout),
@@ -147,15 +133,13 @@ class CricketHeteroGNN(nn.Module):
 
     def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with binary prediction heads.
+        Forward pass with score regression head.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Dict with keys:
-            - 'boundary': binary logits [batch_size, 1] for Four/Six prediction
-            - 'wicket': binary logits [batch_size, 1] for wicket prediction
+            Dict with key 'score': predicted runs ahead [batch_size, 1]
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -175,11 +159,8 @@ class CricketHeteroGNN(nn.Module):
         # 3. Get readout representation (subclasses can override get_readout)
         readout = self.get_readout(data, x_dict)
 
-        # 4. Binary predictions
-        return {
-            'boundary': self.boundary_head(readout),   # [batch_size, 1]
-            'wicket': self.wicket_head(readout),       # [batch_size, 1]
-        }
+        # 4. Score regression prediction
+        return {'score': self.score_head(readout)}
 
     def get_attention_weights(
         self,
@@ -235,7 +216,7 @@ class CricketHeteroGNNWithPooling(CricketHeteroGNN):
     also performs explicit pooling over ball nodes and combines
     the result with the query representation.
 
-    Inherits multi-head architecture from base class.
+    Inherits score regression head from base class.
     """
 
     def __init__(self, config: ModelConfig):
@@ -316,7 +297,7 @@ class CricketHeteroGNNHybrid(CricketHeteroGNN):
     This respects the GDL principle that the prediction task level should match
     the structural level of the phenomenon being predicted.
 
-    Inherits multi-head architecture from base class.
+    Inherits score regression head from base class.
     """
 
     def __init__(self, config: ModelConfig):
@@ -402,7 +383,7 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
     The same underlying graph structure is used, but the model can learn
     to weight information differently based on phase context.
 
-    Inherits multi-head architecture from base class.
+    Inherits score regression head from base class.
     """
 
     def __init__(self, config: ModelConfig):
@@ -449,13 +430,13 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
 
     def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with phase-conditioned message passing and binary heads.
+        Forward pass with phase-conditioned message passing and score regression.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Dict with 'boundary', 'wicket' keys
+            Dict with 'score' key
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -481,11 +462,8 @@ class CricketHeteroGNNPhaseModulated(CricketHeteroGNNHybrid):
         # 4. Get readout using hybrid method (inherited from CricketHeteroGNNHybrid)
         readout = self.get_readout(data, x_dict)
 
-        # 5. Binary predictions
-        return {
-            'boundary': self.boundary_head(readout),
-            'wicket': self.wicket_head(readout),
-        }
+        # 5. Score regression prediction
+        return {'score': self.score_head(readout)}
 
 
 class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
@@ -504,42 +482,15 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
     The chase state injection allows the model to learn different decision boundaries
     for chasing scenarios (e.g., higher risk tolerance when behind required rate).
 
-    Inherits multi-head architecture from base class (boundary/wicket heads).
+    Inherits score regression head from base class.
     """
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
 
-        # First innings head (standard) - replaces self.predictor for 1st innings
-        self.first_innings_head = nn.Sequential(
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.LayerNorm(config.hidden_dim),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-            nn.LayerNorm(config.hidden_dim // 2),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim // 2, config.num_classes),
-        )
-
-        # Second innings head (with enhanced chase state injection)
-        # Chase state has 7 features: runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
+        # Chase projection: projects readout+chase_state back to hidden_dim for score head
+        # This allows the same score head to be used for both innings
         chase_state_dim = 7
-        self.second_innings_head = nn.Sequential(
-            nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
-            nn.LayerNorm(config.hidden_dim),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-            nn.LayerNorm(config.hidden_dim // 2),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim // 2, config.num_classes),
-        )
-
-        # Chase projection: projects readout+chase_state back to hidden_dim for binary heads
-        # This allows the same binary heads to be used for both innings
         self.chase_projection = nn.Sequential(
             nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
             nn.LayerNorm(config.hidden_dim),
@@ -548,16 +499,15 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
 
     def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with innings-conditional prediction heads and multi-head output.
+        Forward pass with innings-conditional score regression.
 
-        Routes main head to first or second innings head based on is_chase flag.
-        Supports batched data with mixed innings (applies correct head per sample).
+        Routes through chase projection for 2nd innings, then uses shared score head.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Dict with 'main', 'boundary', 'wicket' keys
+            Dict with 'score' key
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -585,33 +535,24 @@ class CricketHeteroGNNInningsConditional(CricketHeteroGNNHybrid):
         if is_chase.dim() > 1:
             is_chase = is_chase.squeeze(-1)
 
-        # 5. Compute innings-conditional binary predictions
+        # 5. Innings-conditional score prediction
         # First innings: use readout directly
-        first_innings_boundary = self.boundary_head(readout)
-        first_innings_wicket = self.wicket_head(readout)
+        first_innings_score = self.score_head(readout)
 
-        # Second innings: inject chase state into readout
+        # Second innings: inject chase state
         readout_with_chase = torch.cat([readout, chase_state], dim=-1)
-        # Project back to original dimension for binary heads
         readout_chase_proj = self.chase_projection(readout_with_chase)
-        second_innings_boundary = self.boundary_head(readout_chase_proj)
-        second_innings_wicket = self.wicket_head(readout_chase_proj)
+        second_innings_score = self.score_head(readout_chase_proj)
 
-        # Select appropriate predictions based on innings
-        is_chase_boundary = is_chase.unsqueeze(-1).expand_as(first_innings_boundary)
-        is_chase_wicket = is_chase.unsqueeze(-1).expand_as(first_innings_wicket)
+        # Select based on innings
+        is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_score)
+        score_pred = torch.where(is_chase_expanded, second_innings_score, first_innings_score)
 
-        boundary_logits = torch.where(is_chase_boundary, second_innings_boundary, first_innings_boundary)
-        wicket_logits = torch.where(is_chase_wicket, second_innings_wicket, first_innings_wicket)
-
-        return {
-            'boundary': boundary_logits,
-            'wicket': wicket_logits,
-        }
+        return {'score': score_pred}
 
     def forward_with_head_info(self, data) -> tuple:
         """
-        Forward pass that also returns which head was used (for debugging/analysis).
+        Forward pass that also returns which innings routing was used (for debugging).
 
         Returns:
             Tuple of (outputs_dict, is_chase_mask)
@@ -630,8 +571,8 @@ class CricketHeteroGNNFull(nn.Module):
     1. Hierarchical player embeddings (cold-start handling)
     2. Hybrid matchup + query readout
     3. Phase-modulated message passing (FiLM)
-    4. Innings-conditional prediction heads
-    5. Multi-head prediction (7-class main + binary boundary/wicket)
+    4. Innings-conditional routing
+    5. Score regression (runs scored in next 5 overs)
 
     This is the recommended production model that incorporates all
     GDL-informed architectural decisions.
@@ -702,82 +643,33 @@ class CricketHeteroGNNFull(nn.Module):
             nn.Sigmoid(),
         )
 
-        # === Binary Auxiliary Heads ===
-        # Boundary head: predicts if next ball is a Four or Six
-        self.boundary_head = nn.Sequential(
+        # === Score Regression Head ===
+        self.score_head = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(config.dropout),
             nn.Linear(config.hidden_dim // 2, 1),
         )
 
-        # Wicket head: predicts if next ball is a wicket
-        self.wicket_head = nn.Sequential(
-            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim // 2, 1),
-        )
-
-        # === Innings-Conditional Prediction Heads ===
+        # === Innings-Conditional Routing ===
         if config.use_innings_conditional:
-            # First innings head (standard)
-            self.first_innings_head = nn.Sequential(
-                nn.Linear(config.hidden_dim, config.hidden_dim),
-                nn.LayerNorm(config.hidden_dim),
-                nn.GELU(),
-                nn.Dropout(config.dropout),
-                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-                nn.LayerNorm(config.hidden_dim // 2),
-                nn.GELU(),
-                nn.Dropout(config.dropout),
-                nn.Linear(config.hidden_dim // 2, config.num_classes),
-            )
-
-            # Second innings head (with enhanced chase state injection)
-            # Chase state has 7 features: runs_needed, rrr, is_chase, rrr_norm, difficulty, balls_rem, wickets_rem
+            # Chase projection for innings-conditional routing
             chase_state_dim = 7
-            self.second_innings_head = nn.Sequential(
-                nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
-                nn.LayerNorm(config.hidden_dim),
-                nn.GELU(),
-                nn.Dropout(config.dropout),
-                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-                nn.LayerNorm(config.hidden_dim // 2),
-                nn.GELU(),
-                nn.Dropout(config.dropout),
-                nn.Linear(config.hidden_dim // 2, config.num_classes),
-            )
-
-            # Chase projection for binary heads
             self.chase_projection = nn.Sequential(
                 nn.Linear(config.hidden_dim + chase_state_dim, config.hidden_dim),
                 nn.LayerNorm(config.hidden_dim),
                 nn.GELU(),
             )
-        else:
-            # Single prediction head
-            self.predictor = nn.Sequential(
-                nn.Linear(config.hidden_dim, config.hidden_dim),
-                nn.LayerNorm(config.hidden_dim),
-                nn.GELU(),
-                nn.Dropout(config.dropout),
-                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-                nn.LayerNorm(config.hidden_dim // 2),
-                nn.GELU(),
-                nn.Dropout(config.dropout),
-                nn.Linear(config.hidden_dim // 2, config.num_classes),
-            )
 
     def forward(self, data) -> Dict[str, torch.Tensor]:
         """
-        Forward pass with all enhancements and binary heads.
+        Forward pass with all enhancements and score regression.
 
         Args:
             data: HeteroData or batched HeteroData
 
         Returns:
-            Dict with 'boundary', 'wicket' keys
+            Dict with 'score' key
         """
         # 1. Encode all nodes
         x_dict = self.encoders.encode_nodes(data)
@@ -833,7 +725,7 @@ class CricketHeteroGNNFull(nn.Module):
         readout = torch.cat([matchup, query], dim=-1)
         readout = self.combiner(readout)
 
-        # 4. Binary predictions (innings-conditional if enabled)
+        # 4. Score regression (innings-conditional if enabled)
         if self.config.use_innings_conditional:
             chase_state = data['chase_state'].x  # [batch_size, 7]
             is_chase = data.is_chase  # [batch_size] bool tensor
@@ -843,31 +735,20 @@ class CricketHeteroGNNFull(nn.Module):
                 is_chase = is_chase.squeeze(-1)
 
             # First innings: use readout directly
-            first_innings_boundary = self.boundary_head(readout)
-            first_innings_wicket = self.wicket_head(readout)
+            first_innings_score = self.score_head(readout)
 
             # Second innings: inject chase state
             readout_with_chase = torch.cat([readout, chase_state], dim=-1)
             readout_chase_proj = self.chase_projection(readout_with_chase)
-            second_innings_boundary = self.boundary_head(readout_chase_proj)
-            second_innings_wicket = self.wicket_head(readout_chase_proj)
+            second_innings_score = self.score_head(readout_chase_proj)
 
             # Select based on innings
-            is_chase_boundary = is_chase.unsqueeze(-1).expand_as(first_innings_boundary)
-            is_chase_wicket = is_chase.unsqueeze(-1).expand_as(first_innings_wicket)
+            is_chase_expanded = is_chase.unsqueeze(-1).expand_as(first_innings_score)
+            score_pred = torch.where(is_chase_expanded, second_innings_score, first_innings_score)
 
-            boundary_logits = torch.where(is_chase_boundary, second_innings_boundary, first_innings_boundary)
-            wicket_logits = torch.where(is_chase_wicket, second_innings_wicket, first_innings_wicket)
-
-            return {
-                'boundary': boundary_logits,
-                'wicket': wicket_logits,
-            }
+            return {'score': score_pred}
         else:
-            return {
-                'boundary': self.boundary_head(readout),
-                'wicket': self.wicket_head(readout),
-            }
+            return {'score': self.score_head(readout)}
 
     @classmethod
     def from_dataset_metadata(
