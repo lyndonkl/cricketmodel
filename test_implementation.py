@@ -52,7 +52,7 @@ def test_imports():
         from src.training import (
             Trainer,
             TrainingConfig,
-            compute_metrics,
+            compute_regression_metrics,
         )
         print("  ✓ Training modules imported")
     except ImportError as e:
@@ -307,24 +307,25 @@ def test_model_forward():
 
 
 def test_metrics():
-    """Test metrics computation."""
+    """Test regression metrics computation."""
     print("\nTesting metrics...")
 
-    from src.training import compute_metrics, print_classification_report
+    from src.training import compute_regression_metrics, print_regression_report
     import numpy as np
 
-    # Sample predictions
-    labels = [0, 1, 2, 0, 1, 4, 6, 0, 1, 2]
-    preds = [0, 1, 1, 0, 1, 4, 0, 1, 1, 2]
-    probs = np.eye(7)[preds]  # One-hot as probabilities
+    # Sample regression predictions
+    targets = np.array([5.0, 10.0, 15.0, 20.0, 25.0])
+    predictions = np.array([6.0, 9.0, 16.0, 18.0, 26.0])
 
-    metrics = compute_metrics(labels, preds, probs)
+    metrics = compute_regression_metrics(targets, predictions)
 
-    assert 'accuracy' in metrics
-    assert 'f1_macro' in metrics
-    assert 'confusion_matrix' in metrics
-    print(f"  ✓ Accuracy: {metrics['accuracy']:.3f}")
-    print(f"  ✓ Macro F1: {metrics['f1_macro']:.3f}")
+    assert 'mae' in metrics
+    assert 'rmse' in metrics
+    assert 'r_squared' in metrics
+    assert 'median_ae' in metrics
+    print(f"  ✓ MAE: {metrics['mae']:.3f}")
+    print(f"  ✓ RMSE: {metrics['rmse']:.3f}")
+    print(f"  ✓ R²: {metrics['r_squared']:.4f}")
 
     return True
 

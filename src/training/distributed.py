@@ -290,7 +290,7 @@ def gather_predictions(
                 labels, preds, probs, device
             )
             if is_main:
-                metrics = compute_metrics(all_labels, all_preds, all_probs)
+                metrics = compute_regression_metrics(all_labels, all_preds)
     """
     import numpy as np
 

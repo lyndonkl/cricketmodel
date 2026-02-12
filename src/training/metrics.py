@@ -1,472 +1,76 @@
 """
-Evaluation Metrics for Cricket Ball Prediction
+Evaluation Metrics for Cricket Score-Ahead Regression
 
-Provides comprehensive metrics for multi-class classification
-with focus on imbalanced cricket outcome prediction.
+Provides regression metrics for evaluating score-ahead predictions.
 """
 
 import numpy as np
-import torch
-from typing import Dict, List, Optional, Tuple
-from collections import Counter
+from typing import Dict
 
 
-# Class names for cricket outcomes
-CLASS_NAMES = ['Dot', 'Single', 'Two', 'Three', 'Four', 'Six', 'Wicket']
-
-
-def compute_accuracy(labels: List[int], predictions: List[int]) -> float:
-    """Compute accuracy."""
-    correct = sum(l == p for l, p in zip(labels, predictions))
-    return correct / len(labels) if len(labels) > 0 else 0.0
-
-
-def compute_class_accuracies(
-    labels: List[int],
-    predictions: List[int],
-    num_classes: int = 7
+def compute_regression_metrics(
+    targets: np.ndarray,
+    predictions: np.ndarray,
 ) -> Dict[str, float]:
-    """Compute per-class accuracy."""
-    class_correct = Counter()
-    class_total = Counter()
+    """
+    Compute regression metrics for score-ahead predictions.
 
-    for l, p in zip(labels, predictions):
-        class_total[l] += 1
-        if l == p:
-            class_correct[l] += 1
+    Args:
+        targets: Ground truth score-ahead values
+        predictions: Predicted score-ahead values
 
-    accuracies = {}
-    for c in range(num_classes):
-        if class_total[c] > 0:
-            accuracies[CLASS_NAMES[c]] = class_correct[c] / class_total[c]
-        else:
-            accuracies[CLASS_NAMES[c]] = 0.0
+    Returns:
+        Dict with mae, rmse, r_squared, median_ae
+    """
+    targets = np.asarray(targets, dtype=np.float64)
+    predictions = np.asarray(predictions, dtype=np.float64)
 
-    return accuracies
+    errors = predictions - targets
+    abs_errors = np.abs(errors)
 
+    mae = np.mean(abs_errors)
+    rmse = np.sqrt(np.mean(errors ** 2))
+    median_ae = np.median(abs_errors)
 
-def compute_f1_scores(
-    labels: List[int],
-    predictions: List[int],
-    num_classes: int = 7
-) -> Dict[str, Dict[str, float]]:
-    """Compute precision, recall, F1 per class and macro/weighted averages."""
-
-    # Per-class counts
-    true_positives = Counter()
-    false_positives = Counter()
-    false_negatives = Counter()
-
-    for l, p in zip(labels, predictions):
-        if l == p:
-            true_positives[l] += 1
-        else:
-            false_positives[p] += 1
-            false_negatives[l] += 1
-
-    # Per-class metrics
-    per_class = {}
-    for c in range(num_classes):
-        tp = true_positives[c]
-        fp = false_positives[c]
-        fn = false_negatives[c]
-
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-
-        per_class[CLASS_NAMES[c]] = {
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'support': tp + fn,
-        }
-
-    # Macro average (unweighted mean)
-    f1_values = [per_class[name]['f1'] for name in CLASS_NAMES]
-    precision_values = [per_class[name]['precision'] for name in CLASS_NAMES]
-    recall_values = [per_class[name]['recall'] for name in CLASS_NAMES]
-
-    macro_f1 = np.mean(f1_values)
-    macro_precision = np.mean(precision_values)
-    macro_recall = np.mean(recall_values)
-
-    # Weighted average
-    total_support = sum(per_class[name]['support'] for name in CLASS_NAMES)
-    if total_support > 0:
-        weighted_f1 = sum(
-            per_class[name]['f1'] * per_class[name]['support']
-            for name in CLASS_NAMES
-        ) / total_support
-        weighted_precision = sum(
-            per_class[name]['precision'] * per_class[name]['support']
-            for name in CLASS_NAMES
-        ) / total_support
-        weighted_recall = sum(
-            per_class[name]['recall'] * per_class[name]['support']
-            for name in CLASS_NAMES
-        ) / total_support
-    else:
-        weighted_f1 = weighted_precision = weighted_recall = 0.0
+    # R² (coefficient of determination)
+    ss_res = np.sum(errors ** 2)
+    ss_tot = np.sum((targets - np.mean(targets)) ** 2)
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
 
     return {
-        'per_class': per_class,
-        'macro': {
-            'precision': macro_precision,
-            'recall': macro_recall,
-            'f1': macro_f1,
-        },
-        'weighted': {
-            'precision': weighted_precision,
-            'recall': weighted_recall,
-            'f1': weighted_f1,
-        },
+        'mae': float(mae),
+        'rmse': float(rmse),
+        'r_squared': float(r_squared),
+        'median_ae': float(median_ae),
     }
 
 
-def compute_top_k_accuracy(
-    labels: List[int],
-    probs: np.ndarray,
-    k: int = 2
-) -> float:
-    """Compute top-k accuracy."""
-    if len(labels) == 0:
-        return 0.0
-
-    correct = 0
-    for i, label in enumerate(labels):
-        top_k_preds = np.argsort(probs[i])[-k:]
-        if label in top_k_preds:
-            correct += 1
-
-    return correct / len(labels)
-
-
-def compute_log_loss(
-    labels: List[int],
-    probs: np.ndarray,
-    eps: float = 1e-15
-) -> float:
-    """Compute cross-entropy loss."""
-    probs = np.clip(probs, eps, 1 - eps)
-    n_samples = len(labels)
-    if n_samples == 0:
-        return 0.0
-
-    loss = -sum(np.log(probs[i, labels[i]]) for i in range(n_samples))
-    return loss / n_samples
-
-
-def compute_confusion_matrix(
-    labels: List[int],
-    predictions: List[int],
-    num_classes: int = 7
-) -> np.ndarray:
-    """Compute confusion matrix."""
-    cm = np.zeros((num_classes, num_classes), dtype=np.int64)
-    for l, p in zip(labels, predictions):
-        cm[l, p] += 1
-    return cm
-
-
-def compute_wicket_recall(labels: List[int], predictions: List[int]) -> float:
-    """
-    Compute recall for wicket class (class 6).
-
-    Wickets are game-changing events - missing them is costly.
-    Target: > 0.20
-    """
-    wicket_class = 6  # Wicket is class 6
-    true_wickets = sum(1 for l in labels if l == wicket_class)
-    if true_wickets == 0:
-        return 0.0
-    correct_wickets = sum(1 for l, p in zip(labels, predictions) if l == wicket_class and p == wicket_class)
-    return correct_wickets / true_wickets
-
-
-def compute_boundary_precision(labels: List[int], predictions: List[int]) -> float:
-    """
-    Compute precision for boundary classes (Four=4, Six=5).
-
-    When we predict a boundary, how often are we right?
-    Target: > 0.30
-    """
-    boundary_classes = [4, 5]  # Four and Six
-    predicted_boundaries = sum(1 for p in predictions if p in boundary_classes)
-    if predicted_boundaries == 0:
-        return 0.0
-    correct_boundaries = sum(
-        1 for l, p in zip(labels, predictions)
-        if p in boundary_classes and l == p
-    )
-    return correct_boundaries / predicted_boundaries
-
-
-def compute_expected_runs_error(labels: List[int], probs: np.ndarray) -> float:
-    """
-    Compute mean absolute error between predicted and actual expected runs.
-
-    Economic value of predictions.
-    """
-    # Outcome to runs mapping: Dot=0, Single=1, Two=2, Three=3, Four=4, Six=6, Wicket=0
-    runs_map = np.array([0, 1, 2, 3, 4, 6, 0])  # Index 5 is Six (6 runs), Index 6 is Wicket (0 runs)
-
-    # Expected runs from probability distribution
-    pred_expected_runs = np.dot(probs, runs_map)
-
-    # Actual runs
-    actual_runs = np.array([runs_map[l] for l in labels])
-
-    # Mean absolute error
-    return np.mean(np.abs(pred_expected_runs - actual_runs))
-
-
-def compute_expected_calibration_error(
-    labels: List[int],
-    probs: np.ndarray,
-    n_bins: int = 10
-) -> float:
-    """
-    Compute Expected Calibration Error (ECE).
-
-    Measures how well probability estimates match actual accuracy.
-    Target: ECE < 0.10
-    """
-    predictions = np.argmax(probs, axis=1)
-    confidences = np.max(probs, axis=1)
-    accuracies = (predictions == np.array(labels)).astype(float)
-
-    bin_boundaries = np.linspace(0, 1, n_bins + 1)
-    ece = 0.0
-
-    for i in range(n_bins):
-        in_bin = (confidences > bin_boundaries[i]) & (confidences <= bin_boundaries[i + 1])
-        prop_in_bin = np.mean(in_bin)
-
-        if prop_in_bin > 0:
-            avg_confidence = np.mean(confidences[in_bin])
-            avg_accuracy = np.mean(accuracies[in_bin])
-            ece += prop_in_bin * abs(avg_accuracy - avg_confidence)
-
-    return ece
-
-
-def compute_metrics(
-    labels: List[int],
-    predictions: List[int],
-    probs: Optional[np.ndarray] = None,
-    num_classes: int = 7
-) -> Dict:
-    """
-    Compute comprehensive evaluation metrics.
-
-    Args:
-        labels: Ground truth labels
-        predictions: Predicted labels
-        probs: Predicted probabilities [num_samples, num_classes]
-        num_classes: Number of classes
-
-    Returns:
-        Dict with all metrics
-    """
-    metrics = {}
-
-    # Basic accuracy
-    metrics['accuracy'] = compute_accuracy(labels, predictions)
-
-    # Per-class accuracy
-    metrics['class_accuracies'] = compute_class_accuracies(labels, predictions, num_classes)
-
-    # F1 scores
-    f1_metrics = compute_f1_scores(labels, predictions, num_classes)
-    metrics['f1_macro'] = f1_metrics['macro']['f1']
-    metrics['f1_weighted'] = f1_metrics['weighted']['f1']
-    metrics['precision_macro'] = f1_metrics['macro']['precision']
-    metrics['recall_macro'] = f1_metrics['macro']['recall']
-    metrics['per_class_f1'] = f1_metrics['per_class']
-
-    # Confusion matrix
-    metrics['confusion_matrix'] = compute_confusion_matrix(labels, predictions, num_classes)
-
-    # Cricket-specific metrics
-    metrics['wicket_recall'] = compute_wicket_recall(labels, predictions)
-    metrics['boundary_precision'] = compute_boundary_precision(labels, predictions)
-
-    # Probability-based metrics (if available)
-    if probs is not None:
-        metrics['log_loss'] = compute_log_loss(labels, probs)
-        metrics['top_2_accuracy'] = compute_top_k_accuracy(labels, probs, k=2)
-        metrics['top_3_accuracy'] = compute_top_k_accuracy(labels, probs, k=3)
-        metrics['expected_runs_error'] = compute_expected_runs_error(labels, probs)
-        metrics['ece'] = compute_expected_calibration_error(labels, probs)
-
-    return metrics
-
-
-def print_classification_report(
-    labels: List[int],
-    predictions: List[int],
-    probs: Optional[np.ndarray] = None
+def print_regression_report(
+    targets: np.ndarray,
+    predictions: np.ndarray,
 ) -> str:
     """
-    Print a formatted classification report.
+    Print a formatted regression report.
 
     Args:
-        labels: Ground truth labels
-        predictions: Predicted labels
-        probs: Predicted probabilities
+        targets: Ground truth score-ahead values
+        predictions: Predicted score-ahead values
 
     Returns:
         Formatted report string
     """
-    metrics = compute_metrics(labels, predictions, probs)
+    metrics = compute_regression_metrics(targets, predictions)
 
     lines = []
-    lines.append("=" * 70)
-    lines.append("Classification Report")
-    lines.append("=" * 70)
-
-    # Overall metrics
-    lines.append(f"\nOverall Accuracy: {metrics['accuracy']:.4f}")
-    lines.append(f"Macro F1: {metrics['f1_macro']:.4f}")
-    lines.append(f"Weighted F1: {metrics['f1_weighted']:.4f}")
-
-    if 'log_loss' in metrics:
-        lines.append(f"Log Loss: {metrics['log_loss']:.4f}")
-        lines.append(f"Top-2 Accuracy: {metrics['top_2_accuracy']:.4f}")
-        lines.append(f"Top-3 Accuracy: {metrics['top_3_accuracy']:.4f}")
-
-    # Per-class metrics
-    lines.append("\n" + "-" * 70)
-    lines.append(f"{'Class':<10} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>10}")
-    lines.append("-" * 70)
-
-    for class_name in CLASS_NAMES:
-        class_metrics = metrics['per_class_f1'][class_name]
-        lines.append(
-            f"{class_name:<10} "
-            f"{class_metrics['precision']:>10.4f} "
-            f"{class_metrics['recall']:>10.4f} "
-            f"{class_metrics['f1']:>10.4f} "
-            f"{class_metrics['support']:>10}"
-        )
-
-    # Confusion matrix
-    lines.append("\n" + "-" * 70)
-    lines.append("Confusion Matrix")
-    lines.append("-" * 70)
-
-    cm = metrics['confusion_matrix']
-    header = "Pred:  " + "  ".join(f"{name[:3]:>5}" for name in CLASS_NAMES)
-    lines.append(header)
-    lines.append("True:")
-    for i, row in enumerate(cm):
-        row_str = f"{CLASS_NAMES[i][:3]:>5}  " + "  ".join(f"{v:>5}" for v in row)
-        lines.append(row_str)
-
-    lines.append("=" * 70)
+    lines.append("=" * 50)
+    lines.append("Score-Ahead Regression Report")
+    lines.append("=" * 50)
+    lines.append(f"  MAE:       {metrics['mae']:.2f}")
+    lines.append(f"  RMSE:      {metrics['rmse']:.2f}")
+    lines.append(f"  Median AE: {metrics['median_ae']:.2f}")
+    lines.append(f"  R²:        {metrics['r_squared']:.4f}")
+    lines.append("=" * 50)
 
     report = "\n".join(lines)
     print(report)
     return report
-
-
-def plot_confusion_matrix(
-    labels: List[int],
-    predictions: List[int],
-    save_path: Optional[str] = None,
-    normalize: bool = True
-) -> None:
-    """
-    Plot confusion matrix using matplotlib.
-
-    Args:
-        labels: Ground truth labels
-        predictions: Predicted labels
-        save_path: Path to save figure (optional)
-        normalize: Whether to normalize by row
-    """
-    try:
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-    except ImportError:
-        print("matplotlib and seaborn required for plotting")
-        return
-
-    cm = compute_confusion_matrix(labels, predictions)
-
-    if normalize:
-        cm_normalized = cm.astype(float) / cm.sum(axis=1, keepdims=True)
-        cm_normalized = np.nan_to_num(cm_normalized)
-    else:
-        cm_normalized = cm
-
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(
-        cm_normalized,
-        annot=True,
-        fmt='.2f' if normalize else 'd',
-        cmap='Blues',
-        xticklabels=CLASS_NAMES,
-        yticklabels=CLASS_NAMES,
-    )
-    plt.title('Confusion Matrix' + (' (Normalized)' if normalize else ''))
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved confusion matrix to {save_path}")
-    else:
-        plt.show()
-
-    plt.close()
-
-
-def create_confusion_matrix_figure(
-    labels: List[int],
-    predictions: List[int],
-    normalize: bool = True
-):
-    """
-    Create confusion matrix figure for WandB logging.
-
-    Args:
-        labels: Ground truth labels
-        predictions: Predicted labels
-        normalize: Whether to normalize by row
-
-    Returns:
-        matplotlib figure object (or None if matplotlib not available)
-    """
-    try:
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-    except ImportError:
-        return None
-
-    cm = compute_confusion_matrix(labels, predictions)
-
-    if normalize:
-        cm_normalized = cm.astype(float) / cm.sum(axis=1, keepdims=True)
-        cm_normalized = np.nan_to_num(cm_normalized)
-    else:
-        cm_normalized = cm
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(
-        cm_normalized,
-        annot=True,
-        fmt='.2f' if normalize else 'd',
-        cmap='Blues',
-        xticklabels=CLASS_NAMES,
-        yticklabels=CLASS_NAMES,
-        ax=ax,
-    )
-    ax.set_title('Confusion Matrix' + (' (Normalized)' if normalize else ''))
-    ax.set_xlabel('Predicted')
-    ax.set_ylabel('True')
-    plt.tight_layout()
-
-    return fig

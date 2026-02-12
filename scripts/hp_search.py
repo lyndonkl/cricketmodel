@@ -87,7 +87,7 @@ SEARCH_SPACES = {
         "weight_decay": {"type": "categorical", "values": [0.0, 0.01, 0.05]},
     },
     "phase4_loss": {
-        "focal_gamma": {"type": "categorical", "values": [0.0, 1.0, 2.0, 3.0]},
+        "huber_delta": {"type": "categorical", "values": [1.0, 5.0, 10.0, 20.0]},
     },
     "full": {
         # All hyperparameters for comprehensive search
@@ -97,7 +97,7 @@ SEARCH_SPACES = {
         "lr": {"type": "float", "low": 1e-4, "high": 2e-3, "log": True},
         "dropout": {"type": "float", "low": 0.0, "high": 0.3},
         "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
-        "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
+        "huber_delta": {"type": "float", "low": 1.0, "high": 20.0},
     },
     # === Model Variant Search Phases ===
     "model_variants": {
@@ -137,7 +137,7 @@ SEARCH_SPACES = {
         "lr": {"type": "float", "low": 1e-4, "high": 2e-3, "log": True},
         "dropout": {"type": "float", "low": 0.0, "high": 0.3},
         "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
-        "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
+        "huber_delta": {"type": "float", "low": 1.0, "high": 20.0},
     },
     "full_model_only": {
         # Hyperparameter search for CricketHeteroGNNFull model only
@@ -148,7 +148,7 @@ SEARCH_SPACES = {
         "lr": {"type": "float", "low": 1e-4, "high": 2e-3, "log": True},
         "dropout": {"type": "float", "low": 0.0, "high": 0.3},
         "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
-        "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
+        "huber_delta": {"type": "float", "low": 1.0, "high": 20.0},
     },
 }
 
@@ -161,7 +161,7 @@ DEFAULT_PARAMS = {
     "lr": 1e-3,
     "dropout": 0.1,
     "weight_decay": 0.01,
-    "focal_gamma": 2.0,
+    "huber_delta": 10.0,
 }
 
 
@@ -238,7 +238,7 @@ def create_objective(
         dropout = params.get("dropout", DEFAULT_PARAMS["dropout"])
         lr = params.get("lr", DEFAULT_PARAMS["lr"])
         weight_decay = params.get("weight_decay", DEFAULT_PARAMS["weight_decay"])
-        focal_gamma = params.get("focal_gamma", DEFAULT_PARAMS["focal_gamma"])
+        huber_delta = params.get("huber_delta", DEFAULT_PARAMS["huber_delta"])
 
         # 2. Create trial-specific checkpoint directory
         trial_checkpoint_dir = os.path.join(checkpoint_base_dir, f"trial_{trial.number}")
@@ -264,8 +264,7 @@ def create_objective(
             epochs=base_config["epochs"],
             patience=base_config["patience"],
             checkpoint_dir=trial_checkpoint_dir,
-            use_focal_loss=True,
-            focal_gamma=focal_gamma,
+            huber_delta=huber_delta,
         )
 
         # 5. Create trainer
@@ -507,7 +506,7 @@ def run_phase(
             )
 
             wandb_callback = WeightsAndBiasesCallback(
-                metric_name="f1_macro",
+                metric_name="val_loss",
                 wandb_kwargs={"project": wandb_project},
                 as_multirun=True,
             )

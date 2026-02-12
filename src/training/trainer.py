@@ -54,8 +54,7 @@ class TrainingConfig:
     eval_interval: int = 1  # epochs
 
     # Loss function
-    use_focal_loss: bool = True  # Use Focal Loss for class imbalance
-    focal_gamma: float = 2.0  # Focal loss focusing parameter
+    huber_delta: float = 10.0  # Huber loss transition point (MSE for errors < delta, MAE for larger)
 
     # Mixed precision
     use_amp: bool = False  # Enable Automatic Mixed Precision (CUDA only)
@@ -79,8 +78,6 @@ class Trainer:
         train_loader: DataLoader,
         val_loader: DataLoader,
         config: TrainingConfig,
-        class_weights: Optional[torch.Tensor] = None,
-        class_distribution: Optional[Dict[str, Dict]] = None,
         device: Optional[torch.device] = None,
         force_cpu: bool = False,
         # DDP parameters
@@ -96,9 +93,6 @@ class Trainer:
             train_loader: Training data loader
             val_loader: Validation data loader
             config: Training configuration
-            class_weights: Optional class weights (unused, kept for API compatibility)
-            class_distribution: Class distribution dict from compute_class_weights()
-                               Used to derive binary focal loss alpha values
             device: Device to train on
             force_cpu: Force CPU usage (for DDP with Gloo backend)
             train_sampler: DistributedSampler for DDP (to call set_epoch)
@@ -170,9 +164,9 @@ class Trainer:
                 print("GPU prefetching enabled")
 
         # Loss - Huber (Smooth L1) loss for score regression
-        self.criterion = ScoreRegressionLoss(delta=10.0)
+        self.criterion = ScoreRegressionLoss(delta=config.huber_delta)
         if self.is_main:
-            print("Using Huber (SmoothL1) loss for score regression (delta=10.0)")
+            print(f"Using Huber (SmoothL1) loss for score regression (delta={config.huber_delta})")
 
         # Optimizer
         self.optimizer = AdamW(
@@ -611,7 +605,6 @@ def create_trainer(
     model: nn.Module,
     train_loader: DataLoader,
     val_loader: DataLoader,
-    class_weights: Optional[torch.Tensor] = None,
     **config_kwargs
 ) -> Trainer:
     """
@@ -621,7 +614,6 @@ def create_trainer(
         model: Model to train
         train_loader: Training data loader
         val_loader: Validation data loader
-        class_weights: Optional class weights
         **config_kwargs: Override default config values
 
     Returns:
@@ -633,5 +625,4 @@ def create_trainer(
         train_loader=train_loader,
         val_loader=val_loader,
         config=config,
-        class_weights=class_weights,
     )
