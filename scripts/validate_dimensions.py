@@ -95,9 +95,9 @@ def validate_feature_utils():
     result = compute_nonstriker_state(sample_deliveries, 'Player B')
     checks.append(("nonstriker_state", len(result), 8))
 
-    # bowler_state: 6 features
+    # bowler_state: 8 features (balls, runs, wickets, econ, dots_pct, threat, is_pace, is_spin)
     result = compute_bowler_state(sample_deliveries, 'Bowler X')
-    checks.append(("bowler_state", len(result), 6))
+    checks.append(("bowler_state", len(result), 8))
 
     # partnership: 4 features
     result = compute_partnership(sample_deliveries, 'Player A', 'Player B')
@@ -108,7 +108,7 @@ def validate_feature_utils():
     checks.append(("batting_momentum", len(result['batting_momentum']), 1))
     checks.append(("bowling_momentum", len(result['bowling_momentum']), 1))
     checks.append(("pressure_index", len(result['pressure_index']), 1))
-    checks.append(("dot_pressure", len(result['dot_pressure']), 3))
+    checks.append(("dot_pressure", len(result['dot_pressure']), 5))
 
     # ball features: 18 features
     result = compute_ball_features(sample_deliveries[0])
@@ -148,12 +148,12 @@ def validate_hetero_data_builder():
         'wicket_buffer': 2,
         'striker_state': 8,
         'nonstriker_state': 8,
-        'bowler_state': 6,
+        'bowler_state': 8,
         'partnership': 4,
         'batting_momentum': 1,
         'bowling_momentum': 1,
         'pressure_index': 1,
-        'dot_pressure': 3,
+        'dot_pressure': 5,
         'ball': 18,
         'query': 1,
     }
@@ -229,12 +229,12 @@ def validate_encoders():
         'wicket_buffer': 2,
         'striker_state': 8,
         'nonstriker_state': 8,
-        'bowler_state': 6,
+        'bowler_state': 8,
         'partnership': 4,
         'batting_momentum': 1,
         'bowling_momentum': 1,
         'pressure_index': 1,
-        'dot_pressure': 3,
+        'dot_pressure': 5,
     }
 
     all_passed = True
