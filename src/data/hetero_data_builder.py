@@ -23,7 +23,7 @@ from .feature_utils import (
     compute_partnership,
     compute_dynamics,
     compute_ball_features,
-    outcome_to_class,
+    compute_score_ahead_target,
     BALL_FEATURE_DIM,
 )
 from .edge_builder import build_all_edges
@@ -269,7 +269,8 @@ def create_hetero_data(
     # 8. LABEL
     # =========================================================================
 
-    data.y = torch.tensor([outcome_to_class(target_ball)], dtype=torch.long)
+    score_ahead = compute_score_ahead_target(all_deliveries, ball_idx)
+    data.y = torch.tensor([score_ahead], dtype=torch.float)
 
     # Store metadata for debugging and conditional routing
     data.match_id = info.get('match_type_number', 0)
@@ -427,6 +428,6 @@ def validate_hetero_data(data: HeteroData) -> bool:
     # Check label exists
     assert hasattr(data, 'y'), "Missing label"
     assert data.y.shape == (1,), f"Label shape mismatch: {data.y.shape}"
-    assert 0 <= data.y.item() <= 6, f"Invalid label: {data.y.item()}"
+    assert data.y.dtype == torch.float, f"Label dtype mismatch: {data.y.dtype} (expected float)"
 
     return True

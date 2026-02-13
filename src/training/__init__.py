@@ -2,12 +2,12 @@
 
 from .trainer import Trainer, TrainingConfig
 from .metrics import (
-    compute_metrics,
-    print_classification_report,
-    plot_confusion_matrix,
+    compute_regression_metrics,
+    print_regression_report,
 )
 from .losses import (
     FocalLoss,
+    ScoreRegressionLoss,
     BinaryFocalLoss,
     BinaryHeadLoss,
 )
@@ -30,11 +30,11 @@ __all__ = [
     "Trainer",
     "TrainingConfig",
     # Metrics
-    "compute_metrics",
-    "print_classification_report",
-    "plot_confusion_matrix",
+    "compute_regression_metrics",
+    "print_regression_report",
     # Losses
     "FocalLoss",
+    "ScoreRegressionLoss",
     "BinaryFocalLoss",
     "BinaryHeadLoss",
     # DDP utilities

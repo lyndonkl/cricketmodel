@@ -36,7 +36,6 @@ import torch
 from src.config import set_seed
 from src.data import (
     create_dataloaders,
-    compute_class_weights,
 )
 from src.data.dataset import create_dataloaders_distributed
 from src.model import (
@@ -186,10 +185,10 @@ def parse_args():
         help="Early stopping patience"
     )
     parser.add_argument(
-        "--focal-gamma",
+        "--huber-delta",
         type=float,
-        default=2.0,
-        help="Focal loss gamma parameter (higher = more focus on hard examples)"
+        default=10.0,
+        help="Huber loss delta (MSE for errors < delta, MAE for larger)"
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -210,12 +209,6 @@ def parse_args():
         action="store_true",
         help="Only run test evaluation (requires trained model)"
     )
-    parser.add_argument(
-        "--no-class-weights",
-        action="store_true",
-        help="Disable class weighting for imbalanced data"
-    )
-
     # WandB
     parser.add_argument(
         "--wandb",
@@ -270,7 +263,7 @@ def merge_config_with_args(args, config: dict):
         'weight_decay': 'weight_decay',
         'batch_size': 'batch_size',
         'model_class': 'model_class',
-        'focal_gamma': 'focal_gamma',
+        'huber_delta': 'huber_delta',
     }
 
     # Get the defaults from argparse
@@ -283,7 +276,7 @@ def merge_config_with_args(args, config: dict):
         'weight_decay': 0.01,
         'batch_size': 64,
         'model_class': 'CricketHeteroGNN',
-        'focal_gamma': 2.0,
+        'huber_delta': 10.0,
     }
 
     for config_key, arg_attr in key_mapping.items():
@@ -452,30 +445,6 @@ def main():
     if is_main:
         print(get_model_summary(model))
 
-    # Compute class weights (only rank 0 computes, others load from cache)
-    class_weights = None
-    class_distribution = None
-    if not args.no_class_weights:
-        cache_path = os.path.join(train_dataset.processed_dir, 'class_weights.pt')
-
-        if is_main:
-            # Rank 0 computes and saves to cache
-            class_weights, class_distribution = compute_class_weights(train_dataset)
-
-            # Print class distribution
-            print("\nClass distribution (train):")
-            for name, info in class_distribution.items():
-                print(f"  {name}: {info['count']} ({info['percentage']:.1f}%)")
-            print(f"\nClass weights: {class_weights.tolist()}")
-
-        # Synchronize: rank 0 finishes saving before others try to load
-        barrier()
-
-        if not is_main:
-            # Other ranks load directly from cache file
-            cached = torch.load(cache_path, weights_only=False)
-            class_weights = cached['weights']
-
     # === Test Only Mode ===
     if args.test_only:
         if is_main:
@@ -500,8 +469,6 @@ def main():
                 train_loader=train_loader,
                 val_loader=val_loader,
                 config=training_config,
-                class_weights=class_weights,
-                class_distribution=class_distribution,
                 device=device,
                 force_cpu=args.force_cpu,
             )
@@ -536,7 +503,7 @@ def main():
         epochs=args.epochs,
         patience=args.patience,
         checkpoint_dir=args.checkpoint_dir,
-        focal_gamma=args.focal_gamma,
+        huber_delta=args.huber_delta,
         use_amp=args.amp,
     )
 
@@ -545,8 +512,6 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         config=training_config,
-        class_weights=class_weights,
-        class_distribution=class_distribution,
         device=device,
         force_cpu=args.force_cpu,
         train_sampler=train_sampler,

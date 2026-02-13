@@ -1,255 +1,182 @@
 # WandB Metrics Reference
 
-This document provides comprehensive documentation for understanding all metrics logged during Cricket Ball Prediction GNN model training.
+This document provides comprehensive documentation for understanding all metrics logged during Cricket Score-Ahead Regression GNN model training.
 
 ---
 
-## 1. Understanding Classification Metrics
+## 1. Understanding Regression Metrics
 
-### Accuracy
-
-**General Definition:** Proportion of correct predictions out of all predictions.
-
-```
-Accuracy = Correct Predictions / Total Predictions
-```
-
-**In Our Context:** With 7 classes (Dot, Single, Two, Three, Four, Six, Wicket), random guessing gives ~14.3% accuracy. The class imbalance (Dots=39%, Singles=34%) means a model predicting only "Dot" would get 39% accuracy without learning anything useful.
-
-**Why It's Limited:** Accuracy alone is misleading for imbalanced datasets. A model ignoring rare events (wickets, sixes) can still achieve decent accuracy.
+The model predicts **score-ahead**: how many more runs the batting team will score from the current ball to the end of the innings. All evaluation metrics measure how close these continuous predictions are to the actual values.
 
 ---
 
-### Precision
+### MAE (Mean Absolute Error)
 
-**General Definition:** Of all predictions for class X, how many were actually X?
+**General Definition:** The average magnitude of prediction errors.
 
 ```
-Precision = True Positives / (True Positives + False Positives)
+MAE = Σ |predicted - actual| / n_samples
+```
+
+**In Our Context:** If MAE = 8.5, predictions are off by ~8.5 runs on average. Every run of error counts equally — overpredicting by 20 is twice as bad as overpredicting by 10.
+
+**Why It Helps:** The most intuitive metric. Directly interpretable in cricketing terms: "on average, the model is wrong by X runs." Good for communicating prediction quality to non-technical stakeholders.
+
+**Limitation:** Treats all errors equally. A few wildly wrong predictions (collapse innings, record-breaking partnerships) can inflate MAE even if most predictions are good.
+
+---
+
+### RMSE (Root Mean Squared Error)
+
+**General Definition:** Square root of the average squared errors. Penalizes large errors more than small ones.
+
+```
+RMSE = √(Σ (predicted - actual)² / n_samples)
 ```
 
 **In Our Context:**
-- `val/precision_wicket`: If the model predicts "wicket" 100 times and 30 are actual wickets → 30% precision
-- High precision = few false alarms
-- Low precision = many false positives (crying wolf)
+- RMSE is always ≥ MAE
+- If RMSE ≈ MAE: errors are consistent in size across predictions
+- If RMSE >> MAE: some predictions are way off (outlier innings the model misses)
 
-**Cricket Interpretation:** High boundary precision means when the model says "Four" or "Six", it's usually right. Important for risk assessment.
+**Why It Helps:** Reveals whether the model has a few catastrophic failures. In cricket, these would be collapse innings (predicting 80 when team collapses for 30) or massive hitting sprees the model doesn't anticipate.
+
+**Relationship to MAE:** The ratio RMSE/MAE indicates error distribution shape. A ratio near 1.0 means uniform errors; a ratio above 1.2 signals heavy-tailed errors worth investigating.
 
 ---
 
-### Recall (Sensitivity)
+### R² (Coefficient of Determination)
 
-**General Definition:** Of all actual class X samples, how many did we correctly identify?
+**General Definition:** Proportion of variance in the target that the model explains, compared to always predicting the mean.
 
 ```
-Recall = True Positives / (True Positives + False Negatives)
+R² = 1 - (Σ (actual - predicted)²) / (Σ (actual - mean(actual))²)
 ```
 
 **In Our Context:**
-- `val/recall_wicket`: If there are 100 actual wickets and we correctly predict 25 → 25% recall
-- High recall = catching most events of that type
-- Low recall = missing many actual events
+- R² = 1.0: Perfect prediction
+- R² = 0.5: Model explains 50% of score-ahead variance
+- R² = 0.0: No better than always predicting the average score-ahead
+- R² < 0.0: Actively worse than the mean (model is harmful)
 
-**Cricket Interpretation:** Wicket recall is critical - if we miss 80% of wickets, the model can't help with bowling strategy or predicting collapses.
+**Why It Helps:** The primary signal for whether the model is learning meaningful patterns. Unlike MAE/RMSE, R² is scale-independent — you can compare across different datasets or target ranges without worrying about units.
 
----
-
-### F1 Score
-
-**General Definition:** Harmonic mean of precision and recall, balancing both.
-
-```
-F1 = 2 × (Precision × Recall) / (Precision + Recall)
-```
-
-**Why Harmonic Mean?** Penalizes extreme imbalances. If precision=100% but recall=1%, F1=1.98% (not 50.5% like arithmetic mean).
-
-**Variants:**
-
-| Metric | Formula | Use Case |
-|--------|---------|----------|
-| `f1_macro` | Average F1 across all classes (unweighted) | Treats rare classes equally - **primary metric** |
-| `f1_weighted` | Average F1 weighted by class frequency | Favors common classes |
-
-**In Our Context:** `f1_macro` is our optimization target because we care about predicting wickets (5.7%) as much as dots (39%).
+**Cricket Interpretation:** Score-ahead variance comes from match context (overs remaining, wickets in hand, pitch conditions, batting quality). A positive R² means the model captures some of this context. Higher R² means better contextual understanding.
 
 ---
 
-### Log Loss (Cross-Entropy)
+### Median AE (Median Absolute Error)
 
-**General Definition:** Measures confidence of probability predictions, not just correctness.
+**General Definition:** The middle value when all absolute errors are sorted.
 
 ```
-Log Loss = -Σ log(predicted_probability_of_true_class) / n_samples
+Median AE = median(|predicted - actual|)
 ```
 
-**In Our Context:**
-- Penalizes confident wrong predictions heavily
-- A model predicting 90% confidence on wrong class loses more than 51% confidence
-- Perfect predictions → log_loss approaches 0
-- Random guessing (1/7 = 14.3%) → log_loss ≈ 1.95
+**In Our Context:** If median AE = 6.0 but MAE = 9.0, half of all predictions are within 6 runs, but outlier innings pull the average error up.
 
-**Why Track It:** Ensures model probabilities are meaningful, not just argmax predictions.
+**Why It Helps:** Completely robust to outliers. Tells you the "typical" prediction quality. In cricket, outlier innings (collapses, rain interruptions, extraordinary individual performances) are inherently unpredictable — median AE shows how good the model is on normal innings.
+
+**When to Use:** Compare median AE vs MAE to diagnose whether poor MAE is a systemic issue (median AE also high) or an outlier problem (median AE much lower than MAE).
 
 ---
 
-### Top-K Accuracy
+### Val Loss (Huber / Smooth L1)
 
-**General Definition:** Was the true class in the top K predictions?
-
-**In Our Context:**
-- `top_2_accuracy`: True label in top-2 predictions
-- `top_3_accuracy`: True label in top-3 predictions
-
-**Cricket Interpretation:** Even if the model doesn't nail the exact outcome, predicting "could be a dot or single" (top-2) is useful for strategic decisions.
-
----
-
-### Expected Calibration Error (ECE)
-
-**General Definition:** Measures if predicted probabilities match actual frequencies.
+**General Definition:** The actual loss function optimized during training. Huber loss transitions between MSE and MAE behavior based on a delta threshold.
 
 ```
-ECE = Σ (samples_in_bin / total) × |accuracy_in_bin - confidence_in_bin|
+Huber(error) = 0.5 × error²           if |error| < delta
+             = delta × (|error| - 0.5 × delta)  if |error| >= delta
 ```
 
-**Calculation:**
-1. Group predictions into 10 bins by confidence (0-10%, 10-20%, etc.)
-2. For each bin, compare average confidence vs actual accuracy
-3. Weighted average of gaps
+**In Our Context:** With `huber_delta=10.0`:
+- Errors < 10 runs: MSE-like behavior (smooth gradients, precise learning)
+- Errors ≥ 10 runs: MAE-like behavior (robust to outlier innings)
 
-**In Our Context:**
-- ECE < 0.05: Excellent calibration
-- ECE < 0.10: Good calibration
-- ECE > 0.15: Probabilities are unreliable
+**Why It Helps:** This is the metric that early stopping, checkpointing, and HP search optimize against. It balances precision on normal predictions with robustness to extreme innings (collapses, massive hitting). Lower is better.
 
-**Why It Matters:** For simulations, we need probability outputs to be trustworthy. If model says 20% chance of wicket, it should actually happen ~20% of the time.
+**Tuning Delta:** The `huber_delta` hyperparameter controls the transition:
+- Lower delta (e.g., 1.0): More robust to outliers, but slower convergence on small errors
+- Higher delta (e.g., 20.0): More emphasis on getting close predictions exactly right, but outliers can destabilize training
 
 ---
 
-## 2. Cricket-Specific Metrics
-
-### Wicket Recall
-
-**Formula:** `TP_wicket / (TP_wicket + FN_wicket)`
-
-**Why Tracked Separately:** Wickets are rare (5.7%) but game-changing. Missing them means the model can't capture crucial match moments.
-
-**Target:** > 25% is reasonable given inherent unpredictability.
-
----
-
-### Boundary Precision
-
-**Formula:** `(TP_four + TP_six) / (predictions_four + predictions_six)`
-
-**Why Tracked Separately:** Boundaries (Four + Six) represent high-value outcomes. False boundary predictions would overestimate scoring in simulations.
-
-**Target:** > 35% indicates the model has learned boundary-prone situations.
-
----
-
-### Expected Runs Error
-
-**Formula:** Mean Absolute Error between predicted and actual expected runs.
-
-```
-Expected_Runs = Σ (probability_class × runs_for_class)
-# Where runs = [0, 1, 2, 3, 4, 6, 0] for [Dot, Single, Two, Three, Four, Six, Wicket]
-```
-
-**Why Tracked:** Directly measures economic value of predictions for simulation purposes.
-
----
-
-## 3. Complete Metrics List
+## 2. Complete Metrics List
 
 ### Validation Metrics (Logged Every Epoch)
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `val/loss` | Float | Focal/cross-entropy loss |
-| `val/accuracy` | Float | Overall accuracy |
-| `val/f1_macro` | Float | **Primary metric** - unweighted F1 |
-| `val/f1_weighted` | Float | Class-weighted F1 |
-| `val/precision_macro` | Float | Unweighted precision |
-| `val/recall_macro` | Float | Unweighted recall |
-| `val/log_loss` | Float | Cross-entropy from probabilities |
-| `val/top_2_accuracy` | Float | Top-2 accuracy |
-| `val/top_3_accuracy` | Float | Top-3 accuracy |
-| `val/ece` | Float | Expected Calibration Error |
-| `val/wicket_recall` | Float | Wicket class recall |
-| `val/boundary_precision` | Float | Four+Six precision |
-| `val/expected_runs_error` | Float | MAE for expected runs |
-| `val/f1_{class}` | Float | Per-class F1 (7 classes) |
-| `val/precision_{class}` | Float | Per-class precision (7 classes) |
-| `val/recall_{class}` | Float | Per-class recall (7 classes) |
-| `val/confusion_matrix` | Image | 7x7 heatmap (every 10 epochs) |
+| `val/loss` | Float | Huber (SmoothL1) loss — **optimization target** |
+| `metrics/mae` | Float | Mean Absolute Error in runs |
+| `metrics/rmse` | Float | Root Mean Squared Error in runs |
+| `metrics/r_squared` | Float | Coefficient of determination |
 
 ### Training Metrics (Logged Every Epoch)
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `train/loss` | Float | Training loss |
-| `train/accuracy` | Float | Training accuracy |
+| `train/loss` | Float | Training Huber loss |
 | `learning_rate` | Float | Current learning rate |
 | `epoch` | Int | Current epoch number |
 
 ### Test Metrics (Logged Once After Training)
 
-Same as validation metrics but prefixed with `test/`.
+| Metric | Type | Description |
+|--------|------|-------------|
+| `test/loss` | Float | Test Huber loss |
+| `test/mae` | Float | Test MAE |
+| `test/rmse` | Float | Test RMSE |
+| `test/r_squared` | Float | Test R² |
 
 ---
 
-## 4. Interpreting WandB Charts
+## 3. Interpreting WandB Charts
 
 ### Loss Curves
 - **Good:** Train and val loss both decrease, gap stays small
 - **Overfitting:** Train loss decreases, val loss increases or plateaus
 - **Underfitting:** Both losses plateau high early
 
-### F1 Macro Over Time
-- **Good:** Steady increase, eventual plateau
-- **Bad:** Stuck near random baseline (~0.10)
+### MAE / RMSE Over Time
+- **Good:** Steady decrease, eventual plateau
+- **RMSE >> MAE divergence:** Model struggles with outlier innings — consider lowering `huber_delta`
 
-### Per-Class F1 Breakdown
-- Check if rare classes (Three, Wicket, Six) are being learned
-- If `f1_three = 0`, model ignores this class
-
-### Confusion Matrix
-- **Diagonal dominance:** Good predictions
-- **Row with no diagonal:** Class being ignored
-- **Off-diagonal clusters:** Systematic confusion between classes
+### R² Over Time
+- **Good:** Starts near 0, increases toward 0.3-0.5+
+- **Stuck at 0:** Model isn't learning beyond mean prediction
+- **Negative:** Model is worse than the mean — check for bugs or data issues
 
 ---
 
-## 5. Realistic Performance Targets
+## 4. Realistic Performance Targets
 
 ### Why Perfect Prediction is Impossible
 
-Cricket ball outcomes are **inherently stochastic**:
-- Same bowler, same batsman, same situation → different outcomes
-- Millisecond timing differences, wind, pitch variation
+Score-ahead depends on **future events that haven't happened yet**:
+- A single dropped catch can change the score by 50+ runs
+- Weather interruptions, pitch deterioration, tactical declarations
+- Individual form fluctuations within a match
 - Mental state, fatigue, match pressure
 
-Even expert commentators can't predict individual balls.
+Even expert analysts can't predict exact remaining scores.
 
 ### Reasonable Performance Targets
 
-| Metric | Random Baseline | Acceptable | Good | Excellent |
-|--------|-----------------|------------|------|-----------|
-| Accuracy | 14.3% | 25-28% | 30-35% | 38%+ |
-| F1 Macro | 0.10 | 0.18-0.22 | 0.25-0.30 | 0.32+ |
-| Wicket Recall | 0% | 15-20% | 25-35% | 40%+ |
-| Boundary Precision | 14% | 25-30% | 35-45% | 50%+ |
-| ECE | - | < 0.15 | < 0.10 | < 0.05 |
-| Log Loss | 1.95 | 1.5-1.7 | 1.3-1.5 | < 1.3 |
+| Metric | Baseline (Mean Predictor) | Acceptable | Good | Excellent |
+|--------|---------------------------|------------|------|-----------|
+| MAE | ~25-30 runs | 15-20 | 10-15 | < 10 |
+| RMSE | ~35-40 runs | 20-28 | 15-20 | < 15 |
+| R² | 0.0 | 0.15-0.25 | 0.30-0.50 | 0.50+ |
+| Median AE | ~20-25 runs | 12-18 | 8-12 | < 8 |
 
-### What "Good Enough" Means for Simulations
+*Note: Exact baselines depend on dataset composition (T20 only vs mixed formats, innings stage distribution). These targets are rough guides for T20 internationals.*
 
-For Monte Carlo simulations, you need:
-1. **Calibrated probabilities** (ECE < 0.10): So 20% wicket prediction = 20% actual rate
-2. **Reasonable class coverage**: All classes predicted, not just majorities
-3. **Contextual sensitivity**: Different predictions for powerplay vs death overs
+### What Matters for Simulations
 
-**Accuracy matters less than probability quality** for simulations.
+For Monte Carlo match simulations:
+1. **Low MAE/RMSE:** Predictions are close to reality on average
+2. **Positive R²:** Model captures contextual factors (overs, wickets, pitch)
+3. **Low RMSE/MAE ratio:** Consistent predictions without catastrophic failures
+4. **Reasonable median AE:** Typical predictions are useful even if edge cases fail

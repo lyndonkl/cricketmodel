@@ -30,7 +30,7 @@ Optuna performs **Bayesian hyperparameter optimization**:
 | `phase1_coarse` | hidden_dim, lr | Find ballpark model size and learning rate |
 | `phase2_architecture` | num_layers, num_heads | Tune depth and attention |
 | `phase3_training` | lr, dropout, weight_decay | Regularization tuning |
-| `phase4_loss` | focal_gamma, use_class_weights | Loss function tuning |
+| `phase4_loss` | huber_delta | Loss function tuning |
 | `model_variants` | model_class | Compare architectures |
 | `full` | All parameters | Joint optimization |
 | `full_with_model` | All + model_class | Comprehensive search |
@@ -40,14 +40,14 @@ Optuna performs **Bayesian hyperparameter optimization**:
 ## 3. What You See in WandB During HP Search
 
 ### Study-Level Dashboard
-- **Optimization History:** Trial number vs F1 macro (shows if Optuna is finding better configs)
+- **Optimization History:** Trial number vs val loss (shows if Optuna is finding better configs)
 - **Parameter Importance:** Which hyperparameters matter most
 - **Parallel Coordinates:** Trace good trials to see parameter patterns
 
 ### Trial-Level Metrics
 Each trial logs:
 - Trial number and hyperparameters
-- Final test F1 macro
+- Best validation loss
 - Whether it was pruned
 - Epochs trained
 
@@ -60,7 +60,7 @@ After study completion, HTML files in `checkpoints/optuna/visualizations/`:
 | File | What It Shows |
 |------|---------------|
 | `{phase}_param_importance.html` | Bar chart of hyperparameter importance |
-| `{phase}_history.html` | F1 vs trial number (should trend upward) |
+| `{phase}_history.html` | Val loss vs trial number (should trend downward) |
 | `{phase}_parallel.html` | Interactive parallel coordinates plot |
 
 ---
@@ -162,7 +162,7 @@ python scripts/hp_search.py --phase phase3_training --n-trials 15 --epochs 30 \
 python scripts/hp_search.py --phase phase4_loss --n-trials 10 --epochs 30 \
     --best-params checkpoints/optuna/phase3_training_*/best_params.json --wandb --device cpu
 ```
-- Goal: Optimize focal_gamma and class weighting
+- Goal: Optimize huber_delta for loss function tuning
 
 ### Recommended Parallel Workflow
 
@@ -227,18 +227,19 @@ python scripts/hp_search.py --phase phase1_coarse --n-trials 10 --epochs 25 --de
 [I 2024-01-15 10:25:12,345] Trial 6 pruned.
 ```
 
-- **finished with value:** Trial completed, shows F1 macro score
+- **finished with value:** Trial completed, shows best validation loss
 - **pruned:** Trial stopped early due to poor performance
 
 ### Study Summary
 After completion:
 ```
 Best trial:
-  Value: 0.2567
+  Value: 8.4523
   Params:
     hidden_dim: 128
     lr: 0.00087
     num_layers: 3
+    huber_delta: 10.0
     ...
 ```
 

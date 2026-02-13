@@ -42,7 +42,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import set_seed
-from src.data import create_dataloaders, compute_class_weights
+from src.data import create_dataloaders
 from src.model import CricketHeteroGNN, ModelConfig, get_model_summary
 from src.model.hetero_gnn import (
     CricketHeteroGNNWithPooling,
@@ -87,8 +87,7 @@ SEARCH_SPACES = {
         "weight_decay": {"type": "categorical", "values": [0.0, 0.01, 0.05]},
     },
     "phase4_loss": {
-        "focal_gamma": {"type": "categorical", "values": [0.0, 1.0, 2.0, 3.0]},
-        "use_class_weights": {"type": "categorical", "values": [True, False]},
+        "huber_delta": {"type": "categorical", "values": [1.0, 5.0, 10.0, 20.0]},
     },
     "full": {
         # All hyperparameters for comprehensive search
@@ -98,7 +97,7 @@ SEARCH_SPACES = {
         "lr": {"type": "float", "low": 1e-4, "high": 2e-3, "log": True},
         "dropout": {"type": "float", "low": 0.0, "high": 0.3},
         "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
-        "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
+        "huber_delta": {"type": "float", "low": 1.0, "high": 20.0},
     },
     # === Model Variant Search Phases ===
     "model_variants": {
@@ -138,7 +137,7 @@ SEARCH_SPACES = {
         "lr": {"type": "float", "low": 1e-4, "high": 2e-3, "log": True},
         "dropout": {"type": "float", "low": 0.0, "high": 0.3},
         "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
-        "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
+        "huber_delta": {"type": "float", "low": 1.0, "high": 20.0},
     },
     "full_model_only": {
         # Hyperparameter search for CricketHeteroGNNFull model only
@@ -149,7 +148,7 @@ SEARCH_SPACES = {
         "lr": {"type": "float", "low": 1e-4, "high": 2e-3, "log": True},
         "dropout": {"type": "float", "low": 0.0, "high": 0.3},
         "weight_decay": {"type": "float", "low": 1e-5, "high": 0.1, "log": True},
-        "focal_gamma": {"type": "float", "low": 0.0, "high": 3.0},
+        "huber_delta": {"type": "float", "low": 1.0, "high": 20.0},
     },
 }
 
@@ -162,8 +161,7 @@ DEFAULT_PARAMS = {
     "lr": 1e-3,
     "dropout": 0.1,
     "weight_decay": 0.01,
-    "focal_gamma": 2.0,
-    "use_class_weights": True,
+    "huber_delta": 10.0,
 }
 
 
@@ -191,8 +189,6 @@ def create_objective(
     val_loader,
     test_loader,
     metadata: Dict,
-    class_weights: Optional[torch.Tensor],
-    class_distribution: Optional[Dict[str, Dict]],
     device: torch.device,
     search_space: Dict[str, Dict],
     base_params: Dict[str, Any],
@@ -208,8 +204,6 @@ def create_objective(
         val_loader: Validation data loader (pre-loaded)
         test_loader: Test data loader (pre-loaded)
         metadata: Dataset metadata with entity counts
-        class_weights: Pre-computed class weights tensor
-        class_distribution: Class distribution dict for binary focal loss alphas
         device: Device to train on
         search_space: Hyperparameter search space for this phase
         base_params: Base hyperparameters (from previous phases or defaults)
@@ -229,7 +223,7 @@ def create_objective(
             trial: Optuna trial object
 
         Returns:
-            F1 macro score (to maximize)
+            Best validation loss (to minimize)
         """
         # 1. Start with base params and override with suggested values
         params = base_params.copy()
@@ -244,8 +238,7 @@ def create_objective(
         dropout = params.get("dropout", DEFAULT_PARAMS["dropout"])
         lr = params.get("lr", DEFAULT_PARAMS["lr"])
         weight_decay = params.get("weight_decay", DEFAULT_PARAMS["weight_decay"])
-        focal_gamma = params.get("focal_gamma", DEFAULT_PARAMS["focal_gamma"])
-        use_class_weights_flag = params.get("use_class_weights", DEFAULT_PARAMS["use_class_weights"])
+        huber_delta = params.get("huber_delta", DEFAULT_PARAMS["huber_delta"])
 
         # 2. Create trial-specific checkpoint directory
         trial_checkpoint_dir = os.path.join(checkpoint_base_dir, f"trial_{trial.number}")
@@ -271,21 +264,15 @@ def create_objective(
             epochs=base_config["epochs"],
             patience=base_config["patience"],
             checkpoint_dir=trial_checkpoint_dir,
-            use_focal_loss=True,
-            focal_gamma=focal_gamma,
+            huber_delta=huber_delta,
         )
 
-        # 5. Determine class weights for this trial
-        trial_class_weights = class_weights if use_class_weights_flag else None
-
-        # 6. Create trainer
+        # 5. Create trainer
         trainer = Trainer(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
             config=training_config,
-            class_weights=trial_class_weights,
-            class_distribution=class_distribution,
             device=device,
             use_wandb=False,  # WandB handled at study level
         )
@@ -345,13 +332,9 @@ def create_objective(
                     print(
                         f"  Epoch {epoch + 1}: train_loss={train_loss:.4f}, "
                         f"val_loss={val_loss:.4f}, "
-                        f"boundary[acc={head_metrics['boundary_accuracy']:.4f} "
-                        f"rec={head_metrics['boundary_recall']:.4f} "
-                        f"prec={head_metrics['boundary_precision']:.4f} "
-                        f"f1={head_metrics['boundary_f1']:.4f}], "
-                        f"wicket[rec={head_metrics['wicket_recall']:.4f} "
-                        f"prec={head_metrics['wicket_precision']:.4f} "
-                        f"f1={head_metrics['wicket_f1']:.4f}]"
+                        f"MAE={head_metrics['mae']:.2f}, "
+                        f"RMSE={head_metrics['rmse']:.2f}, "
+                        f"R²={head_metrics['r_squared']:.4f}"
                     )
 
                 # Early stopping
@@ -366,23 +349,15 @@ def create_objective(
             print(f"\n  Trial {trial.number} completed:")
             print(f"    Best Val Loss: {trainer.best_val_loss:.4f}")
             print(f"    Test Loss: {test_loss:.4f}")
-            print(f"    Boundary Accuracy: {test_head_metrics['boundary_accuracy']:.4f}")
-            print(f"    Boundary Recall: {test_head_metrics['boundary_recall']:.4f}")
-            print(f"    Boundary Precision: {test_head_metrics['boundary_precision']:.4f}")
-            print(f"    Boundary F1: {test_head_metrics['boundary_f1']:.4f}")
-            print(f"    Wicket Recall: {test_head_metrics['wicket_recall']:.4f}")
-            print(f"    Wicket Precision: {test_head_metrics['wicket_precision']:.4f}")
-            print(f"    Wicket F1: {test_head_metrics['wicket_f1']:.4f}")
+            print(f"    Test MAE: {test_head_metrics['mae']:.2f}")
+            print(f"    Test RMSE: {test_head_metrics['rmse']:.2f}")
+            print(f"    Test R²: {test_head_metrics['r_squared']:.4f}")
 
             # 9. Store additional metrics as trial attributes
             trial.set_user_attr("model_class", model_class_name)
-            trial.set_user_attr("test_boundary_accuracy", test_head_metrics["boundary_accuracy"])
-            trial.set_user_attr("test_boundary_recall", test_head_metrics["boundary_recall"])
-            trial.set_user_attr("test_boundary_precision", test_head_metrics["boundary_precision"])
-            trial.set_user_attr("test_boundary_f1", test_head_metrics["boundary_f1"])
-            trial.set_user_attr("test_wicket_recall", test_head_metrics["wicket_recall"])
-            trial.set_user_attr("test_wicket_precision", test_head_metrics["wicket_precision"])
-            trial.set_user_attr("test_wicket_f1", test_head_metrics["wicket_f1"])
+            trial.set_user_attr("test_mae", test_head_metrics["mae"])
+            trial.set_user_attr("test_rmse", test_head_metrics["rmse"])
+            trial.set_user_attr("test_r_squared", test_head_metrics["r_squared"])
             trial.set_user_attr("test_loss", test_loss)
             trial.set_user_attr("best_val_loss", trainer.best_val_loss)
             trial.set_user_attr("epochs_trained", epoch + 1)
@@ -420,8 +395,6 @@ def run_phase(
     val_loader,
     test_loader,
     metadata: Dict,
-    class_weights: Optional[torch.Tensor],
-    class_distribution: Optional[Dict[str, Dict]],
     device: torch.device,
     base_config: Dict[str, Any],
     base_params: Dict[str, Any],
@@ -443,8 +416,6 @@ def run_phase(
         val_loader: Validation data loader
         test_loader: Test data loader
         metadata: Dataset metadata
-        class_weights: Pre-computed class weights
-        class_distribution: Class distribution dict for binary focal loss alphas
         device: Device to train on
         base_config: Base training config
         base_params: Base hyperparameters
@@ -504,8 +475,6 @@ def run_phase(
         val_loader=val_loader,
         test_loader=test_loader,
         metadata=metadata,
-        class_weights=class_weights,
-        class_distribution=class_distribution,
         device=device,
         search_space=search_space,
         base_params=base_params,
@@ -537,7 +506,7 @@ def run_phase(
             )
 
             wandb_callback = WeightsAndBiasesCallback(
-                metric_name="f1_macro",
+                metric_name="val_loss",
                 wandb_kwargs={"project": wandb_project},
                 as_multirun=True,
             )
@@ -624,7 +593,7 @@ def run_phase(
     print("Study Complete!")
     print(f"{'='*60}")
     print(f"Best trial: {study.best_trial.number}")
-    print(f"Best F1 Macro: {study.best_value:.4f}")
+    print(f"Best Val Loss: {study.best_value:.4f}")
     print(f"Best params: {study.best_params}")
 
     # Save best params to file
@@ -632,7 +601,7 @@ def run_phase(
         "study_name": study_name,
         "phase": phase_name,
         "best_trial": study.best_trial.number,
-        "best_f1_macro": study.best_value,
+        "best_val_loss": study.best_value,
         "best_params": study.best_params,
         "best_trial_user_attrs": study.best_trial.user_attrs,
         "n_trials": len(study.trials),
@@ -851,12 +820,6 @@ def main():
     print(f"Teams: {metadata['num_teams']}")
     print(f"Players: {metadata['num_players']}")
 
-    # Compute class weights
-    class_weights, class_distribution = compute_class_weights(train_dataset)
-    print("\nClass distribution:")
-    for name, info in class_distribution.items():
-        print(f"  {name}: {info['count']} ({info['percentage']:.1f}%)")
-
     # ==========================================================================
     # Run Optuna study
     # ==========================================================================
@@ -867,8 +830,6 @@ def main():
         val_loader=val_loader,
         test_loader=test_loader,
         metadata=metadata,
-        class_weights=class_weights,
-        class_distribution=class_distribution,
         device=device,
         base_config=base_config,
         base_params=base_params,
@@ -889,7 +850,7 @@ def main():
     print(f"Trials completed: {len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])}")
     print(f"Trials pruned: {len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])}")
     print(f"\nBest trial: {study.best_trial.number}")
-    print(f"Best F1 Macro: {study.best_value:.4f}")
+    print(f"Best Val Loss: {study.best_value:.4f}")
     print(f"Best parameters:")
     for param, value in study.best_params.items():
         print(f"  {param}: {value}")
