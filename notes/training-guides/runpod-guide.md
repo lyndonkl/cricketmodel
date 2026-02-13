@@ -1,6 +1,6 @@
 # RunPod Training Guide
 
-This guide walks you through setting up RunPod for hyperparameter search and model training with the `CricketHeteroGNNFull` model. The model uses binary prediction heads (boundary detection + wicket detection) with Binary Focal Loss for class imbalance handling.
+This guide walks you through setting up RunPod for hyperparameter search and model training with the `CricketHeteroGNNFull` model. The model predicts score-ahead (remaining runs in the innings) using Huber (SmoothL1) regression loss.
 
 ---
 
@@ -260,7 +260,7 @@ The search uses the `full_model_only` phase which fixes the model to `CricketHet
 | `lr` | 1e-4 to 2e-3 (log scale) |
 | `dropout` | 0.0-0.3 |
 | `weight_decay` | 1e-5 to 0.1 (log scale) |
-| `focal_gamma` | 0.0-3.0 |
+| `huber_delta` | 1.0-20.0 |
 
 The objective is to **minimize validation loss**. Trials are pruned early using Optuna's MedianPruner.
 
