@@ -49,20 +49,22 @@ wget -qO- cli.runpod.net | sudo bash
 **Upload processed dataset:**
 
 1. Start a GPU pod (or a cheap CPU pod) with your network volume attached
-2. On your local machine, zip and send:
+2. On your local machine (macOS), zip and send:
    ```bash
    cd /path/to/cricketmodel/data
-   tar czf processed.tar.gz processed/
+   COPYFILE_DISABLE=1 tar czf processed.tar.gz processed/
    runpodctl send processed.tar.gz
    ```
+   **Important:** `COPYFILE_DISABLE=1` prevents macOS from including `._*` resource fork files, which would nearly double the file count and slow extraction significantly.
 3. Copy the one-time code displayed (e.g., `8338-galileo-collect-fidel`)
 4. On the pod (runpodctl is pre-installed):
    ```bash
    cd /workspace/data
    runpodctl receive 8338-galileo-collect-fidel
-   tar xzf processed.tar.gz
+   tar xzf processed.tar.gz --no-same-owner
    rm processed.tar.gz
    ```
+   **Note:** `--no-same-owner` avoids permission warnings from macOS uid/gid metadata.
 
 **Note:** Transfer speed is limited by your local upload bandwidth. For very large datasets, consider hosting on cloud storage first.
 
