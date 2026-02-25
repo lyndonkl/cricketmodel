@@ -1,6 +1,6 @@
 # RunPod Training Guide
 
-This guide walks you through setting up RunPod for hyperparameter search and model training with the `CricketHeteroGNNFull` model. The model predicts score-ahead (remaining runs in the innings) using Huber (SmoothL1) regression loss.
+This guide walks you through setting up RunPod for hyperparameter search and model training with the `CricketHeteroGNNFull` model. The model predicts score-ahead (runs scored in the next 5 overs) using Huber (SmoothL1) regression loss.
 
 ---
 
@@ -30,32 +30,58 @@ Network volumes persist independently of GPU pods, so you only pay storage costs
 
 ---
 
-## 3. Upload Data via S3 API (No GPU Charges)
+## 3. Upload Data to RunPod
 
-This is the key to avoiding GPU charges during upload. You upload directly to the network volume without running a pod.
+### Option A: runpodctl (Recommended — Simplest)
 
-### Get S3 Credentials
+runpodctl uses peer-to-peer transfer with one-time codes. No API keys or open ports needed.
+
+**Install locally (macOS):**
+```bash
+brew install runpod/runpodctl/runpodctl
+```
+
+**Install locally (Linux/WSL):**
+```bash
+wget -qO- cli.runpod.net | sudo bash
+```
+
+**Upload processed dataset:**
+
+1. Start a GPU pod (or a cheap CPU pod) with your network volume attached
+2. On your local machine, zip and send:
+   ```bash
+   cd /path/to/cricketmodel/data
+   tar czf processed.tar.gz processed/
+   runpodctl send processed.tar.gz
+   ```
+3. Copy the one-time code displayed (e.g., `8338-galileo-collect-fidel`)
+4. On the pod (runpodctl is pre-installed):
+   ```bash
+   cd /workspace/data
+   runpodctl receive 8338-galileo-collect-fidel
+   tar xzf processed.tar.gz
+   rm processed.tar.gz
+   ```
+
+**Note:** Transfer speed is limited by your local upload bandwidth. For very large datasets, consider hosting on cloud storage first.
+
+### Option B: S3 API (No GPU Charges)
+
+Upload directly to the network volume without running a pod. Only available in datacenters with S3 support (EUR-IS-1, EU-RO-1, EU-CZ-1, US-KS-2, US-CA-2).
+
+**Get S3 Credentials:**
 
 1. Go to **Settings** > **API Keys** in RunPod dashboard
 2. Create a new API key or use existing one
-3. Note your:
-   - **Access Key ID**
-   - **Secret Access Key**
-   - **Endpoint URL** (based on your datacenter, e.g., `https://us-ks-2.runpod.io`)
+3. Note your Access Key ID, Secret Access Key, and Endpoint URL
 
-### Install AWS CLI
+**Install and configure AWS CLI:**
 
 ```bash
 # macOS
 brew install awscli
 
-# Or via pip
-pip install awscli
-```
-
-### Configure AWS CLI for RunPod
-
-```bash
 aws configure --profile runpod
 # Enter your RunPod Access Key ID
 # Enter your RunPod Secret Access Key
@@ -63,40 +89,17 @@ aws configure --profile runpod
 # Output format: json
 ```
 
-### Upload Your Processed Data
-
-**Option A: Upload folder directly (Recommended - avoids zip/unzip time)**
+**Upload:**
 
 ```bash
-# Sync the processed folder directly to network volume
-# This uploads files in parallel and is often faster than zipping
 cd /path/to/cricketmodel/data
 
 aws s3 sync processed/ s3://YOUR_VOLUME_ID/processed/ \
     --endpoint-url https://YOUR_DATACENTER.runpod.io \
     --profile runpod
-
-# Example:
-aws s3 sync processed/ s3://vol_abc123xyz/processed/ \
-    --endpoint-url https://us-ks-2.runpod.io \
-    --profile runpod
 ```
 
-**Option B: Upload as zip file**
-
-```bash
-# Zip first (if you prefer)
-zip -r processed.zip processed/
-
-# Upload zip
-aws s3 cp processed.zip s3://YOUR_VOLUME_ID/ \
-    --endpoint-url https://YOUR_DATACENTER.runpod.io \
-    --profile runpod
-```
-
-**Upload time:** ~2-4 hours for 97GB depending on your internet speed. You're only charged storage (~$7/month), not GPU time.
-
-### Verify Upload
+**Verify:**
 
 ```bash
 aws s3 ls s3://YOUR_VOLUME_ID/processed/ \
@@ -379,6 +382,7 @@ cat $BEST_PARAMS
 # Train final model with torchrun on 7 GPUs
 torchrun --standalone --nproc_per_node=7 train.py \
     --config $BEST_PARAMS \
+    --model-class CricketHeteroGNNFull \
     --epochs 100 \
     --batch-size 1024 \
     --wandb \
@@ -400,7 +404,24 @@ torchrun --standalone --nproc_per_node=7 train.py \
 
 ## 9. Download Results
 
-### Option A: Download via S3 API
+### Option A: runpodctl (Recommended)
+
+**On the pod:**
+```bash
+cd /workspace/cricketmodel
+tar czf results.tar.gz checkpoints/ optuna_studies.db
+runpodctl send results.tar.gz
+```
+
+**On your local machine:**
+```bash
+cd /path/to/cricketmodel
+runpodctl receive <one-time-code>
+tar xzf results.tar.gz
+rm results.tar.gz
+```
+
+### Option B: Download via S3 API
 
 ```bash
 # On the pod, copy results to network volume
@@ -412,21 +433,12 @@ aws s3 cp s3://YOUR_VOLUME_ID/checkpoints ./checkpoints --recursive \
     --profile runpod
 ```
 
-### Option B: Download via SCP
+### Option C: Download via SCP
 
 ```bash
 # From your local machine
 scp -P 12345 -r root@ssh.runpod.io:/workspace/cricketmodel/checkpoints ./
 ```
-
-### Option C: Zip and Download via Jupyter
-
-In Jupyter terminal:
-```bash
-cd /workspace/cricketmodel
-zip -r results.zip checkpoints/optuna/ optuna_studies.db
-```
-Then download `results.zip` through Jupyter file browser.
 
 ---
 
