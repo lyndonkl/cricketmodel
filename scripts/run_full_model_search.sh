@@ -11,11 +11,11 @@ echo "Running from: $(pwd)"
 
 # Configuration - adjust these for your environment
 NUM_GPUS=${NUM_GPUS:-6}           # Number of GPUs (override with env var)
-STAGGER_DELAY=15                   # seconds between each GPU start
-DATA_FRACTION=0.02                 # 2% of data for fast iteration
-BATCH_SIZE=1024                    # Larger batch for faster epochs
-TRIALS_PER_GPU=15                  # Total trials = NUM_GPUS * TRIALS_PER_GPU
-EPOCHS=10
+STAGGER_DELAY=${STAGGER_DELAY:-15}  # seconds between each GPU start
+DATA_FRACTION=${DATA_FRACTION:-0.02} # 2% of data for fast iteration
+BATCH_SIZE=${BATCH_SIZE:-1024}      # Larger batch for faster epochs (override with env var)
+TRIALS_PER_GPU=${TRIALS_PER_GPU:-15} # Total trials = NUM_GPUS * TRIALS_PER_GPU
+EPOCHS=${EPOCHS:-10}
 DEVICE=${DEVICE:-cuda}             # Device: cuda, cpu, or mps
 
 # Set file descriptor limit for PyTorch multiprocessing
