@@ -35,7 +35,8 @@ build/
 data/processed/
 
 # Training artifacts
-checkpoints/
+checkpoints/*/cricket_gnn_*/checkpoint_*.pt
 wandb/
 optuna_studies.db
+optuna_full_model.db
 data/zifPlZ2L

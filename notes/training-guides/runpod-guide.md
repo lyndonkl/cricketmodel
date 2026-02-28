@@ -287,17 +287,20 @@ The search script is included in the repo at `scripts/run_full_model_search.sh`.
 cd /workspace/cricketmodel
 git pull  # Get the latest version
 
-# Run with 7 GPUs (default is 6, override with NUM_GPUS)
+# Single GPU (adjust BATCH_SIZE for your VRAM)
+NUM_GPUS=1 BATCH_SIZE=256 TRIALS_PER_GPU=50 ./scripts/run_full_model_search.sh
+
+# Multi-GPU (e.g., 7 GPUs)
 NUM_GPUS=7 ./scripts/run_full_model_search.sh
 ```
 
-**Default configuration:**
-- `NUM_GPUS=6` - Override with env var (e.g., `NUM_GPUS=7`)
-- `TRIALS_PER_GPU=15` - Total trials = NUM_GPUS x 15 (105 with 7 GPUs)
+**Configuration (all overridable via env vars):**
+- `NUM_GPUS=6` - Number of GPUs (e.g., `NUM_GPUS=1` for single GPU)
+- `TRIALS_PER_GPU=15` - Total trials = NUM_GPUS x TRIALS_PER_GPU
 - `EPOCHS=10` - Epochs per trial
 - `DATA_FRACTION=0.02` - 2% of data for fast iteration
-- `BATCH_SIZE=1024` - Large batch for fast epochs on 24GB VRAM GPUs
-- `STAGGER_DELAY=15` - Seconds between GPU starts to avoid SQLite race conditions
+- `BATCH_SIZE=1024` - Reduce for smaller VRAM (e.g., `BATCH_SIZE=256`)
+- `STAGGER_DELAY=15` - Seconds between GPU starts (multi-GPU only)
 
 The script automatically:
 1. Cleans up previous Optuna studies and checkpoints
@@ -372,7 +375,7 @@ Since we use `--wandb`, you can monitor all trials in real-time at [wandb.ai](ht
 
 ## 8. Train Final Model with Best Parameters
 
-After HP search completes, train the final model using `torchrun` for distributed training across all 7 GPUs:
+After HP search completes, train the final model with the best hyperparameters.
 
 ```bash
 # Get the best params from the search
@@ -380,9 +383,26 @@ BEST_PARAMS=$(ls -t checkpoints/optuna/cricket_gnn_full_model_*/best_params.json
 
 # View best parameters
 cat $BEST_PARAMS
+```
 
-# Train final model with torchrun on 7 GPUs
-torchrun --standalone --nproc_per_node=7 train.py \
+**Note:** `--model-class CricketHeteroGNNFull` is required because the config file stores `model_class` in metadata, not in `best_params`.
+
+### Single GPU
+
+```bash
+python train.py \
+    --config $BEST_PARAMS \
+    --model-class CricketHeteroGNNFull \
+    --epochs 100 \
+    --batch-size 256 \
+    --wandb \
+    --wandb-project cricket-gnn-final
+```
+
+### Multi-GPU (torchrun)
+
+```bash
+torchrun --standalone --nproc_per_node=gpu train.py \
     --config $BEST_PARAMS \
     --model-class CricketHeteroGNNFull \
     --epochs 100 \
@@ -392,13 +412,12 @@ torchrun --standalone --nproc_per_node=7 train.py \
 ```
 
 **torchrun options:**
-- `--nproc_per_node=7` - Use exactly 7 GPUs (explicit)
 - `--nproc_per_node=gpu` - Use all available GPUs (auto-detect)
+- `--nproc_per_node=7` - Use exactly 7 GPUs (explicit)
 - `--standalone` - Single-node training (no multi-machine coordination)
 
-**Why torchrun?**
-- Proper DDP setup - all 7 GPUs train the same model in parallel
-- ~7x faster training than single GPU
+**Why torchrun (multi-GPU)?**
+- Proper DDP setup - all GPUs train the same model in parallel
 - Automatic gradient synchronization across GPUs
 - Better error handling and process management
 
