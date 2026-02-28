@@ -42,8 +42,10 @@ class TrainingConfig:
     scheduler: str = 'cosine'  # 'cosine' or 'plateau'
 
     # Early stopping
-    patience: int = 10
+    patience: int = 20
     min_delta: float = 1e-4
+    min_epochs: int = 15  # Don't allow early stopping before this epoch
+    early_stop_metric: str = 'mae'  # 'mae' or 'val_loss'
 
     # Checkpointing
     checkpoint_dir: str = 'checkpoints'
@@ -191,6 +193,7 @@ class Trainer:
 
         # Tracking
         self.best_val_loss = float('inf')
+        self.best_val_mae = float('inf')
         self.patience_counter = 0
         self.epoch = 0
         self.global_step = 0
@@ -452,17 +455,27 @@ class Trainer:
 
                 wandb.log(wandb_log)
 
-            # Check for improvement
-            improved = val_loss < self.best_val_loss - self.config.min_delta
+            # Check for improvement based on configured metric
+            current_mae = head_metrics['mae']
 
-            if improved:
+            if self.config.early_stop_metric == 'mae':
+                improved = current_mae < self.best_val_mae - self.config.min_delta
+            else:
+                improved = val_loss < self.best_val_loss - self.config.min_delta
+
+            # Always track best values for both metrics
+            if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
-                self.patience_counter = 0
 
-                # Save best model (main process only)
+            if current_mae < self.best_val_mae:
+                self.best_val_mae = current_mae
+                # Save best-MAE model (main process only)
                 if self.is_main:
                     self.save_checkpoint('best_model.pt')
-                    print(f"  New best model saved (val_loss: {val_loss:.4f})")
+                    print(f"  New best model saved (MAE: {current_mae:.4f})")
+
+            if improved:
+                self.patience_counter = 0
             else:
                 self.patience_counter += 1
                 if self.is_main:
@@ -477,8 +490,8 @@ class Trainer:
             if not self.config.save_best_only and self.is_main:
                 self.save_checkpoint(f'checkpoint_epoch_{epoch + 1}.pt')
 
-            # Early stopping
-            if self.patience_counter >= self.config.patience:
+            # Early stopping (only after min_epochs)
+            if epoch >= self.config.min_epochs and self.patience_counter >= self.config.patience:
                 if self.is_main:
                     print(f"\n[warning] Early stopping triggered after {epoch + 1} epochs")
                 break
@@ -487,6 +500,7 @@ class Trainer:
         if self.is_main:
             print(f"\nTraining completed in {elapsed_time / 60:.1f} minutes")
             print(f"Best validation loss: {self.best_val_loss:.4f}")
+            print(f"Best validation MAE: {self.best_val_mae:.4f}")
 
             # Save training history
             self._save_history()
@@ -524,12 +538,20 @@ class Trainer:
         torch.save(checkpoint_dict, path)
 
     def load_checkpoint(self, filename: str):
-        """Load model checkpoint."""
+        """Load model checkpoint.
+
+        Handles DDP by loading into the underlying model (model.module)
+        since checkpoints are saved without the 'module.' prefix.
+        """
         path = os.path.join(self.config.checkpoint_dir, filename)
         # weights_only=False needed for PyTorch 2.6+ compatibility
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        # Load into underlying model if wrapped in DDP
+        model_to_load = self.model
+        if hasattr(self.model, 'module'):
+            model_to_load = self.model.module
+        model_to_load.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.epoch = checkpoint['epoch']

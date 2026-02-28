@@ -181,8 +181,14 @@ def parse_args():
     parser.add_argument(
         "--patience",
         type=int,
-        default=10,
-        help="Early stopping patience"
+        default=20,
+        help="Early stopping patience (epochs without improvement)"
+    )
+    parser.add_argument(
+        "--min-epochs",
+        type=int,
+        default=15,
+        help="Minimum epochs before early stopping can trigger"
     )
     parser.add_argument(
         "--huber-delta",
@@ -502,6 +508,7 @@ def main():
         weight_decay=args.weight_decay,
         epochs=args.epochs,
         patience=args.patience,
+        min_epochs=args.min_epochs,
         checkpoint_dir=args.checkpoint_dir,
         huber_delta=args.huber_delta,
         use_amp=args.amp,
